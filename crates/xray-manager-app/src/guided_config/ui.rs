@@ -152,8 +152,8 @@ fn choice(
     let label = choices
         .iter()
         .find(|(v, _)| *v == selected)
-        .map(|(_, l)| *l)
-        .unwrap_or(&selected);
+        .map(|(_, l)| (*l).to_owned())
+        .unwrap_or_else(|| selected.clone());
     egui::ComboBox::from_id_salt(path)
         .width(ui.available_width().min(420.0))
         .selected_text(label)
@@ -627,6 +627,15 @@ fn targets(config: &Value, names: &BTreeMap<String, String>) -> Vec<(String, Str
 }
 
 fn default_picker(ui: &mut egui::Ui, config: &mut Value, names: &BTreeMap<String, String>) -> bool {
+    default_picker_with_width(ui, config, names, 420.0)
+}
+
+fn default_picker_with_width(
+    ui: &mut egui::Ui,
+    config: &mut Value,
+    names: &BTreeMap<String, String>,
+    max_width: f32,
+) -> bool {
     let Some(nodes) = config.get("outbounds").and_then(Value::as_array) else {
         return false;
     };
@@ -635,7 +644,7 @@ fn default_picker(ui: &mut egui::Ui, config: &mut Value, names: &BTreeMap<String
         ui.label("默认访问方式")
             .on_hover_text("未命中分流规则时采用此方式");
         egui::ComboBox::from_id_salt("default-node")
-            .width(ui.available_width().min(420.0))
+            .width(ui.available_width().min(max_width))
             .selected_text(
                 nodes
                     .first()
@@ -663,6 +672,46 @@ fn default_picker(ui: &mut egui::Ui, config: &mut Value, names: &BTreeMap<String
             });
     });
     set_default(config, selected)
+}
+
+fn domain_strategy_picker(ui: &mut egui::Ui, config: &mut Value) -> bool {
+    if config
+        .pointer("/routing/domainStrategy")
+        .is_some_and(|v| !v.is_string())
+    {
+        ui.label("domainStrategy 字段类型不符，请使用原始 JSON 修正。");
+        return false;
+    }
+    let choices = [
+        ("AsIs", "AsIs（仅按传入类型匹配）"),
+        (
+            "IPIfNonMatch",
+            "IPIfNonMatch（域名未命中时解析 IP，推荐用于 GeoIP）",
+        ),
+        ("IPOnDemand", "IPOnDemand（遇 IP 规则即解析）"),
+    ];
+    let original = config
+        .pointer("/routing/domainStrategy")
+        .and_then(Value::as_str)
+        .unwrap_or("AsIs")
+        .to_owned();
+    let mut selected = original.clone();
+    ui.horizontal_wrapped(|ui| {
+        ui.label("域名解析策略")
+            .on_hover_text("若配置包含 geoip:cn 等 IP 规则，建议设为 IPIfNonMatch");
+        egui::ComboBox::from_id_salt("/routing/domainStrategy")
+            .width(ui.available_width().min(160.0))
+            .selected_text(selected.clone())
+            .show_ui(ui, |ui| {
+                for (v, label) in choices {
+                    ui.selectable_value(&mut selected, (*v).into(), label);
+                }
+            });
+    });
+    if original != selected {
+        return patch(config, "/routing/domainStrategy", Value::String(selected)).is_ok();
+    }
+    false
 }
 
 pub fn edit_nodes(
@@ -880,8 +929,70 @@ fn apply_geosite_bypass_preset(config: &mut Value, state: &mut State) -> bool {
             changed = true;
         }
     }
+    let strategy = config
+        .pointer("/routing/domainStrategy")
+        .and_then(Value::as_str);
+    if (strategy.is_none() || strategy == Some("AsIs"))
+        && patch(config, "/routing/domainStrategy", json!("IPIfNonMatch")).is_ok()
+    {
+        changed = true;
+    }
+    let needs_sniffing = config
+        .get("inbounds")
+        .and_then(Value::as_array)
+        .is_some_and(|inbounds| {
+            !inbounds.is_empty()
+                && !inbounds.iter().any(|inbound| {
+                    inbound
+                        .pointer("/sniffing/enabled")
+                        .and_then(Value::as_bool)
+                        == Some(true)
+                })
+        });
     if !changed {
         state.notice = Some("当前配置已包含同类 GeoSite/GeoIP 国内外分流规则。".into());
+    } else if needs_sniffing {
+        state.notice = Some(
+            "已添加分流规则并设置 domainStrategy=IPIfNonMatch；若需要纯 IP 流量也命中 geosite，请点击“开启 Sniffing”。"
+                .into(),
+        );
+    }
+    changed
+}
+
+pub(super) fn enable_inbound_sniffing(config: &mut Value, state: &mut State) -> bool {
+    let Some(inbounds) = config.get_mut("inbounds").and_then(Value::as_array_mut) else {
+        state.notice = Some("入站字段不是数组或尚未添加入站，请先检查本地入口。".into());
+        return false;
+    };
+    if inbounds.is_empty() {
+        state.notice = Some("尚未添加入站，请先在「本地入口」添加入口。".into());
+        return false;
+    }
+    let mut changed = false;
+    for inbound in inbounds {
+        let Some(obj) = inbound.as_object_mut() else {
+            continue;
+        };
+        let sniffing = obj.entry("sniffing").or_insert_with(|| json!({}));
+        let Some(sniff_obj) = sniffing.as_object_mut() else {
+            continue;
+        };
+        if sniff_obj.get("enabled").and_then(Value::as_bool) != Some(true) {
+            sniff_obj.insert("enabled".into(), json!(true));
+            changed = true;
+        }
+        if !sniff_obj.contains_key("destOverride") {
+            sniff_obj.insert("destOverride".into(), json!(["http", "tls", "quic"]));
+            changed = true;
+        }
+        if sniff_obj.get("routeOnly").and_then(Value::as_bool) != Some(true) {
+            sniff_obj.insert("routeOnly".into(), json!(true));
+            changed = true;
+        }
+    }
+    if !changed {
+        state.notice = Some("所有入站已开启 sniffing（routeOnly: true）。".into());
     }
     changed
 }
@@ -893,7 +1004,10 @@ pub fn edit_routes(
     state: &mut State,
 ) -> Outcome {
     let mut out = Outcome::default();
-    out.changed |= default_picker(ui, config, names);
+    ui.horizontal_wrapped(|ui| {
+        out.changed |= default_picker_with_width(ui, config, names, 200.0);
+        out.changed |= domain_strategy_picker(ui, config);
+    });
     let targets = targets(config, names);
     let focus = state.focus.take();
     ui.label(RichText::new("规则从上到下匹配，先命中的规则生效。重复或重叠规则请核对顺序；未命中时使用默认访问方式。").small().weak());
@@ -941,10 +1055,17 @@ pub fn edit_routes(
         }
         if ui
             .button("国内外分流预设 (GeoSite)")
-            .on_hover_text("添加 geosite:private / geosite:cn / geoip:private / geoip:cn 直连与广告拦截（若存在 blackhole 出站）规则")
+            .on_hover_text("添加 geosite:private / geosite:cn / geoip:private / geoip:cn 直连与广告拦截（若存在 blackhole 出站）规则，并设为 IPIfNonMatch")
             .clicked()
         {
             out.changed |= apply_geosite_bypass_preset(config, state);
+        }
+        if ui
+            .button("开启 Sniffing")
+            .on_hover_text("为全部入站开启流量嗅探 (http/tls/quic) 并设置 routeOnly: true，确保纯 IP 流量也能还原域名命中 geosite")
+            .clicked()
+        {
+            out.changed |= enable_inbound_sniffing(config, state);
         }
     });
     let mut action = None;

@@ -469,4 +469,17 @@ fn geosite_routing_preset_adds_domestic_bypass_and_adblock_rules() {
     assert_eq!(rules[0]["domain"], json!(["geosite:private", "geosite:cn"]));
     assert_eq!(rules[1]["domain"], json!(["geosite:category-ads-all"]));
     assert_eq!(rules[2]["ip"], json!(["geoip:private", "geoip:cn"]));
+    assert_eq!(
+        cfg.pointer("/routing/domainStrategy"),
+        Some(&json!("IPIfNonMatch"))
+    );
+    assert!(super::ui::enable_inbound_sniffing(&mut cfg, &mut state));
+    assert_eq!(
+        cfg.pointer("/inbounds/0/sniffing"),
+        Some(&json!({
+            "enabled": true,
+            "destOverride": ["http", "tls", "quic"],
+            "routeOnly": true
+        }))
+    );
 }

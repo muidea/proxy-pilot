@@ -19,7 +19,7 @@ fn hash_list_and_context(
     geosites: &[String],
     domains: &[String],
     config_json: Option<&str>,
-    geo_stamp: Option<(u64, Option<std::time::SystemTime>)>,
+    geo_stamp: Option<u64>,
 ) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     geosites.hash(&mut hasher);
@@ -67,24 +67,47 @@ impl App {
             self.ui.geodata_cache = None;
             return None;
         }
-        let geosite_path = std::path::Path::new(&asset_root).join("geosite.dat");
-        let Ok(meta) = std::fs::metadata(&geosite_path) else {
+        let root_path = std::path::Path::new(&asset_root);
+        if !root_path.is_dir() {
             self.ui.geodata_cache = None;
             return None;
-        };
-        let stamp = (meta.len(), meta.modified().ok());
+        }
+        let parsed_config = serde_json::from_str::<serde_json::Value>(&self.editor).ok();
+        let mut tracked_files =
+            std::collections::BTreeSet::from(["geosite.dat".to_owned(), "geoip.dat".to_owned()]);
+        if let Some(value) = &parsed_config {
+            for name in xray_config::resources::collect_referenced_geo_files(value) {
+                if name.to_ascii_lowercase().ends_with(".dat") {
+                    tracked_files.insert(name);
+                }
+            }
+        }
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for name in &tracked_files {
+            name.hash(&mut hasher);
+            if let Ok(meta) = std::fs::metadata(root_path.join(name)) {
+                true.hash(&mut hasher);
+                meta.len().hash(&mut hasher);
+                meta.modified().ok().hash(&mut hasher);
+            } else {
+                false.hash(&mut hasher);
+            }
+        }
+        let stamp = hasher.finish();
         if let Some(cached) = &self.ui.geodata_cache
             && cached.asset_root == asset_root
             && cached.stamp == stamp
         {
             return Some(cached.clone());
         }
-        let Ok(mut data) = GeoData::load_from_asset_root(std::path::Path::new(&asset_root)) else {
-            self.ui.geodata_cache = None;
-            return None;
-        };
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&self.editor) {
-            data.preload_ext_from_config(&value);
+        let mut data = GeoData::load_from_asset_root_best_effort(root_path);
+        let geosite_error = (root_path.join("geosite.dat").is_file() && data.geosite.is_none())
+            .then(|| {
+                "geosite.dat 解析失败或为空文件（请确认是标准 Protobuf .dat 文件，切勿将 .db/.srs 改名）。"
+                    .to_owned()
+            });
+        if let Some(value) = &parsed_config {
+            data.preload_ext_from_config(value);
         }
         let categories = data.categories();
         let entry = GeoDataCache {
@@ -92,6 +115,7 @@ impl App {
             stamp,
             data,
             categories,
+            geosite_error,
         };
         self.ui.geodata_cache = Some(entry.clone());
         Some(entry)
@@ -436,6 +460,7 @@ impl App {
         draft: &mut PacDraft,
         endpoint: Option<std::net::SocketAddr>,
         categories: &[GeoSiteCategorySummary],
+        geosite_error: Option<&str>,
     ) -> bool {
         let mut changed = false;
         ui.add_space(6.0);
@@ -444,7 +469,9 @@ impl App {
         if categories.is_empty() {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
-                "未检测到 geosite.dat（可在「设置 · 内核与资源」下载或配置资源目录）。",
+                geosite_error.unwrap_or(
+                    "未检测到 geosite.dat（可在「设置 · Core 与依赖」下载或配置资源目录）。",
+                ),
             );
         } else {
             ui.horizontal_wrapped(|ui| {
@@ -941,7 +968,9 @@ impl App {
                     .as_ref()
                     .map(|c| c.categories.as_slice())
                     .unwrap_or(&[]);
-                changed |= self.pac_geosite_section(ui, &mut draft, endpoint, categories);
+                let geosite_error = cached_geo.as_ref().and_then(|c| c.geosite_error.as_deref());
+                changed |=
+                    self.pac_geosite_section(ui, &mut draft, endpoint, categories, geosite_error);
             }
         });
 

@@ -18,12 +18,13 @@ fn and(a: Match, b: Match) -> Match {
 }
 fn domain(pattern: &str, host: &str, geo: Option<&crate::geodata::GeoData>) -> Match {
     let host = host.to_ascii_lowercase();
-    let p = pattern.to_ascii_lowercase();
+    let p = pattern.trim().to_ascii_lowercase();
     if host.is_empty() {
         return Match::Unknown;
     }
     if p.starts_with("geosite:") || p.starts_with("ext:") {
-        return match geo.and_then(|g| g.matches_domain_spec(&p, &host)) {
+        // Preserve original case of `pattern` so `ext:` filenames match case-sensitive filesystems.
+        return match geo.and_then(|g| g.matches_domain_spec(pattern, &host)) {
             Some(true) => Match::Yes,
             Some(false) => Match::No,
             None => Match::Unknown,
@@ -68,8 +69,8 @@ fn ip_match(pattern: &str, target: Option<&str>, geo: Option<&crate::geodata::Ge
     let Some(ip) = target.and_then(|s| s.parse::<std::net::IpAddr>().ok()) else {
         return Match::Unknown;
     };
-    let lower = pattern.to_ascii_lowercase();
-    if lower.starts_with("geoip:") || lower.starts_with("ext:") {
+    let lower = pattern.trim().to_ascii_lowercase();
+    if lower.starts_with("geoip:") || lower.starts_with("ext:") || lower.starts_with("ext-ip:") {
         return match geo.and_then(|g| g.matches_ip_spec(pattern, ip)) {
             Some(true) => Match::Yes,
             Some(false) => Match::No,
@@ -443,5 +444,50 @@ mod extended_tests {
         );
         assert_eq!(hit_ip.match_state, "MatchKnown");
         assert_eq!(hit_ip.expected_outbound.as_deref(), Some("direct"));
+
+        let ext_geo = GeoData::from_indexes(None, None)
+            .with_ext_site(
+                "Custom_Site.dat",
+                GeoSiteIndex::parse(&encode_geosite_list(&[(
+                    "my_proxy_list",
+                    &[(2, "example.org", &[])],
+                )]))
+                .unwrap(),
+            )
+            .with_ext_ip(
+                "Custom_IP.dat",
+                GeoIpIndex::parse(&encode_geoip_list(&[(
+                    "corp",
+                    &[(&[10, 99, 0, 0], 16)],
+                    false,
+                )]))
+                .unwrap(),
+            );
+        let ext_config = serde_json::json!({
+            "outbounds": [{"tag":"proxy","protocol":"vless"},{"tag":"direct","protocol":"freedom"}],
+            "routing": {"rules":[
+                {"type":"field","domain":["ext:Custom_Site.dat:my_proxy_list"],"outboundTag":"proxy"},
+                {"type":"field","ip":["ext-ip:Custom_IP.dat:corp"],"outboundTag":"direct"}
+            ]}
+        });
+        let hit_ext_site = simulate_with_geo(
+            &ext_config,
+            &RouteContext {
+                host: "sub.example.org".into(),
+                ..Default::default()
+            },
+            Some(&ext_geo),
+        );
+        assert_eq!(hit_ext_site.expected_outbound.as_deref(), Some("proxy"));
+        let hit_ext_ip = simulate_with_geo(
+            &ext_config,
+            &RouteContext {
+                host: "other.invalid".into(),
+                target_ip: Some("10.99.1.2".into()),
+                ..Default::default()
+            },
+            Some(&ext_geo),
+        );
+        assert_eq!(hit_ext_ip.expected_outbound.as_deref(), Some("direct"));
     }
 }

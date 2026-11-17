@@ -89,6 +89,16 @@ pub fn freeze_with(
             ));
         }
         let bytes = fs::read(&original)?;
+        if relative
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("dat"))
+            && bytes.is_empty()
+        {
+            return Err(Error::new(
+                "INVALID_GEODATA",
+                format!("Geo rule file is empty (0 bytes): {name}"),
+            ));
+        }
         let digest = hash(&bytes);
         atomic_write(&root.join(relative), &bytes)?;
         if hash(&fs::read(&original)?) != digest {
@@ -114,10 +124,23 @@ pub fn freeze_with(
     write_json(&resources.root.join("manifest.json"), &resources)?;
     Ok(resources)
 }
-/// Collect `.dat` geo resource filenames referenced in routing and DNS sections.
-pub(crate) fn collect_referenced_geo_files(value: &Value) -> BTreeSet<String> {
+/// Collect `.dat` geo resource filenames referenced in routing, inbound sniffing, and DNS sections.
+pub fn collect_referenced_geo_files(value: &Value) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     // Resource prefixes have meaning only in native dependency-bearing fields.
+    if let Some(inbounds) = value.get("inbounds").and_then(Value::as_array) {
+        for inbound in inbounds {
+            for entry in inbound
+                .pointer("/sniffing/domainsExcluded")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                collect_geo(entry, true, &mut names);
+            }
+        }
+    }
     if let Some(rules) = value.pointer("/routing/rules").and_then(Value::as_array) {
         for rule in rules {
             for field in ["domain", "ip", "source"] {
@@ -157,19 +180,29 @@ pub(crate) fn collect_referenced_geo_files(value: &Value) -> BTreeSet<String> {
     names
 }
 
+fn strip_prefix_ignore_case<'a>(input: &'a str, prefix: &str) -> Option<&'a str> {
+    input
+        .get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+        .then(|| &input[prefix.len()..])
+}
+
 fn collect_geo(entry: &str, domain: bool, names: &mut BTreeSet<String>) {
-    if domain && entry.starts_with("geosite:") {
+    let trimmed = entry.trim();
+    if domain && strip_prefix_ignore_case(trimmed, "geosite:").is_some() {
         names.insert("geosite.dat".into());
     }
-    if !domain && entry.starts_with("geoip:") {
+    if !domain && strip_prefix_ignore_case(trimmed, "geoip:").is_some() {
         names.insert("geoip.dat".into());
     }
-    if let Some(rest) = entry
-        .strip_prefix("ext:")
-        .or_else(|| entry.strip_prefix("ext-ip:"))
+    if let Some(rest) = strip_prefix_ignore_case(trimmed, "ext-ip:")
+        .or_else(|| strip_prefix_ignore_case(trimmed, "ext:"))
         && let Some((file, _)) = rest.split_once(':')
     {
-        names.insert(file.into());
+        let file = file.trim();
+        if !file.is_empty() {
+            names.insert(file.into());
+        }
     }
 }
 pub fn verify(resources: &Resources) -> Result<()> {
@@ -297,6 +330,32 @@ mod tests {
         verify(&r).unwrap();
         fs::write(r.root.join("geosite.dat"), "corrupt").unwrap();
         assert_eq!(verify(&r).unwrap_err().code, "RESOURCE_INTEGRITY_FAILED");
+    }
+    #[test]
+    fn sniffing_domains_excluded_is_frozen_and_empty_dat_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("geosite.dat"), b"valid-bytes").unwrap();
+        fs::write(tmp.path().join("Custom_Site.dat"), b"valid-bytes").unwrap();
+        let config = serde_json::json!({
+            "inbounds": [{
+                "protocol": "socks",
+                "sniffing": {
+                    "enabled": true,
+                    "routeOnly": true,
+                    "domainsExcluded": ["GeoSite:cn", "ext:Custom_Site.dat:tag"]
+                }
+            }]
+        });
+        let r = freeze(&config, tmp.path(), &tmp.path().join("frozen")).unwrap();
+        assert_eq!(r.files.len(), 2);
+
+        fs::write(tmp.path().join("geosite.dat"), b"").unwrap();
+        assert_eq!(
+            freeze(&config, tmp.path(), &tmp.path().join("frozen-empty"))
+                .unwrap_err()
+                .code,
+            "INVALID_GEODATA"
+        );
     }
 }
 

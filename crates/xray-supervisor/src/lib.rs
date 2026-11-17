@@ -911,20 +911,22 @@ impl<B: ProxyBackend> Supervisor<B> {
         candidate: &Candidate,
         config: &serde_json::Value,
     ) -> xray_config::geodata::GeoData {
-        let mut geo =
-            xray_config::geodata::GeoData::load_from_asset_root(&candidate.resources.root)
-                .unwrap_or_default();
+        let mut geo = xray_config::geodata::GeoData::load_from_asset_root_best_effort(
+            &candidate.resources.root,
+        );
         geo.preload_ext_from_config(config);
-        if geo.geosite.is_none()
+        if (geo.geosite.is_none() || geo.geoip.is_none())
             && let Ok(raw_root) =
                 fs::read_to_string(candidate.config_path.with_file_name("asset_root.txt"))
         {
             let root = PathBuf::from(raw_root.trim());
-            let geosite_path = root.join("geosite.dat");
-            if geosite_path.is_file()
-                && let Ok(index) = xray_config::geodata::GeoSiteIndex::load(&geosite_path)
-            {
-                geo.geosite = Some(index);
+            if geo.geosite.is_none() {
+                let geosite_path = root.join("geosite.dat");
+                if geosite_path.is_file()
+                    && let Ok(index) = xray_config::geodata::GeoSiteIndex::load(&geosite_path)
+                {
+                    geo.geosite = Some(index);
+                }
             }
             if geo.geoip.is_none() {
                 let geoip_path = root.join("geoip.dat");

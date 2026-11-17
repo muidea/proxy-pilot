@@ -1,8 +1,8 @@
 # Xray Pilot 交接文档
 
-更新时间：2026-11-14
+更新时间：2026-11-17
 
-本文用于把当前工作区交给下一位开发者、评审者或 Windows 验证人员。当前已发布基线为 `efe1fcf`（`v0.1.1-rc.4`）；当前源码版本为 `v0.1.1-rc.28`。不能把已发布的 `v0.1.1-rc.4` 当作当前源码版本。
+本文用于把当前工作区交给下一位开发者、评审者或 Windows 验证人员。当前已发布基线为 `efe1fcf`（`v0.1.1-rc.4`）；当前源码版本为 `v0.1.1-rc.29`。不能把已发布的 `v0.1.1-rc.4` 当作当前源码版本。
 
 ## 当前产品边界
 
@@ -84,8 +84,8 @@ Windows GNU 原生验证使用用户指定的 `C:\v2rayN\bin\Xray\xray.exe`，�
 ## 重要文件入口
 
 - [README.md](../README.md)：用户安装、配置和部署说明。
-- [validation-guide.md](validation-guide.md)：当前验证包实操指南（`v0.1.1-rc.28`）。
-- [releases/v0.1.1-rc.28.md](releases/v0.1.1-rc.28.md)：`rc.28` 变更与测试摘要（另见 `v0.1.1-rc.19.md`–`v0.1.1-rc.27.md`）。
+- [validation-guide.md](validation-guide.md)：当前验证包实操指南（`v0.1.1-rc.29`）。
+- [releases/v0.1.1-rc.29.md](releases/v0.1.1-rc.29.md)：`rc.29` 变更与测试摘要（另见 `v0.1.1-rc.19.md`–`v0.1.1-rc.28.md`）。
 - [phase0-2-backlog.md](phase0-2-backlog.md)：验收编号和剩余能力清单。
 - [phase0-2-remaining-closeout.md](phase0-2-remaining-closeout.md)：本轮收口内容与证据。
 - [phase0-2-design-crosscheck.md](phase0-2-design-crosscheck.md)：按设计文档逐项核对后的剩余项、未登记设计项和证据边界。

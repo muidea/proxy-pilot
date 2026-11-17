@@ -110,6 +110,27 @@ impl GeoData {
         Ok(data)
     }
 
+    /// Best-effort loader that isolates `geosite.dat` and `geoip.dat` failures and preserves `asset_root`.
+    pub fn load_from_asset_root_best_effort(root: &Path) -> Self {
+        let mut data = Self {
+            asset_root: Some(root.to_path_buf()),
+            ..Self::default()
+        };
+        let geosite_path = root.join("geosite.dat");
+        if geosite_path.is_file()
+            && let Ok(index) = GeoSiteIndex::load(&geosite_path)
+        {
+            data.geosite = Some(index);
+        }
+        let geoip_path = root.join("geoip.dat");
+        if geoip_path.is_file()
+            && let Ok(index) = GeoIpIndex::load(&geoip_path)
+        {
+            data.geoip = Some(index);
+        }
+        data
+    }
+
     pub fn from_indexes(geosite: Option<GeoSiteIndex>, geoip: Option<GeoIpIndex>) -> Self {
         Self {
             asset_root: None,
@@ -169,7 +190,7 @@ impl GeoData {
         let trimmed = spec.trim();
         if let Some(rest) = strip_prefix_ignore_case(trimmed, "ext:") {
             let (file, tag) = rest.split_once(':')?;
-            let index = self.ext_sites.get(file)?;
+            let index = self.ext_sites.get(file.trim())?;
             return index.resolve(tag);
         }
         let tag = strip_prefix_ignore_case(trimmed, "geosite:").unwrap_or(trimmed);
@@ -205,9 +226,11 @@ impl GeoData {
 
     pub fn matches_ip_spec(&self, spec: &str, ip: IpAddr) -> Option<bool> {
         let trimmed = spec.trim();
-        if let Some(rest) = strip_prefix_ignore_case(trimmed, "ext:") {
+        if let Some(rest) = strip_prefix_ignore_case(trimmed, "ext-ip:")
+            .or_else(|| strip_prefix_ignore_case(trimmed, "ext:"))
+        {
             let (file, tag) = rest.split_once(':')?;
-            return self.ext_ips.get(file)?.matches(tag, ip);
+            return self.ext_ips.get(file.trim())?.matches(tag, ip);
         }
         let tag = strip_prefix_ignore_case(trimmed, "geoip:").unwrap_or(trimmed);
         self.geoip.as_ref()?.matches(tag, ip)
@@ -221,6 +244,9 @@ impl GeoSiteIndex {
     }
 
     pub fn parse(bytes: &[u8]) -> Result<Self> {
+        if bytes.is_empty() {
+            return Err(Error::new("INVALID_GEODATA", "Empty geosite.dat file"));
+        }
         let mut entries = BTreeMap::new();
         let mut cursor = Cursor::new(bytes);
         while !cursor.is_empty() {
@@ -311,6 +337,9 @@ impl GeoIpIndex {
     }
 
     pub fn parse(bytes: &[u8]) -> Result<Self> {
+        if bytes.is_empty() {
+            return Err(Error::new("INVALID_GEODATA", "Empty geoip.dat file"));
+        }
         let mut entries = BTreeMap::new();
         let mut cursor = Cursor::new(bytes);
         while !cursor.is_empty() {
@@ -778,8 +807,39 @@ mod tests {
     }
 
     #[test]
-    fn rejects_truncated_or_malformed_geodata_without_panicking() {
+    fn rejects_empty_truncated_or_malformed_geodata_without_panicking() {
+        assert_eq!(
+            GeoSiteIndex::parse(&[]).unwrap_err().code,
+            "INVALID_GEODATA"
+        );
+        assert_eq!(GeoIpIndex::parse(&[]).unwrap_err().code, "INVALID_GEODATA");
         assert!(GeoSiteIndex::parse(&[0x0a, 0xff, 0xff, 0x01]).is_err());
         assert!(GeoIpIndex::parse(&[0x08]).is_err());
+    }
+
+    #[test]
+    fn ext_ip_prefix_and_best_effort_asset_loading_work() {
+        let tmp = tempfile::tempdir().unwrap();
+        let site_bytes = encode_geosite_list(&[("CN", &[(2, "baidu.com", &[])])]);
+        let custom_ip_bytes = encode_geoip_list(&[("CUSTOM", &[(&[10, 20, 0, 0], 16)], false)]);
+        fs::write(tmp.path().join("geosite.dat"), &site_bytes).unwrap();
+        fs::write(tmp.path().join("geoip.dat"), b"").unwrap();
+        fs::write(tmp.path().join("CustomIP.dat"), &custom_ip_bytes).unwrap();
+
+        assert!(GeoData::load_from_asset_root(tmp.path()).is_err());
+        let mut data = GeoData::load_from_asset_root_best_effort(tmp.path());
+        assert!(data.geosite.is_some());
+        assert!(data.geoip.is_none());
+        data.preload_ext_from_config(&serde_json::json!({
+            "routing": { "rules": [{ "type": "field", "ip": ["ext-ip:CustomIP.dat:custom"], "outboundTag": "direct" }] }
+        }));
+        assert_eq!(
+            data.matches_ip_spec("ext-ip:CustomIP.dat:custom", "10.20.1.2".parse().unwrap()),
+            Some(true)
+        );
+        assert_eq!(
+            data.matches_ip_spec("ext-ip:CustomIP.dat:custom", "10.21.1.2".parse().unwrap()),
+            Some(false)
+        );
     }
 }

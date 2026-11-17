@@ -1,6 +1,6 @@
 # 验证说明
 
-本包为 **v0.1.1-rc.28 Windows x64 本地验证版**，在 `v0.1.1-rc.27`（本地时区日志格式化）的基础上，支持在主动退出程序后，下次启动时自动恢复退出前的 Core 运行状态以及对应的系统代理连接方式（直连 / 全局代理 / PAC 自动代理）。构建版本、源码提交和文件指纹见 `VERSION.txt` 与 `SOURCE-MANIFEST.json`；本地验证包可能记录 `source_dirty=true`，不能作为已发布版本。
+本包为 **v0.1.1-rc.29 Windows x64 本地验证版**，在 `v0.1.1-rc.28`（退出前代理连接方式自动恢复）的基础上，补齐了路由 `domainStrategy` 选择与 `Sniffing (routeOnly)` 向导支持、Geo 规则与 `ext:`/`ext-ip:`/`domainsExcluded` 解析冻结、`geosite.dat` 0 字节/损坏报错提示及非阻塞配置核对建议。构建版本、源码提交和文件指纹见 `VERSION.txt` 与 `SOURCE-MANIFEST.json`；本地验证包可能记录 `source_dirty=true`，不能作为已发布版本。
 
 文件名统一采用 `xray-pilot-<版本>-windows-x64.zip`，验证版本使用 `rc.N` 预发布版本号。每轮内容不同的对外交付使用新的版本号。本包由 Linux 交叉构建 Windows GNU 目标，用于功能验证；正式发布前仍需 MSVC CI 和签核。验证包只附带本说明和 `docs/发布说明.md`，设计、评审、交接和历史收口文档保留在源码仓库，不随验证包分发。
 
@@ -14,7 +14,7 @@
 
 ## 2. PAC 与 GeoSite 验证
 
-1. 在 **配置 → 本地入口** 确认存在回环、无认证的 `http` 或 `mixed` 入站；在 **配置 → 路由规则** 可点击 **国内外分流预设 (GeoSite)** 一键生成 `geosite:private` / `geosite:cn` / `geoip:private` / `geoip:cn` 等常用规则（需已在 **设置 → 内核与资源** 下载官方依赖或配置含 `geosite.dat` 的资源目录）。
+1. 在 **配置 → 本地入口** 确认存在回环、无认证的 `http` 或 `mixed` 入站；在 **配置 → 路由规则** 可通过顶部 **域名解析策略** 选择 `IPIfNonMatch`，点击 **国内外分流预设 (GeoSite)** 一键生成 `geosite:private` / `geosite:cn` / `geoip:private` / `geoip:cn` 等常用规则并自动设为 `IPIfNonMatch`，也可点击 **开启 Sniffing** 为入站一键开启 `routeOnly: true`（需已在 **设置 → Core 与依赖** 下载官方依赖或配置含标准 `.dat` 文件的资源目录）。
 2. 打开 **PAC** 页，确认显示 **代理目标**，且默认策略为 **按当前路由规则自动生成（推荐）**（`AutoRules`）；如配置包含 `geosite:`，应自动展开统计分组数、有效规则数、折叠冗余子域数及脚本体积，并显示 **已通过自动语法检查**。
 3. 切换 **PAC 策略** 也可测试其余模式：
    - **选中 GeoSite 与域名直连，其余代理** / **仅代理选中 GeoSite 与域名，其余直连**：页中显示 **GeoSite 分组速选**（如 `国内常见 (cn)`）、**浏览 geosite.dat 全部分组** 及 **2 · 自定义域名清单**（支持单条/多行、从路由规则一键提取 `geosite:` + 域名、批量粘贴、整理去重与虚拟列表筛选）；点选芯片或添加域名后会自动重新编译与检查，无需多余手动生成按钮。

@@ -252,6 +252,13 @@ impl App {
             }
             ui.label("资源目录（geo 文件及相对证书路径的根目录）");
             path_input(ui, &mut self.asset_root);
+            ui.label(
+                RichText::new(
+                    "仅支持标准 Protobuf .dat 文件（官方版或 Loyalsoldier/v2ray-rules-dat，切勿将 .db/.srs 改名为 .dat）；如需替换社区规则文件，建议放入独立目录并在上方指定。",
+                )
+                .small()
+                .weak(),
+            );
         });
         let running = self
             .status

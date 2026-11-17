@@ -3020,3 +3020,49 @@ fn log_rows_show_local_timestamps_for_operations_and_localize_utc_prefixes() {
     assert!(rows[1].1.starts_with("[Core] [2026-11-"));
     assert!(!rows[1].1.contains("5837401Z]"));
 }
+
+#[test]
+fn geodata_cache_supports_ext_without_geosite_and_reports_empty_geosite() {
+    use xray_config::geodata::test_encoder::encode_geosite_list;
+
+    let asset_dir = tempfile::tempdir().unwrap();
+    let custom_bytes = encode_geosite_list(&[("my_proxy_list", &[(2, "example.org", &[])])]);
+    std::fs::write(asset_dir.path().join("custom_site.dat"), custom_bytes).unwrap();
+
+    let mut app = app();
+    app.asset_root = asset_dir.path().display().to_string();
+    app.editor = r#"{"outbounds":[{"tag":"proxy","protocol":"vless"}]}"#.into();
+    let cache = app.refresh_geodata_cache().unwrap();
+    assert!(cache.geosite_error.is_none());
+    assert!(
+        cache
+            .data
+            .resolve_domain_spec("ext:custom_site.dat:my_proxy_list")
+            .is_none()
+    );
+
+    // Adding an ext: reference to editor must invalidate cache even without geosite.dat.
+    app.editor = r#"{
+        "outbounds":[{"tag":"proxy","protocol":"vless"}],
+        "routing":{"rules":[{"type":"field","domain":["ext:custom_site.dat:my_proxy_list"],"outboundTag":"proxy"}]}
+    }"#
+    .into();
+    let cache = app.refresh_geodata_cache().unwrap();
+    assert!(
+        cache
+            .data
+            .resolve_domain_spec("ext:custom_site.dat:my_proxy_list")
+            .is_some()
+    );
+
+    // Empty 0-byte geosite.dat surfaces an explicit error instead of pretending it's missing.
+    std::fs::write(asset_dir.path().join("geosite.dat"), b"").unwrap();
+    let cache = app.refresh_geodata_cache().unwrap();
+    assert!(cache.geosite_error.is_some());
+    assert!(
+        cache
+            .data
+            .resolve_domain_spec("ext:custom_site.dat:my_proxy_list")
+            .is_some()
+    );
+}

@@ -29,9 +29,10 @@ mod tests;
 #[derive(Clone, Debug)]
 pub(super) struct GeoDataCache {
     pub asset_root: String,
-    pub stamp: (u64, Option<std::time::SystemTime>),
+    pub stamp: u64,
     pub data: xray_config::geodata::GeoData,
     pub categories: Vec<xray_config::geodata::GeoSiteCategorySummary>,
+    pub geosite_error: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -532,7 +533,7 @@ fn error_advice_for(code: &str, is_write: bool) -> &'static str {
             "Core 路径或文件校验失败，请重新选择或修复官方依赖，再检查配置。"
         }
         "CORE_VALIDATION_FAILED" | "CONFIG_PARSE_FAILED" | "STATIC_VALIDATION_FAILED" => {
-            "配置检查未通过，请修正 JSON 或资源路径后重试。"
+            "配置检查未通过，请修正 JSON 或资源路径后重试（可在「日志」页查看 Core 返回的详细报错，如缺少 geoip/geosite 文件或标签不存在）。"
         }
         "DRAFT_SAVE_FAILED" | "DRAFT_RECOVERY_REQUIRED" => {
             "草稿尚未写入磁盘，修改仍保留在界面中。请检查数据目录权限，或先导出草稿。"

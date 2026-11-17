@@ -379,6 +379,99 @@ fn connection_advice(value: &Value) -> Vec<ConfigIssue> {
             }
         }
     }
+    issues.extend(geo_and_routing_advice(value));
+    issues
+}
+
+fn geo_and_routing_advice(value: &Value) -> Vec<ConfigIssue> {
+    let mut issues = Vec::new();
+    let mut advice = |path: String, message: &str, help| {
+        issues.push(ConfigIssue {
+            path,
+            message: message.into(),
+            help,
+            blocking: false,
+            code: "CONFIG_REVIEW",
+        });
+    };
+
+    let mut uses_ip_rule = false;
+    let mut uses_geosite = false;
+    for rule in value
+        .pointer("/routing/rules")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if rule
+            .get("ip")
+            .and_then(Value::as_array)
+            .is_some_and(|arr| !arr.is_empty())
+        {
+            uses_ip_rule = true;
+        }
+        if rule
+            .get("domain")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .any(|s| {
+                let lower = s.trim().to_ascii_lowercase();
+                lower.starts_with("geosite:") || lower.starts_with("ext:")
+            })
+        {
+            uses_geosite = true;
+        }
+    }
+
+    let domain_strategy = value
+        .pointer("/routing/domainStrategy")
+        .and_then(Value::as_str)
+        .unwrap_or("AsIs");
+    if uses_ip_rule && domain_strategy == "AsIs" {
+        advice(
+            "/routing/domainStrategy".into(),
+            "路由包含 IP / GeoIP 规则，但 domainStrategy 为 AsIs",
+            "未命中域名规则的纯域名请求不会解析为 IP，会导致 geoip:cn 等 IP 规则无法命中；建议设为 IPIfNonMatch（或 IPOnDemand）。",
+        );
+    }
+
+    let inbounds = value
+        .get("inbounds")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let any_sniffing = inbounds.iter().any(|inbound| {
+        inbound
+            .pointer("/sniffing/enabled")
+            .and_then(Value::as_bool)
+            == Some(true)
+    });
+    if uses_geosite && !inbounds.is_empty() && !any_sniffing {
+        advice(
+            "/inbounds".into(),
+            "路由包含 GeoSite 域名规则，但入站未启用流量嗅探 (sniffing)",
+            "建议在入站启用 sniffing（destOverride 含 http/tls/quic，并设置 routeOnly: true），使纯 IP 流量也能还原域名并命中 geosite 规则。",
+        );
+    }
+    for (index, inbound) in inbounds.iter().enumerate() {
+        if inbound
+            .pointer("/sniffing/enabled")
+            .and_then(Value::as_bool)
+            == Some(true)
+            && inbound
+                .pointer("/sniffing/routeOnly")
+                .and_then(Value::as_bool)
+                != Some(true)
+        {
+            advice(
+                format!("/inbounds/{index}/sniffing/routeOnly"),
+                "入站启用了 sniffing，但未设置 routeOnly: true",
+                "建议设置 routeOnly: true，仅将嗅探域名用于路由匹配而不改写原始连接目标。",
+            );
+        }
+    }
     issues
 }
 
@@ -497,5 +590,46 @@ mod tests {
             assert!(issues.iter().any(|issue| issue.path == path), "{path}");
         }
         assert!(issues.iter().all(|issue| !issue.blocking));
+    }
+
+    #[test]
+    fn geo_and_routing_advice_checks_domain_strategy_and_sniffing() {
+        let value = parse_document(
+            br#"{
+                "inbounds":[{"tag":"socks-in","protocol":"socks","listen":"127.0.0.1","port":10808}],
+                "outbounds":[{"tag":"direct","protocol":"freedom"}],
+                "routing":{"rules":[
+                    {"type":"field","domain":["geosite:cn"],"outboundTag":"direct"},
+                    {"type":"field","ip":["geoip:cn"],"outboundTag":"direct"}
+                ]}
+            }"#,
+        )
+        .unwrap();
+        let issues = inspect_config(&value);
+        assert!(issues.iter().all(|i| !i.blocking));
+        assert!(issues.iter().any(|i| i.path == "/routing/domainStrategy"));
+        assert!(issues.iter().any(|i| i.path == "/inbounds"));
+
+        let fixed = parse_document(
+            br#"{
+                "inbounds":[{"tag":"socks-in","protocol":"socks","listen":"127.0.0.1","port":10808,"sniffing":{"enabled":true,"destOverride":["http","tls","quic"],"routeOnly":true}}],
+                "outbounds":[{"tag":"direct","protocol":"freedom"}],
+                "routing":{"domainStrategy":"IPIfNonMatch","rules":[
+                    {"type":"field","domain":["geosite:cn"],"outboundTag":"direct"},
+                    {"type":"field","ip":["geoip:cn"],"outboundTag":"direct"}
+                ]}
+            }"#,
+        )
+        .unwrap();
+        let fixed_issues = inspect_config(&fixed);
+        assert!(
+            !fixed_issues
+                .iter()
+                .any(|i| i.path == "/routing/domainStrategy"
+                    || i.path == "/inbounds"
+                    || i.path.contains("routeOnly")),
+            "{:?}",
+            fixed_issues.iter().map(|i| &i.path).collect::<Vec<_>>()
+        );
     }
 }
