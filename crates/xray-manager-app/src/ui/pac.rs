@@ -67,8 +67,8 @@ impl App {
             self.ui.geodata_cache = None;
             return None;
         }
-        let root_path = std::path::Path::new(&asset_root);
-        if !root_path.is_dir() {
+        let resolved_root = resolve_path(&self.root, std::path::Path::new(&asset_root));
+        if !resolved_root.is_dir() {
             self.ui.geodata_cache = None;
             return None;
         }
@@ -85,7 +85,7 @@ impl App {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         for name in &tracked_files {
             name.hash(&mut hasher);
-            if let Ok(meta) = std::fs::metadata(root_path.join(name)) {
+            if let Ok(meta) = std::fs::metadata(resolved_root.join(name)) {
                 true.hash(&mut hasher);
                 meta.len().hash(&mut hasher);
                 meta.modified().ok().hash(&mut hasher);
@@ -100,8 +100,8 @@ impl App {
         {
             return Some(cached.clone());
         }
-        let mut data = GeoData::load_from_asset_root_best_effort(root_path);
-        let geosite_error = (root_path.join("geosite.dat").is_file() && data.geosite.is_none())
+        let mut data = GeoData::load_from_asset_root_best_effort(&resolved_root);
+        let geosite_error = (resolved_root.join("geosite.dat").is_file() && data.geosite.is_none())
             .then(|| {
                 "geosite.dat 解析失败或为空文件（请确认是标准 Protobuf .dat 文件，切勿将 .db/.srs 改名）。"
                     .to_owned()
@@ -865,11 +865,9 @@ impl App {
             } else {
                 ui.colored_label(
                     ui.visuals().warn_fg_color,
-                    endpoint_result
-                        .as_ref()
-                        .err()
-                        .cloned()
-                        .unwrap_or_else(|| "请先添加回环、无认证的 HTTP 或 Mixed 入站。".into()),
+                    endpoint_result.as_ref().err().cloned().unwrap_or_else(|| {
+                        "请先添加回环或 0.0.0.0 监听、无认证的 HTTP 或 Mixed 入站。".into()
+                    }),
                 );
             }
 

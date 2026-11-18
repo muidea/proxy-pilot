@@ -527,7 +527,7 @@ fn error_advice_for(code: &str, is_write: bool) -> &'static str {
             "Core 或本机入口未就绪，请检查端口占用与 Core 日志，修正后重新检查。"
         }
         "PROXY_ENDPOINT_INVALID" => {
-            "接管需要无认证、固定数值端口的回环 HTTP 入口，请检查运行配置及入站 Tag。"
+            "接管需要无认证、固定数值端口的回环或 0.0.0.0 监听 HTTP/Mixed 入口，请检查运行配置及入站 Tag。"
         }
         "INVALID_CORE_PATH" | "INVALID_CORE" | "CORE_INTEGRITY_FAILED" => {
             "Core 路径或文件校验失败，请重新选择或修复官方依赖，再检查配置。"
@@ -682,13 +682,15 @@ impl App {
         self.failed_request = None;
     }
     pub(super) fn accept_saved_settings(&mut self, settings: Settings, assets: String) {
+        let portable_core = to_portable_string(&self.root, &settings.core_path.to_string_lossy());
+        let portable_assets = to_portable_string(&self.root, &assets);
         self.ui
             .workspace
             .asset_roots
-            .insert(settings.core_path.display().to_string(), assets.clone());
+            .insert(portable_core.clone(), portable_assets.clone());
         self.ui.settings_loaded = true;
-        self.ui.settings_dirty = self.core_path != settings.core_path.display().to_string()
-            || self.asset_root != assets
+        self.ui.settings_dirty = to_portable_string(&self.root, &self.core_path) != portable_core
+            || to_portable_string(&self.root, &self.asset_root) != portable_assets
             || self.settings.start_on_logon != settings.start_on_logon
             || self.settings.connect_on_start != settings.connect_on_start
             || self.settings.restore_last_state != settings.restore_last_state;
@@ -1142,7 +1144,8 @@ impl App {
     pub(super) fn finish_setup_save(&mut self, settings: &Settings) {
         if self.ui.advance_setup_after_save {
             self.ui.advance_setup_after_save = false;
-            if settings.core_path.display().to_string() == self.core_path
+            if to_portable_string(&self.root, &settings.core_path.to_string_lossy())
+                == to_portable_string(&self.root, &self.core_path)
                 && !self.core_path.is_empty()
             {
                 self.ui.setup_step = 1;

@@ -108,16 +108,18 @@ async fn official_core_validation_apply_dedup_release_and_stop() {
             .any(|line| line.as_str().unwrap().contains("ERROR Core -test"))
     );
     // A legal Core configuration may still be ineligible for system proxy takeover.
-    let mut wildcard: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&candidate.config_path).unwrap()).unwrap();
-    wildcard["inbounds"][0]["listen"] = "0.0.0.0".into();
+    let mut auth_inbound: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(s.store.root.join(&candidate.config_path)).unwrap())
+            .unwrap();
+    auth_inbound["inbounds"][0]["settings"] =
+        serde_json::json!({"accounts": [{"user": "u", "pass": "p"}]});
     let invalid: Candidate = serde_json::from_value(
         send(
             &mut s,
             Command::ValidateDraft {
                 profile_id: "p".into(),
                 expected_revision: candidate.base_revision.clone(),
-                json: wildcard.to_string(),
+                json: auth_inbound.to_string(),
                 core_path: candidate.core.path.clone(),
                 asset_root: root.clone(),
 

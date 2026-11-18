@@ -590,7 +590,7 @@ impl App {
                     } else if tab == ProfileTab::Outbounds {
                         "第一项为未命中路由规则时的默认出站，调整顺序会改变默认行为。"
                     } else {
-                        "系统代理接管前，需要验证兼容的回环 HTTP 入口。"
+                        "系统代理接管前，需要验证兼容的本地 HTTP/Mixed 入口（回环或 0.0.0.0）。"
                     })
                     .small()
                     .weak(),
@@ -647,7 +647,7 @@ impl App {
             if listeners.is_empty() {
                 ui.colored_label(
                     ui.visuals().warn_fg_color,
-                    "请先在本地入口中添加回环 HTTP 监听。应用前还会检查端口占用和入口兼容性。",
+                    "请先在本地入口中添加回环或 0.0.0.0 监听的 HTTP/Mixed 入口。应用前还会检查端口占用和入口兼容性。",
                 );
             }
         }

@@ -139,7 +139,7 @@ async fn crash_restart_budget_is_bounded_and_stop_cancels_retry() {
 #[tokio::test]
 async fn stop_works_with_corrupted_snapshots_and_external_proxy_conflict() {
     let (_tmp, mut s, proxy, c) = setup().await;
-    fs::write(c.config_path, "broken").unwrap();
+    fs::write(s.store.root.join(&c.config_path), "broken").unwrap();
     s.proxy
         .transition(global("127.0.0.1:10809".parse().unwrap()))
         .unwrap();

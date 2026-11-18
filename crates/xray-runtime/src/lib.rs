@@ -520,6 +520,23 @@ impl ManagedCore {
     }
 }
 
+/// Resolve a local connectable address for a listener IP. Wildcard binds
+/// (`0.0.0.0` / `::`) map to loopback (`127.0.0.1` / `::1`); non-loopback
+/// interface addresses are rejected.
+pub(crate) fn local_bind_target(ip: std::net::IpAddr) -> Option<std::net::IpAddr> {
+    if ip.is_unspecified() {
+        Some(if ip.is_ipv4() {
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+        } else {
+            std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)
+        })
+    } else if ip.is_loopback() {
+        Some(ip)
+    } else {
+        None
+    }
+}
+
 pub fn http_endpoint(config: &serde_json::Value, tag: &str) -> Result<std::net::SocketAddr> {
     let inbound = config
         .get("inbounds")
@@ -550,18 +567,18 @@ pub fn http_endpoint(config: &serde_json::Value, tag: &str) -> Result<std::net::
         .get("listen")
         .and_then(|v| v.as_str())
         .unwrap_or("0.0.0.0");
-    let ip: std::net::IpAddr = listen.parse().map_err(|_| {
+    let parsed: std::net::IpAddr = listen.parse().map_err(|_| {
         Error::new(
             "PROXY_ENDPOINT_INVALID",
-            "HTTP listen must be a loopback IP address",
+            "HTTP listen must be a loopback or wildcard (0.0.0.0 / ::) IP address",
         )
     })?;
-    if !ip.is_loopback() {
-        return Err(Error::new(
+    let ip = local_bind_target(parsed).ok_or_else(|| {
+        Error::new(
             "PROXY_ENDPOINT_INVALID",
-            "System proxy requires a loopback listener",
-        ));
-    }
+            "System proxy requires a loopback or wildcard (0.0.0.0 / ::) listener",
+        )
+    })?;
     let port = inbound
         .get("port")
         .and_then(|v| v.as_u64())
@@ -741,5 +758,42 @@ mod log_tests {
         let lines = logs.lines();
         assert!(!lines[0].contains("Z]"));
         assert!(lines[0].contains(':'));
+    }
+
+    #[test]
+    fn http_endpoint_maps_wildcard_listeners_to_loopback_and_rejects_lan_ips() {
+        let cfg = |listen: Option<&str>| {
+            let mut inbound = serde_json::json!({
+                "tag": "http-in",
+                "protocol": "http",
+                "port": 10809
+            });
+            if let Some(addr) = listen {
+                inbound["listen"] = serde_json::json!(addr);
+            }
+            serde_json::json!({ "inbounds": [inbound] })
+        };
+        assert_eq!(
+            http_endpoint(&cfg(Some("127.0.0.1")), "http-in").unwrap(),
+            "127.0.0.1:10809".parse().unwrap()
+        );
+        assert_eq!(
+            http_endpoint(&cfg(Some("0.0.0.0")), "http-in").unwrap(),
+            "127.0.0.1:10809".parse().unwrap()
+        );
+        assert_eq!(
+            http_endpoint(&cfg(None), "http-in").unwrap(),
+            "127.0.0.1:10809".parse().unwrap()
+        );
+        assert_eq!(
+            http_endpoint(&cfg(Some("::")), "http-in").unwrap(),
+            "[::1]:10809".parse().unwrap()
+        );
+        assert_eq!(
+            http_endpoint(&cfg(Some("192.168.1.10")), "http-in")
+                .unwrap_err()
+                .code,
+            "PROXY_ENDPOINT_INVALID"
+        );
     }
 }

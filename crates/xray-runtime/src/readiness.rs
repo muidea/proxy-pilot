@@ -2,7 +2,7 @@
 use crate::*;
 use base64::Engine;
 use serde_json::Value;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -63,21 +63,13 @@ pub fn listener_plan(config: &Value) -> Result<(Vec<Listener>, Vec<String>)> {
             notes.push(format!("WARNING Local readiness does not cover inbound {index}; Core validation and process survival do not prove protocol readiness"));
             continue;
         }
-        let mut ip = ip.unwrap();
-        if ip.is_unspecified() {
-            ip = if ip.is_ipv4() {
-                IpAddr::V4(Ipv4Addr::LOCALHOST)
-            } else {
-                IpAddr::V6(Ipv6Addr::LOCALHOST)
-            };
-        }
         // Probe only addresses on this machine. Arbitrary/non-loopback bind addresses remain explicit limitations.
-        if !ip.is_loopback() {
+        let Some(ip) = crate::local_bind_target(ip.unwrap()) else {
             notes.push(format!(
                 "WARNING Local readiness does not cover non-loopback inbound {index}"
             ));
             continue;
-        }
+        };
         let account = inbound
             .pointer("/settings/accounts")
             .and_then(Value::as_array)

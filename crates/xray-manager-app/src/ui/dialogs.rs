@@ -433,7 +433,7 @@ impl App {
                 if self.ui.import_use_source_assets
                     && let Some(parent) = self.ui.import_source.as_ref().and_then(|p| p.parent())
                 {
-                    self.asset_root = parent.display().to_string();
+                    self.asset_root = to_portable_string(&self.root, &parent.to_string_lossy());
                     self.settings_edited();
                 }
                 let profile_id = format!("profile-{}", id());

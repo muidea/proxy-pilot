@@ -124,6 +124,8 @@ impl App {
             ) {
                 ui.separator();
                 if primary(ui, "保存设置", self.can_save_settings()) {
+                    self.core_path = to_portable_string(&self.root, &self.core_path);
+                    self.asset_root = to_portable_string(&self.root, &self.asset_root);
                     self.settings.core_path = self.core_path.clone().into();
                     self.send(Command::SaveSettings {
                         settings: self.settings.clone(),
@@ -237,7 +239,7 @@ impl App {
         }
         ui.separator();
         ui.add_enabled_ui(enabled, |ui| {
-            ui.label("下次检查 / 应用使用的官方 Core（绝对路径）");
+            ui.label("下次检查 / 应用使用的官方 Core（相对于数据目录，或跨盘绝对路径）");
             path_input(ui, &mut self.core_path);
             #[cfg(windows)]
             if ui.button("选择已有 Core…").clicked()
@@ -245,9 +247,9 @@ impl App {
                     .add_filter("Xray Core", &["exe"])
                     .pick_file()
             {
-                self.core_path = path.display().to_string();
+                self.core_path = to_portable_string(&self.root, &path.to_string_lossy());
                 if let Some(parent) = path.parent() {
-                    self.asset_root = parent.display().to_string();
+                    self.asset_root = to_portable_string(&self.root, &parent.to_string_lossy());
                 }
             }
             ui.label("资源目录（geo 文件及相对证书路径的根目录）");
@@ -393,6 +395,8 @@ impl App {
                         self.write_blocker().is_none() && !self.core_path.is_empty(),
                     )
                 {
+                    self.core_path = to_portable_string(&self.root, &self.core_path);
+                    self.asset_root = to_portable_string(&self.root, &self.asset_root);
                     self.settings.core_path = self.core_path.clone().into();
                     self.ui.advance_setup_after_save = true;
                     self.send(Command::SaveSettings {

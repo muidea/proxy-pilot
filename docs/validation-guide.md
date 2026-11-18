@@ -1,6 +1,6 @@
 # 验证说明
 
-本包为 **v0.1.1-rc.29 Windows x64 本地验证版**，在 `v0.1.1-rc.28`（退出前代理连接方式自动恢复）的基础上，补齐了路由 `domainStrategy` 选择与 `Sniffing (routeOnly)` 向导支持、Geo 规则与 `ext:`/`ext-ip:`/`domainsExcluded` 解析冻结、`geosite.dat` 0 字节/损坏报错提示及非阻塞配置核对建议。构建版本、源码提交和文件指纹见 `VERSION.txt` 与 `SOURCE-MANIFEST.json`；本地验证包可能记录 `source_dirty=true`，不能作为已发布版本。
+本包为 **v0.1.1-rc.30 Windows x64 本地验证版**，在 `v0.1.1-rc.29` 的基础上，支持入站 `0.0.0.0` / `::` 通配监听地址在 Global 与 PAC 模式下自动映射为本地回环目标（`127.0.0.1` / `::1`），并将全部持久化配置、冻结候选、资源清单与 PAC 路径统一保存为相对路径（支持跨盘符与整目录迁移）。构建版本、源码提交和文件指纹见 `VERSION.txt` 与 `SOURCE-MANIFEST.json`；本地验证包可能记录 `source_dirty=true`，不能作为已发布版本。
 
 文件名统一采用 `xray-pilot-<版本>-windows-x64.zip`，验证版本使用 `rc.N` 预发布版本号。每轮内容不同的对外交付使用新的版本号。本包由 Linux 交叉构建 Windows GNU 目标，用于功能验证；正式发布前仍需 MSVC CI 和签核。验证包只附带本说明和 `docs/发布说明.md`，设计、评审、交接和历史收口文档保留在源码仓库，不随验证包分发。
 

@@ -844,3 +844,44 @@ async fn autorules_and_direct_list_expand_geosite_from_asset_root() {
     );
     send(&mut s, Command::StopCore).await.unwrap();
 }
+
+#[tokio::test]
+async fn wildcard_0_0_0_0_inbound_uses_127_0_0_1_as_pac_proxy_target() {
+    let _guard = serial().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let proxy = FakeProxy(Arc::new(Mutex::new(ProxySnapshot::default())));
+    let mut s = setup(&tmp, proxy).await;
+    let core = fixture(tmp.path());
+    let http_port = port();
+    let wildcard_config = serde_json::json!({
+        "inbounds": [{"tag": "http-in", "listen": "0.0.0.0", "port": http_port, "protocol": "http"}],
+        "outbounds": [{"tag": "proxy", "protocol": "vless"}, {"tag": "direct", "protocol": "freedom"}],
+        "routing": {"rules": [{"type": "field", "domain": ["full:direct.example"], "outboundTag": "direct"}]}
+    })
+    .to_string();
+    let c = candidate(&mut s, &core, &wildcard_config).await;
+    let pac_port = port();
+    send(
+        &mut s,
+        Command::ApplyProfile {
+            candidate_id: c.id,
+            candidate_digest: c.digest,
+            proxy_mode: ProxyMode::Pac,
+            http_inbound_tag: "http-in".into(),
+            pac: Some(PacDraft {
+                mode: xray_model::PacMode::AutoRules,
+                port: pac_port,
+                ..Default::default()
+            }),
+        },
+    )
+    .await
+    .unwrap();
+    let body = http_get(&s.generation.as_ref().unwrap().pac.as_ref().unwrap().url).await;
+    let script = body.split("\r\n\r\n").nth(1).unwrap_or_default();
+    assert!(
+        script.contains(&format!("PROXY 127.0.0.1:{http_port}")),
+        "expected PAC to target 127.0.0.1:{http_port}, got:\n{script}"
+    );
+    send(&mut s, Command::StopCore).await.unwrap();
+}

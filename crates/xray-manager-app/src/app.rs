@@ -314,7 +314,7 @@ impl App {
             revision: String::new(),
             candidate: None,
             core_path: String::new(),
-            asset_root: root.display().to_string(),
+            asset_root: ".".into(),
             mode: ProxyMode::Direct,
             http_tag: "http-in".into(),
             message: "正在连接后台…".into(),
@@ -475,7 +475,7 @@ impl App {
             .collect();
         if candidates.is_empty() {
             return Err(
-                "当前配置没有 HTTP 或 Mixed 入站；请先在配置的本地入口中添加回环、无认证的入口。"
+                "当前配置没有 HTTP 或 Mixed 入站；请先在配置的本地入口中添加回环或 0.0.0.0 监听且无认证的入口。"
                     .into(),
             );
         }
@@ -929,20 +929,25 @@ impl App {
                             self.ui.saved_settings = Some(s.clone());
                             self.ui.settings_loaded = true;
                             if can_replace_draft {
-                                self.core_path = s.core_path.display().to_string();
-                                self.asset_root = self
+                                let raw_core = s.core_path.to_string_lossy().into_owned();
+                                self.core_path = to_portable_string(&self.root, &raw_core);
+                                let remembered_assets = self
                                     .ui
                                     .workspace
                                     .asset_roots
                                     .get(&self.core_path)
-                                    .cloned()
+                                    .or_else(|| self.ui.workspace.asset_roots.get(&raw_core))
+                                    .cloned();
+                                self.asset_root = remembered_assets
+                                    .map(|value| to_portable_string(&self.root, &value))
                                     .unwrap_or_else(|| {
-                                        s.core_path
+                                        let fallback = s
+                                            .core_path
                                             .parent()
                                             .filter(|p| !p.as_os_str().is_empty())
-                                            .unwrap_or(&self.root)
-                                            .display()
-                                            .to_string()
+                                            .map(|p| p.to_string_lossy().into_owned())
+                                            .unwrap_or_else(|| ".".into());
+                                        to_portable_string(&self.root, &fallback)
                                     });
                                 self.settings = s;
                             }
@@ -1135,8 +1140,10 @@ impl App {
                     && job.version == self.dependency_version;
                 if let Some(bundle) = &report.selected {
                     if job.select && matches {
-                        self.core_path = bundle.core_path.display().to_string();
-                        self.asset_root = bundle.asset_root.display().to_string();
+                        self.core_path =
+                            to_portable_string(&self.root, &bundle.core_path.to_string_lossy());
+                        self.asset_root =
+                            to_portable_string(&self.root, &bundle.asset_root.to_string_lossy());
                         self.settings_edited();
                         self.invalidate_candidate();
                         self.dependency_message = format!(

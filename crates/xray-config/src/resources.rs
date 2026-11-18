@@ -17,6 +17,29 @@ pub fn freeze_with(
     output: &Path,
     allow_dynamic: bool,
 ) -> Result<Resources> {
+    freeze_inner(value, source, output, None, allow_dynamic)
+}
+
+/// Freeze resources inside `store_root/resources/<id>` and store all resource paths
+/// relative to `store_root` whenever possible so the data directory stays portable.
+pub fn freeze_in(
+    value: &Value,
+    source: &Path,
+    store_root: &Path,
+    allow_dynamic: bool,
+) -> Result<Resources> {
+    let source = xray_model::resolve_path(store_root, source);
+    let output = store_root.join("resources");
+    freeze_inner(value, &source, &output, Some(store_root), allow_dynamic)
+}
+
+fn freeze_inner(
+    value: &Value,
+    source: &Path,
+    output: &Path,
+    portable_base: Option<&Path>,
+    allow_dynamic: bool,
+) -> Result<Resources> {
     let source = fs::canonicalize(source)?;
     let root = output.join(id());
     fs::create_dir_all(&root)?;
@@ -46,6 +69,10 @@ pub fn freeze_with(
     let mut files = vec![];
     let mut dynamic = vec![];
     let mut notes = notes;
+    let portable_or = |path: &Path| match portable_base {
+        Some(base) => xray_model::to_portable_path(base, path),
+        None => path.to_path_buf(),
+    };
     for name in names {
         let relative = Path::new(&name);
         if relative.is_absolute() {
@@ -60,7 +87,7 @@ pub fn freeze_with(
             let original = fs::canonicalize(relative)?;
             let bytes = fs::read(&original)?;
             dynamic.push(DynamicResource {
-                source: original,
+                source: portable_or(&original),
                 sha256: hash(&bytes),
                 observed_at: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -108,20 +135,20 @@ pub fn freeze_with(
             ));
         }
         files.push(ResourceFile {
-            source: original,
+            source: portable_or(&original),
             relative_path: relative.into(),
             sha256: digest,
         });
     }
     let resources = Resources {
         id: root.file_name().unwrap().to_string_lossy().into(),
-        root,
+        root: portable_or(&root),
         files,
         complete: notes.is_empty() && dynamic.is_empty(),
         notes,
         dynamic,
     };
-    write_json(&resources.root.join("manifest.json"), &resources)?;
+    write_json(&root.join("manifest.json"), &resources)?;
     Ok(resources)
 }
 /// Collect `.dat` geo resource filenames referenced in routing, inbound sniffing, and DNS sections.
@@ -206,7 +233,12 @@ fn collect_geo(entry: &str, domain: bool, names: &mut BTreeSet<String>) {
     }
 }
 pub fn verify(resources: &Resources) -> Result<()> {
-    let disk: Resources = crate::read_json(&resources.root.join("manifest.json"))?;
+    verify_in(Path::new(""), resources)
+}
+
+pub fn verify_in(base: &Path, resources: &Resources) -> Result<()> {
+    let root = xray_model::resolve_path(base, &resources.root);
+    let disk: Resources = crate::read_json(&root.join("manifest.json"))?;
     if xray_model::canonical_hash(&disk)? != xray_model::canonical_hash(resources)? {
         return Err(Error::new(
             "RESOURCE_INTEGRITY_FAILED",
@@ -214,7 +246,8 @@ pub fn verify(resources: &Resources) -> Result<()> {
         ));
     }
     for dynamic in &resources.dynamic {
-        let bytes = fs::read(&dynamic.source).map_err(|_| {
+        let source = xray_model::resolve_path(base, &dynamic.source);
+        let bytes = fs::read(&source).map_err(|_| {
             Error::new(
                 "RESOURCE_REVALIDATION_REQUIRED",
                 format!("Dynamic resource is missing: {}", dynamic.source.display()),
@@ -231,7 +264,7 @@ pub fn verify(resources: &Resources) -> Result<()> {
         }
     }
     for file in &resources.files {
-        let path = resources.root.join(&file.relative_path);
+        let path = root.join(&file.relative_path);
         let bytes = fs::read(&path).map_err(|_| {
             Error::new(
                 "RESOURCE_INTEGRITY_FAILED",

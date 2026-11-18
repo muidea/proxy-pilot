@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{fmt, path::PathBuf};
+use std::{
+    fmt,
+    path::{Component, Path, PathBuf},
+};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -430,4 +433,209 @@ pub struct RouteResult {
     pub expected_outbound: Option<String>,
     pub actual_outbound: String,
     pub reason: String,
+}
+
+fn strip_windows_verbatim(path: &Path) -> PathBuf {
+    let raw = path.to_string_lossy();
+    if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        if rest
+            .get(..4)
+            .is_some_and(|head| head.eq_ignore_ascii_case(r"UNC\"))
+        {
+            return PathBuf::from(format!(r"\\{}", &rest[4..]));
+        }
+        let bytes = rest.as_bytes();
+        if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && &bytes[1..3] == b":\\" {
+            return PathBuf::from(rest);
+        }
+    }
+    path.to_path_buf()
+}
+
+/// Lexically collapse `.` and `..` segments without touching the filesystem.
+pub fn normalize_lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    let mut normals = 0usize;
+    let mut has_root = false;
+    for comp in path.components() {
+        match comp {
+            Component::Prefix(p) => out.push(p.as_os_str()),
+            Component::RootDir => {
+                has_root = true;
+                out.push(comp.as_os_str());
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if normals > 0 {
+                    out.pop();
+                    normals -= 1;
+                } else if !has_root {
+                    out.push("..");
+                }
+            }
+            Component::Normal(s) => {
+                out.push(s);
+                normals += 1;
+            }
+        }
+    }
+    if out.as_os_str().is_empty() && !path.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        out
+    }
+}
+
+fn component_eq(a: &Component<'_>, b: &Component<'_>) -> bool {
+    if cfg!(windows) {
+        a.as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&b.as_os_str().to_string_lossy())
+    } else {
+        a == b
+    }
+}
+
+fn join_forward_slashes(parts: &[String]) -> PathBuf {
+    if parts.is_empty() {
+        PathBuf::from(".")
+    } else {
+        PathBuf::from(parts.join("/"))
+    }
+}
+
+/// Convert `target` into a path relative to `base` when both share a root.
+/// Falls back to the original `target` when paths are on different roots/drives.
+pub fn to_portable_path(base: &Path, target: &Path) -> PathBuf {
+    if target.as_os_str().is_empty() {
+        return PathBuf::new();
+    }
+    let clean_target = strip_windows_verbatim(target);
+    if !clean_target.is_absolute() {
+        let normalized = normalize_lexical(&clean_target);
+        let parts: Vec<String> = normalized
+            .components()
+            .filter_map(|c| match c {
+                Component::ParentDir => Some("..".to_owned()),
+                Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
+                _ => None,
+            })
+            .collect();
+        return join_forward_slashes(&parts);
+    }
+    let clean_base = normalize_lexical(&strip_windows_verbatim(base));
+    let norm_target = normalize_lexical(&clean_target);
+    if !clean_base.is_absolute() {
+        return target.to_path_buf();
+    }
+    let base_comps: Vec<Component<'_>> = clean_base.components().collect();
+    let target_comps: Vec<Component<'_>> = norm_target.components().collect();
+    let mut common = 0usize;
+    while common < base_comps.len()
+        && common < target_comps.len()
+        && component_eq(&base_comps[common], &target_comps[common])
+    {
+        common += 1;
+    }
+    let same_root = base_comps
+        .iter()
+        .take(common)
+        .any(|c| matches!(c, Component::RootDir | Component::Prefix(_)));
+    if !same_root {
+        return target.to_path_buf();
+    }
+    let mut parts = Vec::new();
+    for comp in &base_comps[common..] {
+        if matches!(comp, Component::Normal(_)) {
+            parts.push("..".to_owned());
+        }
+    }
+    for comp in &target_comps[common..] {
+        match comp {
+            Component::ParentDir => parts.push("..".to_owned()),
+            Component::Normal(s) => parts.push(s.to_string_lossy().into_owned()),
+            _ => {}
+        }
+    }
+    join_forward_slashes(&parts)
+}
+
+/// Resolve `path` against `base` if `path` is relative; keep absolute or empty paths intact.
+pub fn resolve_path(base: &Path, path: &Path) -> PathBuf {
+    if path.as_os_str().is_empty() {
+        return PathBuf::new();
+    }
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    if base.as_os_str().is_empty() {
+        return normalize_lexical(path);
+    }
+    normalize_lexical(&base.join(path))
+}
+
+pub fn to_portable_string(base: &Path, raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    to_portable_path(base, Path::new(trimmed))
+        .to_string_lossy()
+        .into_owned()
+}
+
+pub fn resolve_string(base: &Path, raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    resolve_path(base, Path::new(trimmed))
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn portable_path_roundtrips_relative_inside_and_sibling_paths() {
+        let base = Path::new("/tmp/xray-pilot/data");
+        assert_eq!(
+            to_portable_path(base, Path::new("/tmp/xray-pilot/data/cores/abc/xray")),
+            PathBuf::from("cores/abc/xray")
+        );
+        assert_eq!(
+            to_portable_path(base, Path::new("/tmp/xray-pilot/data")),
+            PathBuf::from(".")
+        );
+        assert_eq!(
+            to_portable_path(base, Path::new("/tmp/xray-pilot/custom/geo")),
+            PathBuf::from("../custom/geo")
+        );
+        assert_eq!(
+            to_portable_path(base, Path::new("./managed/xray")),
+            PathBuf::from("managed/xray")
+        );
+        assert_eq!(
+            resolve_path(
+                Path::new("/moved/xray-pilot/data"),
+                Path::new("cores/abc/xray")
+            ),
+            PathBuf::from("/moved/xray-pilot/data/cores/abc/xray")
+        );
+        assert_eq!(
+            resolve_path(
+                Path::new("/moved/xray-pilot/data"),
+                Path::new("../custom/geo")
+            ),
+            PathBuf::from("/moved/xray-pilot/custom/geo")
+        );
+        assert_eq!(
+            resolve_path(Path::new("/moved/xray-pilot/data"), Path::new(".")),
+            PathBuf::from("/moved/xray-pilot/data")
+        );
+        assert_eq!(to_portable_path(base, Path::new("")), PathBuf::new());
+        assert_eq!(resolve_path(base, Path::new("")), PathBuf::new());
+    }
 }

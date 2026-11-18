@@ -134,7 +134,7 @@ async fn runtime_diagnostics_read_frozen_json_and_reject_stale_generations() {
     .await
     .unwrap_err();
     assert_eq!(error.code, "GENERATION_CONFLICT");
-    std::fs::write(&c.config_path, b"{}").unwrap();
+    std::fs::write(s.store.root.join(&c.config_path), b"{}").unwrap();
     assert_eq!(
         send(
             &mut s,
@@ -148,7 +148,7 @@ async fn runtime_diagnostics_read_frozen_json_and_reject_stale_generations() {
         "CONFIG_HASH_MISMATCH"
     );
     // Put immutable evidence back before using the ordinary stop transaction.
-    std::fs::write(&c.config_path, json).unwrap();
+    std::fs::write(s.store.root.join(&c.config_path), json).unwrap();
     std::fs::write(s.store.profile_path("default").unwrap(), json).unwrap();
     send(&mut s, Command::StopCore).await.unwrap();
     assert_eq!(
@@ -386,7 +386,7 @@ async fn missing_frozen_resource_blocks_auto_connect() {
     .await
     .unwrap();
     drop(s);
-    fs::remove_file(c.resources.root.join("geoip.dat")).unwrap();
+    fs::remove_file(root.join(&c.resources.root).join("geoip.dat")).unwrap();
     let mut s = Supervisor::with_backend(&root, proxy).await.unwrap();
     let status = send(&mut s, Command::GetStatus).await.unwrap();
     assert_eq!(status["core_state"], "Stopped");
@@ -616,5 +616,126 @@ async fn incomplete_frozen_resources_attempt_auto_connect_without_blocking() {
     assert_eq!(status["core_state"], "Running");
     assert_eq!(status["recovery_required"], false);
     assert!(status["auto_connect_notice"].is_null());
+    send(&mut s, Command::StopCore).await.unwrap();
+}
+
+#[tokio::test]
+async fn moving_data_directory_preserves_settings_candidate_pac_and_resources() {
+    let parent = tempfile::tempdir().unwrap();
+    let old_root = parent.path().join("machine-a").join("data");
+    let new_root = parent.path().join("machine-b").join("moved-data");
+    fs::create_dir_all(&old_root).unwrap();
+    fs::create_dir_all(new_root.parent().unwrap()).unwrap();
+    let core = fixture(&old_root);
+    let cert_dir = old_root.join("certs");
+    fs::create_dir_all(&cert_dir).unwrap();
+    fs::write(cert_dir.join("ca.pem"), b"dummy-cert").unwrap();
+    let http_port = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let pac_port = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+
+    let proxy = FakeProxy(Arc::new(Mutex::new(ProxySnapshot::default())));
+    let mut s = Supervisor::with_backend(&old_root, proxy.clone())
+        .await
+        .unwrap();
+    send(
+        &mut s,
+        Command::CreateProfile {
+            profile_id: "default".into(),
+            json: "{}".into(),
+        },
+    )
+    .await
+    .unwrap();
+    send(
+        &mut s,
+        Command::SaveSettings {
+            settings: Settings {
+                core_path: core.clone(),
+                connect_on_start: true,
+                ..Settings::default()
+            },
+        },
+    )
+    .await
+    .unwrap();
+    let settings_json: Settings =
+        serde_json::from_value(send(&mut s, Command::GetSettings).await.unwrap()).unwrap();
+    assert!(!settings_json.core_path.is_absolute());
+
+    let json = format!(
+        r#"{{
+            "inbounds":[{{"tag":"http-in","protocol":"http","listen":"127.0.0.1","port":{http_port}}}],
+            "outbounds":[{{"tag":"direct","protocol":"freedom","streamSettings":{{"tlsSettings":{{"certificates":[{{"certificateFile":"certs/ca.pem","keyFile":"certs/ca.pem"}}]}}}}}}]
+        }}"#
+    );
+    let c = candidate(&mut s, &core, &json).await;
+    assert!(!c.config_path.is_absolute());
+    assert!(!c.core.path.is_absolute());
+    assert!(!c.resources.root.is_absolute());
+    assert!(c.resources.files.iter().all(|f| !f.source.is_absolute()));
+
+    send(
+        &mut s,
+        Command::ApplyProfile {
+            candidate_id: c.id.clone(),
+            candidate_digest: c.digest.clone(),
+            proxy_mode: ProxyMode::Pac,
+            http_inbound_tag: "http-in".into(),
+            pac: Some(PacDraft {
+                port: pac_port,
+                ..PacDraft::default()
+            }),
+        },
+    )
+    .await
+    .unwrap();
+    let status = send(&mut s, Command::GetStatus).await.unwrap();
+    let pac_path = std::path::PathBuf::from(
+        status["generation"]["pac"]["path"]
+            .as_str()
+            .expect("pac path"),
+    );
+    assert!(!pac_path.is_absolute());
+    drop(s);
+
+    fs::rename(&old_root, &new_root).unwrap();
+    assert!(!old_root.exists());
+
+    let mut s = Supervisor::with_backend(&new_root, proxy).await.unwrap();
+    let status = send(&mut s, Command::GetStatus).await.unwrap();
+    assert_eq!(status["recovery_required"], false);
+    assert_eq!(status["core_state"], "Running");
+    let reloaded_settings: Settings =
+        serde_json::from_value(send(&mut s, Command::GetSettings).await.unwrap()).unwrap();
+    assert_eq!(reloaded_settings.core_path, settings_json.core_path);
+
+    let active_generation_id = status["generation"]["id"].as_str().unwrap().to_owned();
+    let runtime = send(
+        &mut s,
+        Command::GetRuntimeConfig {
+            generation_id: active_generation_id,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(runtime["json"].as_str().unwrap().contains("certs/ca.pem"));
+
+    send(
+        &mut s,
+        Command::SetProxyMode {
+            mode: ProxyMode::Pac,
+            http_inbound_tag: "http-in".into(),
+            pac: None,
+        },
+    )
+    .await
+    .unwrap();
+    send(&mut s, Command::RestartCore).await.unwrap();
     send(&mut s, Command::StopCore).await.unwrap();
 }

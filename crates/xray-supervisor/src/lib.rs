@@ -386,7 +386,10 @@ impl<B: ProxyBackend> Supervisor<B> {
                     "Refresh the runtime generation before reading its configuration",
                 )
             })?;
-        let json = fs::read_to_string(&generation.candidate.config_path)?;
+        let json = fs::read_to_string(resolve_path(
+            &self.store.root,
+            &generation.candidate.config_path,
+        ))?;
         if hash(json.as_bytes()) != generation.candidate.revision {
             return Err(Error::new(
                 "CONFIG_HASH_MISMATCH",
@@ -551,7 +554,7 @@ impl<B: ProxyBackend> Supervisor<B> {
                     .generation
                     .as_ref()
                     .filter(|g| g.id == *generation_id)
-                    .map(|g| Self::load_candidate_geodata(&g.candidate, &parsed));
+                    .map(|g| Self::load_candidate_geodata(&self.store.root, &g.candidate, &parsed));
                 return Ok(serde_json::to_value(
                     xray_config::routing::simulate_with_geo(&parsed, context, geo.as_ref()),
                 )?);
@@ -686,15 +689,19 @@ impl<B: ProxyBackend> Supervisor<B> {
                 })?;
                 self.store
                     .check_revision(&old.candidate.profile_id, expected_revision)?;
-                Self::verify_candidate(&old.candidate)?;
+                self.verify_candidate(&old.candidate)?;
                 let mut candidate = old.candidate;
                 candidate.id = id();
                 candidate.base_revision = expected_revision.clone();
                 candidate.digest.clear();
                 candidate.digest = canonical_hash(&candidate)?;
                 let path = self.store.root.join("candidates").join(&candidate.id);
-                xray_runtime::validate_with_logs(&candidate, &self.logs).await?;
-                let success = json!({"json":fs::read_to_string(&candidate.config_path)?,"candidate":candidate});
+                let resolved_candidate = self.resolve_candidate(&candidate);
+                xray_runtime::validate_with_logs(&resolved_candidate, &self.logs).await?;
+                let success = json!({
+                    "json": fs::read_to_string(&resolved_candidate.config_path)?,
+                    "candidate": candidate
+                });
                 self.publish_effect(
                     op,
                     path.join("candidate.json"),
@@ -749,12 +756,15 @@ impl<B: ProxyBackend> Supervisor<B> {
             } => {
                 self.store.check_revision(profile_id, expected_revision)?;
                 let config = parse_config(json.as_bytes())?;
-                let core_path = fs::canonicalize(core_path)?;
+                let resolved_core_input = resolve_path(&self.store.root, core_path);
+                let resolved_asset_input = resolve_path(&self.store.root, asset_root);
+                let core_path = fs::canonicalize(resolved_core_input)?;
                 let core_bytes = fs::read(&core_path)?;
                 let core_hash = hash(&core_bytes);
                 let directory = self.store.root.join("cores").join(&core_hash);
                 fs::create_dir_all(&directory)?;
-                let frozen = directory.join(if cfg!(windows) { "xray.exe" } else { "xray" });
+                let frozen_name = if cfg!(windows) { "xray.exe" } else { "xray" };
+                let frozen = directory.join(frozen_name);
                 if !frozen.exists() {
                     atomic_write(&frozen, &core_bytes)?;
                     #[cfg(unix)]
@@ -764,40 +774,43 @@ impl<B: ProxyBackend> Supervisor<B> {
                     }
                 }
                 let version = xray_runtime::version(&frozen).await?;
-                let resources = resources::freeze_with(
+                let resources = resources::freeze_in(
                     &config,
-                    asset_root,
-                    &self.store.root.join("resources"),
+                    &resolved_asset_input,
+                    &self.store.root,
                     *allow_dynamic,
                 )?;
                 let candidate_id = id();
                 let path = self.store.root.join("candidates").join(&candidate_id);
                 fs::create_dir_all(&path)?;
-                if let Ok(resolved_asset_root) = fs::canonicalize(asset_root) {
+                if let Ok(resolved_asset_root) = fs::canonicalize(&resolved_asset_input) {
+                    let portable_asset_root =
+                        to_portable_path(&self.store.root, &resolved_asset_root);
                     let _ = atomic_write(
                         &path.join("asset_root.txt"),
-                        resolved_asset_root.to_string_lossy().as_bytes(),
+                        portable_asset_root.to_string_lossy().as_bytes(),
                     );
                 }
                 let config_path = path.join("config.json");
                 atomic_write(&config_path, json.as_bytes())?;
                 let mut candidate = Candidate {
-                    id: candidate_id,
+                    id: candidate_id.clone(),
                     digest: String::new(),
                     profile_id: profile_id.clone(),
                     base_revision: expected_revision.clone(),
                     revision: hash(json.as_bytes()),
-                    config_path,
+                    config_path: to_portable_path(&self.store.root, &config_path),
                     core: CoreIdentity {
-                        path: frozen,
+                        path: to_portable_path(&self.store.root, &frozen),
                         sha256: core_hash,
                         version,
                     },
                     resources,
                 };
                 candidate.digest = canonical_hash(&candidate)?;
-                resources::verify(&candidate.resources)?;
-                xray_runtime::validate_with_logs(&candidate, &self.logs).await?;
+                resources::verify_in(&self.store.root, &candidate.resources)?;
+                xray_runtime::validate_with_logs(&self.resolve_candidate(&candidate), &self.logs)
+                    .await?;
                 self.publish_effect(
                     op,
                     path.join("candidate.json"),
@@ -886,16 +899,18 @@ impl<B: ProxyBackend> Supervisor<B> {
                 self.apply(op, old.candidate, mode, tag, true, pac).await
             }
             Command::SaveSettings { settings } => {
+                let mut normalized = settings.clone();
+                normalized.core_path = to_portable_path(&self.store.root, &settings.core_path);
                 let result =
                     self.startup
-                        .save(&op.transaction_id, settings, &std::env::current_exe()?);
+                        .save(&op.transaction_id, &normalized, &std::env::current_exe()?);
                 if let Err(e) = result {
                     if self.startup.pending(&op.transaction_id).unwrap_or(true) {
                         self.blocked = true;
                     }
                     return Err(e);
                 }
-                self.settings = settings.clone();
+                self.settings = normalized;
                 Ok(json!({"saved":true}))
             }
             Command::ResolveProxyConflict => {
@@ -907,19 +922,27 @@ impl<B: ProxyBackend> Supervisor<B> {
             )),
         }
     }
+    fn resolve_candidate(&self, candidate: &Candidate) -> Candidate {
+        let mut resolved = candidate.clone();
+        resolved.config_path = resolve_path(&self.store.root, &candidate.config_path);
+        resolved.core.path = resolve_path(&self.store.root, &candidate.core.path);
+        resolved.resources.root = resolve_path(&self.store.root, &candidate.resources.root);
+        resolved
+    }
     fn load_candidate_geodata(
+        store_root: &Path,
         candidate: &Candidate,
         config: &serde_json::Value,
     ) -> xray_config::geodata::GeoData {
-        let mut geo = xray_config::geodata::GeoData::load_from_asset_root_best_effort(
-            &candidate.resources.root,
-        );
+        let resources_root = resolve_path(store_root, &candidate.resources.root);
+        let config_path = resolve_path(store_root, &candidate.config_path);
+        let mut geo =
+            xray_config::geodata::GeoData::load_from_asset_root_best_effort(&resources_root);
         geo.preload_ext_from_config(config);
         if (geo.geosite.is_none() || geo.geoip.is_none())
-            && let Ok(raw_root) =
-                fs::read_to_string(candidate.config_path.with_file_name("asset_root.txt"))
+            && let Ok(raw_root) = fs::read_to_string(config_path.with_file_name("asset_root.txt"))
         {
-            let root = PathBuf::from(raw_root.trim());
+            let root = resolve_path(store_root, Path::new(raw_root.trim()));
             if geo.geosite.is_none() {
                 let geosite_path = root.join("geosite.dat");
                 if geosite_path.is_file()
@@ -940,21 +963,23 @@ impl<B: ProxyBackend> Supervisor<B> {
         geo
     }
 
-    fn verify_candidate(candidate: &Candidate) -> Result<()> {
+    fn verify_candidate(&self, candidate: &Candidate) -> Result<()> {
         let mut check = candidate.clone();
         check.digest.clear();
+        let resolved = self.resolve_candidate(candidate);
         if canonical_hash(&check)? != candidate.digest
-            || hash(&fs::read(&candidate.config_path)?) != candidate.revision
+            || hash(&fs::read(&resolved.config_path)?) != candidate.revision
         {
             return Err(Error::new("CANDIDATE_CONFLICT", "Frozen candidate changed"));
         }
-        resources::verify(&candidate.resources)?;
-        xray_runtime::verify_core(&candidate.core)
+        resources::verify_in(&self.store.root, &candidate.resources)?;
+        xray_runtime::verify_core(&resolved.core)
     }
     async fn start(&mut self, g: &Generation) -> Result<()> {
-        Self::verify_candidate(&g.candidate)?;
-        self.core = Some(ManagedCore::start(&g.candidate, &g.id, self.logs.clone()).await?);
-        let config = parse_config(&fs::read(&g.candidate.config_path)?)?;
+        self.verify_candidate(&g.candidate)?;
+        let resolved = self.resolve_candidate(&g.candidate);
+        self.core = Some(ManagedCore::start(&resolved, &g.id, self.logs.clone()).await?);
+        let config = parse_config(&fs::read(&resolved.config_path)?)?;
         self.core
             .as_mut()
             .unwrap()
@@ -993,8 +1018,8 @@ impl<B: ProxyBackend> Supervisor<B> {
             ));
         }
         let revision = hash(script.as_bytes());
-        let directory = self.store.root.join("runtime/pac").join(&revision);
-        let path = directory.join("proxy.pac");
+        let relative_path = PathBuf::from(format!("runtime/pac/{revision}/proxy.pac"));
+        let path = self.store.root.join(&relative_path);
         if path.exists() {
             let bytes = fs::read(&path)?;
             if hash(&bytes) != revision {
@@ -1011,7 +1036,7 @@ impl<B: ProxyBackend> Supervisor<B> {
             url: format!("http://127.0.0.1:{port}/pac/{revision}/proxy.pac"),
             revision,
             port,
-            path,
+            path: relative_path,
         })
     }
     fn ensure_pac_server(&mut self, port: u16) -> Result<&mut PacServer> {
@@ -1023,7 +1048,8 @@ impl<B: ProxyBackend> Supervisor<B> {
         Ok(self.pac_servers.last_mut().unwrap())
     }
     async fn ensure_pac_served(&mut self, publication: &PacPublication) -> Result<()> {
-        let bytes = fs::read(&publication.path).map_err(|_| {
+        let pac_path = resolve_path(&self.store.root, &publication.path);
+        let bytes = fs::read(&pac_path).map_err(|_| {
             Error::new(
                 "PAC_INTEGRITY_FAILED",
                 "PAC publication file is missing; preserve recovery evidence and re-apply",
@@ -1078,7 +1104,7 @@ impl<B: ProxyBackend> Supervisor<B> {
         if !running {
             return self.stop_generation(op, candidate, tag).await;
         }
-        Self::verify_candidate(&candidate)?;
+        self.verify_candidate(&candidate)?;
         let old_profile = self.store.profile(&candidate.profile_id)?;
         self.logs.set_context(Some(format!(
             "profile={} rev={} tx={}",
@@ -1098,10 +1124,11 @@ impl<B: ProxyBackend> Supervisor<B> {
                 "Profile changed after validation",
             ));
         }
+        let resolved = self.resolve_candidate(&candidate);
         if running {
-            xray_runtime::validate_with_logs(&candidate, &self.logs).await?;
+            xray_runtime::validate_with_logs(&resolved, &self.logs).await?;
         }
-        let config = parse_config(&fs::read(&candidate.config_path)?)?;
+        let config = parse_config(&fs::read(&resolved.config_path)?)?;
         let endpoint = if matches!(mode, ProxyMode::Global | ProxyMode::Pac) {
             Some(xray_runtime::http_endpoint(&config, &tag)?)
         } else {
@@ -1111,7 +1138,7 @@ impl<B: ProxyBackend> Supervisor<B> {
         if mode == ProxyMode::Pac {
             match pac {
                 Some(draft) => {
-                    let geo = Self::load_candidate_geodata(&candidate, &config);
+                    let geo = Self::load_candidate_geodata(&self.store.root, &candidate, &config);
                     let generated =
                         xray_pac::compile_draft(&config, endpoint.unwrap(), &draft, Some(&geo))?;
                     for note in generated.notes {
@@ -1206,7 +1233,10 @@ impl<B: ProxyBackend> Supervisor<B> {
             write_json(&journal_path, &journal)?;
             atomic_write(
                 &self.store.profile_path(&generation.candidate.profile_id)?,
-                &fs::read(&generation.candidate.config_path)?,
+                &fs::read(resolve_path(
+                    &self.store.root,
+                    &generation.candidate.config_path,
+                ))?,
             )?;
             self.publish(&generation)?;
             Ok(())

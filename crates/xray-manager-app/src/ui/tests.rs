@@ -2084,6 +2084,15 @@ fn pac_endpoint_refreshes_after_config_adds_or_renames_an_http_inbound() {
     let endpoint = app.pac_endpoint().unwrap();
     assert_eq!(endpoint.port(), 18089);
     assert_eq!(app.http_tag, "new-http");
+
+    // Wildcard 0.0.0.0 inbound resolves to 127.0.0.1 for PAC target generation.
+    app.editor = r#"{"inbounds":[{"tag":"all-http","listen":"0.0.0.0","port":18090,"protocol":"http"}],"outbounds":[{"tag":"direct","protocol":"freedom"}]}"#.into();
+    let wildcard_endpoint = app.pac_endpoint().unwrap();
+    assert_eq!(
+        wildcard_endpoint,
+        "127.0.0.1:18090".parse::<std::net::SocketAddr>().unwrap()
+    );
+    assert_eq!(app.http_tag, "all-http");
 }
 
 #[test]
@@ -3065,4 +3074,46 @@ fn geodata_cache_supports_ext_without_geosite_and_reports_empty_geosite() {
             .resolve_domain_spec("ext:custom_site.dat:my_proxy_list")
             .is_some()
     );
+}
+
+#[test]
+fn portable_relative_paths_work_across_settings_workspace_and_geodata_cache() {
+    use xray_config::geodata::test_encoder::encode_geosite_list;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let data_root = tmp.path().join("xray-pilot").join("data");
+    let dep_dir = data_root.join("dependencies/xray/v26");
+    std::fs::create_dir_all(&dep_dir).unwrap();
+    std::fs::write(
+        dep_dir.join("geosite.dat"),
+        encode_geosite_list(&[("cn", &[(2, "baidu.com", &[])])]),
+    )
+    .unwrap();
+
+    let mut app = app();
+    app.root = data_root.clone();
+    app.core_path = dep_dir.join("xray").display().to_string();
+    app.asset_root = dep_dir.display().to_string();
+
+    let portable_core = xray_model::to_portable_string(&app.root, &app.core_path);
+    let portable_assets = xray_model::to_portable_string(&app.root, &app.asset_root);
+    app.core_path = portable_core.clone();
+    app.asset_root = portable_assets.clone();
+    app.settings.core_path = portable_core.clone().into();
+    app.accept_saved_settings(app.settings.clone(), app.asset_root.clone());
+
+    assert_eq!(app.core_path, "dependencies/xray/v26/xray");
+    assert_eq!(app.asset_root, "dependencies/xray/v26");
+    assert!(!app.ui.settings_dirty);
+    assert_eq!(
+        app.ui
+            .workspace
+            .asset_roots
+            .get("dependencies/xray/v26/xray")
+            .map(String::as_str),
+        Some("dependencies/xray/v26")
+    );
+
+    let cache = app.refresh_geodata_cache().unwrap();
+    assert!(cache.data.resolve_domain_spec("geosite:cn").is_some());
 }
