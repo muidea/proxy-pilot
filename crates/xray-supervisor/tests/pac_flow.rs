@@ -148,6 +148,12 @@ async fn pac_apply_publishes_immutable_script_sets_proxy_and_releases_cleanly() 
     let pac = generation.pac.as_ref().unwrap();
     assert_eq!(pac.port, pac_port);
     assert_eq!(pac.revision.len(), 64);
+    assert_eq!(pac.mode, Some(xray_model::PacMode::Custom));
+    assert!(
+        pac.summary
+            .as_deref()
+            .is_some_and(|s| s.contains("自定义脚本"))
+    );
     let snapshot = proxy.read().unwrap();
     assert_eq!(snapshot.flags, 1 | 4);
     assert!(snapshot.server.is_empty());

@@ -51,6 +51,7 @@ struct Pending {
     poll: Option<&'static str>,
     submitted_json: Option<String>,
     asset_root: String,
+    auto_apply: bool,
 }
 struct DependencyJob {
     response: mpsc::Receiver<Result<crate::dependencies::Report>>,
@@ -367,6 +368,7 @@ impl App {
     }
     fn invalidate_candidate(&mut self) {
         self.ui.validation_epoch = self.ui.validation_epoch.wrapping_add(1);
+        self.ui.pending_auto_apply = false;
         self.ui.preview_open = false;
         self.candidate = None;
         self.candidate_context = None;
@@ -400,15 +402,60 @@ impl App {
                 .as_ref()
                 .is_some_and(|context| *context == self.context())
     }
+    fn has_insecure_tls(value: &serde_json::Value) -> bool {
+        value
+            .get("outbounds")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .any(|node| {
+                node.pointer("/streamSettings/tlsSettings/allowInsecure")
+                    .and_then(|v| v.as_bool())
+                    == Some(true)
+            })
+    }
+    fn should_confirm_preview(&self, c: &Candidate) -> bool {
+        if !c.resources.complete || !c.resources.dynamic.is_empty() {
+            return true;
+        }
+        if xray_config::parse_document(self.editor.as_bytes())
+            .is_ok_and(|v| Self::has_insecure_tls(&v))
+        {
+            return true;
+        }
+        let prev_mode = self
+            .status
+            .as_ref()
+            .and_then(|s| s.generation.as_ref())
+            .map(|g| g.proxy_mode)
+            .unwrap_or(ProxyMode::Direct);
+        prev_mode == ProxyMode::Direct && self.mode != ProxyMode::Direct
+    }
+    #[cfg(test)]
     fn accept_candidate(&mut self, c: Candidate) {
+        self.accept_candidate_with_mode(c, false);
+    }
+    fn accept_candidate_with_mode(&mut self, c: Candidate, auto_apply: bool) {
         if c.profile_id == self.profile_id
             && c.base_revision == self.revision
             && c.revision == hash(self.editor.as_bytes())
         {
             self.candidate_context = Some(self.context());
-            self.candidate = Some(c);
+            self.candidate = Some(c.clone());
             self.confirm_apply = true;
-            self.ui.preview_open = true;
+            if auto_apply && !self.should_confirm_preview(&c) {
+                self.ui.preview_open = false;
+                self.message = format!("Core 校验通过（{}），正在应用…", c.core.version);
+                self.send(Command::ApplyProfile {
+                    candidate_id: c.id,
+                    candidate_digest: c.digest,
+                    proxy_mode: self.mode,
+                    http_inbound_tag: self.http_tag.clone(),
+                    pac: (self.mode == ProxyMode::Pac).then(|| self.pac_draft()),
+                });
+            } else {
+                self.ui.preview_open = true;
+            }
         } else {
             self.invalidate_candidate();
             self.message = "候选与当前草稿不一致，请重新检查".into();
@@ -690,6 +737,9 @@ impl App {
             matches!(command, Command::ApplyProfile { .. }).then(|| self.editor.clone());
         let write = command.is_write();
         let operation_label = ui::command_name(&command);
+        let is_auto_save = matches!(command, Command::UpdateProfile { .. });
+        let auto_apply = matches!(command, Command::ValidateDraft { .. })
+            && std::mem::take(&mut self.ui.pending_auto_apply);
         let settings_read = matches!(command, Command::GetSettings);
         let settings_write = matches!(command, Command::SaveSettings { .. });
         let request = Request::new(
@@ -708,7 +758,7 @@ impl App {
                     self.settings_edited();
                 }
                 let settings_context = settings_read.then(|| self.settings_context());
-                if write {
+                if write && !is_auto_save {
                     self.add_event(
                         "信息",
                         format!("已提交{operation_label}"),
@@ -723,6 +773,7 @@ impl App {
                         poll,
                         submitted_json,
                         asset_root: self.asset_root.clone(),
+                        auto_apply,
                     },
                 );
                 if write {
@@ -795,6 +846,13 @@ impl App {
                         self.ui.connected = false;
                     }
                     self.fail_command(&command, error.clone(), response.request_id.clone());
+                    if matches!(command, Command::UpdateProfile { .. })
+                        && error.code == "ASSET_REVISION_CONFLICT"
+                        && pending.context.profile == self.profile_id
+                    {
+                        self.ui.draft_conflict = true;
+                        self.stash_draft();
+                    }
                     if matches!(command, Command::GetProfile { .. })
                         && pending.context.epoch == self.view_epoch
                     {
@@ -959,7 +1017,7 @@ impl App {
                     Command::ValidateDraft { .. } => {
                         if let Ok(c) = serde_json::from_value::<Candidate>(value) {
                             self.message = format!("Core 配置校验通过：{}", c.core.version);
-                            self.accept_candidate(c);
+                            self.accept_candidate_with_mode(c, pending.auto_apply);
                         }
                     }
                     Command::GetOperation { request_id } => {
@@ -1005,6 +1063,13 @@ impl App {
                             self.imported_profile(profile);
                         }
                         self.refresh_profiles();
+                    }
+                    Command::UpdateProfile { .. } => {
+                        if let Ok(profile) = serde_json::from_value::<Profile>(value) {
+                            self.profile_updated(profile);
+                            self.clear_request_failure();
+                            self.refresh_profiles();
+                        }
                     }
                     Command::ApplyProfile {
                         proxy_mode, pac, ..
@@ -1071,6 +1136,10 @@ impl App {
         self.stash_draft();
         self.view_epoch = self.view_epoch.wrapping_add(1);
         self.ui.guided = Default::default();
+        self.ui.inline_rename = None;
+        self.ui.node_share_open = false;
+        self.ui.node_share_input.clear();
+        self.ui.node_share_feedback = None;
         self.selected_profile = p.id.clone();
         self.profile_id = p.id;
         self.saved_json = p.json.clone();

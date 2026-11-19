@@ -295,13 +295,12 @@ impl App {
             ui.spinner();
             return;
         }
-        heading(ui, "首次设置", "准备依赖、添加配置，再检查并明确确认启动。");
+        heading(ui, "首次设置", "准备依赖、添加配置，即可检查并启动。");
         ui.horizontal_wrapped(|ui| {
-            for (i, label) in ["1  准备依赖", "2  添加配置", "3  检查并启动"]
-                .iter()
-                .enumerate()
-            {
-                ui.label(RichText::new(*label).color(if i == self.ui.setup_step {
+            for (i, label) in ["1  准备依赖", "2  添加配置并启动"].iter().enumerate() {
+                let active =
+                    (self.ui.setup_step == 0 && i == 0) || (self.ui.setup_step >= 1 && i == 1);
+                ui.label(RichText::new(*label).color(if active {
                     accent(ui)
                 } else {
                     ui.visuals().weak_text_color()
@@ -320,8 +319,17 @@ impl App {
                 }
                 1 => {
                     ui.label(RichText::new("添加第一份配置").strong().size(21.0));
-                    ui.label("导入原生 JSON，或创建只监听回环地址的本地直连模板。不包含远端节点，不自动接管系统代理。");
+                    ui.label("可粘贴节点分享链接、选择协议模板，或导入已有原生 JSON。保存不会自动接管系统代理。");
                     ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .add_enabled(
+                                self.write_blocker().is_none(),
+                                egui::Button::new("新建节点 / 链接导入"),
+                            )
+                            .clicked()
+                        {
+                            self.begin_create(false, false);
+                        }
                         if ui
                             .add_enabled(
                                 self.write_blocker().is_none(),
@@ -330,6 +338,7 @@ impl App {
                             .clicked()
                         {
                             self.begin_create(false, false);
+                            self.ui.new_scene = crate::guided_config::Scene::Direct;
                             self.ui.new_name = "本地直连".into();
                         }
                         if ui
@@ -344,19 +353,26 @@ impl App {
                     });
                     if !self.profile_id.is_empty() {
                         line(ui, "已准备配置", self.ui.workspace.name(&self.profile_id));
+                        line(ui, "系统代理", mode_name(self.mode));
                     }
                     ui.horizontal_wrapped(|ui| {
                         if ui.button("上一步").clicked() {
                             self.ui.setup_step = 0;
                         }
+                        if !self.profile_id.is_empty() && ui.button("去配置页微调").clicked()
+                        {
+                            self.ui.onboarding = false;
+                            self.ui.page = Page::Profiles;
+                        }
                         if primary(
                             ui,
-                            "下一步：检查配置",
-                            !self.profile_id.is_empty() && !self.busy,
+                            "检查并启动",
+                            self.write_blocker().is_none()
+                                && !self.profile_id.is_empty()
+                                && !self.core_path.is_empty()
+                                && !self.ui.draft_conflict,
                         ) {
-                            self.ui.setup_step = 2;
-                            self.mode = ProxyMode::Direct;
-                            self.invalidate_candidate();
+                            self.validate_and_apply_draft();
                         }
                     });
                 }
@@ -371,17 +387,18 @@ impl App {
                             self.ui.setup_step = 1;
                         }
                         if ui.button("先编辑配置").clicked() {
+                            self.ui.onboarding = false;
                             self.ui.page = Page::Profiles;
                         }
                         if primary(
                             ui,
-                            "检查并预览",
+                            "检查并启动",
                             self.write_blocker().is_none()
                                 && !self.profile_id.is_empty()
                                 && !self.core_path.is_empty()
                                 && !self.ui.draft_conflict,
                         ) {
-                            self.validate_draft();
+                            self.validate_and_apply_draft();
                         }
                     });
                 }
@@ -391,7 +408,7 @@ impl App {
                 if self.ui.setup_step == 0
                     && primary(
                         ui,
-                        "保存并继续",
+                        "下一步：添加配置",
                         self.write_blocker().is_none() && !self.core_path.is_empty(),
                     )
                 {

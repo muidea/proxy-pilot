@@ -930,6 +930,8 @@ mod pac_cleanup_tests {
                 url: "http://127.0.0.1:18080/pac/a/proxy.pac".into(),
                 port: 18080,
                 path: root.join("runtime/pac").join(&referenced).join("proxy.pac"),
+                mode: None,
+                summary: None,
             }),
         };
         write_json(

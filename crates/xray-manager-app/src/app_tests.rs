@@ -1207,19 +1207,45 @@ fn tray_profile_selection_opens_editor_without_applying_and_preserves_draft_conf
     );
     assert!(!requests.iter().any(|r| r.command.is_write()));
     let mut h = Harness::new();
+    h.app.profiles = vec![
+        xray_model::ProfileSummary {
+            id: "p".into(),
+            revision: hash(b"{}"),
+        },
+        xray_model::ProfileSummary {
+            id: "b".into(),
+            revision: hash(b"{}"),
+        },
+    ];
+    h.app.editor = "{\"draft\":true}".into();
+    h.app.draft_edited();
+    h.app.open_profile_from_tray("b", &ctx);
+    let requests: Vec<_> = h.requests.try_iter().collect();
+    assert!(
+        requests
+            .iter()
+            .any(|r| matches!(&r.command, Command::GetProfile { profile_id } if profile_id == "b"))
+    );
+    assert!(!requests.iter().any(|r| r.command.is_write()));
+    assert_eq!(h.app.ui.drafts["p"].json, "{\"draft\":true}");
+
+    // When a conflict exists, tray selection still asks for explicit confirmation.
+    let mut h = Harness::new();
     h.app.profiles = vec![xray_model::ProfileSummary {
         id: "b".into(),
         revision: hash(b"{}"),
     }];
-    h.app.editor = "{\"draft\":true}".into();
-    h.app.draft_edited();
+    h.app.ui.draft_conflict = true;
     h.app.open_profile_from_tray("b", &ctx);
+    assert!(matches!(
+        h.app.ui.dialog,
+        Some(crate::app::ui::Dialog::Confirm(crate::app::ui::Action::Switch(ref id))) if id == "b"
+    ));
     assert!(
         !h.requests
             .try_iter()
             .any(|r| matches!(r.command, Command::GetProfile { .. }) || r.command.is_write())
     );
-    assert_eq!(h.app.editor, "{\"draft\":true}");
 }
 
 #[test]
@@ -1389,4 +1415,143 @@ fn single_instance_activation_cancels_background_hide_and_reveals_window() {
     assert!(commands.contains(&ViewportCommand::Visible(true)));
     assert!(commands.contains(&ViewportCommand::Focus));
     assert!(!commands.contains(&ViewportCommand::Visible(false)));
+}
+
+#[test]
+fn auto_save_persists_valid_edits_via_update_profile_and_clears_fallback_draft() {
+    let root = tempfile::tempdir().unwrap();
+    let mut h = Harness::empty();
+    h.app.root = root.path().into();
+    h.app.ui.persistence = true;
+    h.app.load(profile("p", "{}"));
+
+    let updated_json = r#"{"outbounds":[{"tag":"direct","protocol":"freedom"}]}"#;
+    h.app.editor = updated_json.into();
+    h.app.draft_edited();
+    assert!(h.app.stash_draft());
+    assert!(
+        crate::workspace::Draft::load(root.path(), "p")
+            .unwrap()
+            .is_some()
+    );
+
+    h.app.auto_save_profile();
+    let req = h
+        .requests
+        .try_iter()
+        .find(|r| matches!(r.command, Command::UpdateProfile { .. }))
+        .expect("UpdateProfile must be dispatched");
+    assert!(matches!(
+        &req.command,
+        Command::UpdateProfile {
+            profile_id,
+            expected_revision,
+            json
+        } if profile_id == "p" && expected_revision == &hash(b"{}") && json == updated_json
+    ));
+
+    h.reply(req, profile("p", updated_json));
+    assert_eq!(h.app.saved_json, updated_json);
+    assert_eq!(h.app.revision, hash(updated_json.as_bytes()));
+    assert!(!h.app.has_draft_edits());
+    assert!(
+        crate::workspace::Draft::load(root.path(), "p")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn invalid_json_or_unfinished_numbers_fall_back_to_draft_without_update_profile() {
+    let root = tempfile::tempdir().unwrap();
+    let mut h = Harness::empty();
+    h.app.root = root.path().into();
+    h.app.ui.persistence = true;
+    h.app.load(profile("p", "{}"));
+
+    h.app.editor = "{broken".into();
+    h.app.draft_edited();
+    assert!(!h.app.can_auto_save_profile());
+    assert!(h.app.stash_draft());
+    assert!(!h.requests.try_iter().any(|r| r.command.is_write()));
+    assert_eq!(
+        crate::workspace::Draft::load(root.path(), "p")
+            .unwrap()
+            .unwrap()
+            .json,
+        "{broken"
+    );
+}
+
+#[test]
+fn one_click_check_and_apply_auto_applies_clean_candidate_and_confirms_warnings() {
+    // 1. Clean candidate in Direct mode auto-applies without opening the preview modal.
+    let mut h = Harness::new();
+    h.app.validate_and_apply_draft();
+    let validate = h
+        .requests
+        .try_iter()
+        .find(|r| matches!(r.command, Command::ValidateDraft { .. }))
+        .unwrap();
+    let clean = candidate(&h.app, "{}");
+    h.reply(validate, &clean);
+    assert!(!h.app.ui.preview_open);
+    assert!(
+        h.requests
+            .try_iter()
+            .any(|r| matches!(r.command, Command::ApplyProfile { ref candidate_id, .. } if candidate_id == &clean.id))
+    );
+
+    // 2. Incomplete resources force preview confirmation instead of auto-applying.
+    let mut h = Harness::new();
+    h.app.validate_and_apply_draft();
+    let validate = h
+        .requests
+        .try_iter()
+        .find(|r| matches!(r.command, Command::ValidateDraft { .. }))
+        .unwrap();
+    let mut warned = candidate(&h.app, "{}");
+    warned.resources.complete = false;
+    h.reply(validate, &warned);
+    assert!(h.app.ui.preview_open);
+    assert!(
+        !h.requests
+            .try_iter()
+            .any(|r| matches!(r.command, Command::ApplyProfile { .. }))
+    );
+
+    // 3. Switching from Direct to Global opens preview confirmation for proxy takeover.
+    let mut h = Harness::new();
+    h.app.mode = ProxyMode::Global;
+    h.app.validate_and_apply_draft();
+    let validate = h
+        .requests
+        .try_iter()
+        .find(|r| matches!(r.command, Command::ValidateDraft { .. }))
+        .unwrap();
+    let clean_global = candidate(&h.app, "{}");
+    h.reply(validate, &clean_global);
+    assert!(h.app.ui.preview_open);
+    assert!(
+        !h.requests
+            .try_iter()
+            .any(|r| matches!(r.command, Command::ApplyProfile { .. }))
+    );
+}
+
+#[test]
+fn revert_to_running_config_restores_runtime_snapshot() {
+    let mut h = Harness::new();
+    let g = generation(&h.app);
+    h.app.status = Some(status(Some(g.clone())));
+    let running_json = r#"{"outbounds":[{"tag":"direct","protocol":"freedom"}]}"#;
+    h.app.ui.runtime = Some(RuntimeConfig {
+        generation_id: g.id,
+        json: running_json.into(),
+    });
+    h.app.editor = r#"{"outbounds":[]}"#.into();
+    assert!(h.app.has_unapplied_runtime_diff());
+    h.app.revert_to_running_config();
+    assert_eq!(h.app.editor, running_json);
+    assert!(!h.app.has_unapplied_runtime_diff());
 }

@@ -123,3 +123,72 @@ async fn official_api_configuration_can_be_imported_and_checked_without_starting
     .unwrap();
     assert!(status.generation.is_none());
 }
+
+#[tokio::test]
+async fn update_profile_persists_valid_json_enforces_revision_and_keeps_runtime_unchanged() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = Supervisor::with_backend(tmp.path(), FakeProxy::default())
+        .await
+        .unwrap();
+    let initial = r#"{"outbounds":[{"tag":"direct","protocol":"freedom"}]}"#;
+    s.handle(Request::new(
+        Command::CreateProfile {
+            profile_id: "editable".into(),
+            json: initial.into(),
+        },
+        None,
+    ))
+    .await
+    .result
+    .unwrap();
+
+    let updated = r#"{"outbounds":[{"tag":"node-1","protocol":"vless"}]}"#;
+    let update = Request::new(
+        Command::UpdateProfile {
+            profile_id: "editable".into(),
+            expected_revision: hash(initial.as_bytes()),
+            json: updated.into(),
+        },
+        None,
+    );
+    let saved: Profile =
+        serde_json::from_value(s.handle(update.clone()).await.result.unwrap()).unwrap();
+    assert_eq!(saved.json, updated);
+    assert_eq!(saved.revision, hash(updated.as_bytes()));
+    assert_eq!(s.store.profile("editable").unwrap().json, updated);
+    // Replay returns the same outcome via durable operation evidence.
+    let replayed: Profile = serde_json::from_value(s.handle(update).await.result.unwrap()).unwrap();
+    assert_eq!(replayed.revision, saved.revision);
+
+    // Stale expected_revision is rejected without overwriting.
+    let conflict = s
+        .handle(Request::new(
+            Command::UpdateProfile {
+                profile_id: "editable".into(),
+                expected_revision: hash(initial.as_bytes()),
+                json: r#"{"stale":true}"#.into(),
+            },
+            None,
+        ))
+        .await
+        .result
+        .unwrap_err();
+    assert_eq!(conflict.code, "ASSET_REVISION_CONFLICT");
+    assert_eq!(s.store.profile("editable").unwrap().json, updated);
+
+    // Malformed JSON is rejected without touching stored profile.
+    let invalid = s
+        .handle(Request::new(
+            Command::UpdateProfile {
+                profile_id: "editable".into(),
+                expected_revision: saved.revision.clone(),
+                json: "{not-json".into(),
+            },
+            None,
+        ))
+        .await
+        .result
+        .unwrap_err();
+    assert_eq!(invalid.code, "CONFIG_PARSE_FAILED");
+    assert_eq!(s.store.profile("editable").unwrap().json, updated);
+}

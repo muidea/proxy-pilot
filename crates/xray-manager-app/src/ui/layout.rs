@@ -450,6 +450,13 @@ impl App {
                     .small()
                     .weak(),
             );
+            if owned && let Some((pac_mode, pac_summary)) = self.active_pac_strategy() {
+                let desc = match pac_summary {
+                    Some(summary) => format!("{}（{summary}）", Self::pac_mode_label(pac_mode)),
+                    None => Self::pac_mode_label(pac_mode).into(),
+                };
+                line(ui, "生效 PAC 策略", &desc);
+            }
             line(ui, "网络连通性", "未检测");
             line(ui, "实际出口", "未验证");
             if ui.button("打开路由诊断").clicked() {

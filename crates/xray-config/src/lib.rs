@@ -6,6 +6,7 @@ pub use validation::{ConfigIssue, inspect_config, parse_document};
 pub mod resources;
 pub mod routing;
 pub mod security;
+pub mod share_link;
 
 use fs2::FileExt;
 use serde::{Serialize, de::DeserializeOwned};

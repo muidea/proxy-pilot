@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 mod ui;
 pub use ui::{State, edit_nodes, edit_routes, node_form, summary};
+pub(crate) use ui::{apply_geosite_bypass_preset, enable_inbound_sniffing};
 #[cfg(test)]
 mod tests;
 
@@ -90,7 +91,17 @@ impl Template {
     }
 }
 
+#[cfg(test)]
 pub fn scene(scene: Scene, template: Template) -> Value {
+    scene_with_options(scene, template, false, false)
+}
+
+pub fn scene_with_options(
+    scene: Scene,
+    template: Template,
+    split_preset: bool,
+    split_sniffing: bool,
+) -> Value {
     let mut config: Value = serde_json::from_str(&crate::app::default_config()).unwrap();
     config["outbounds"]
         .as_array_mut()
@@ -102,9 +113,54 @@ pub fn scene(scene: Scene, template: Template) -> Value {
             .unwrap()
             .insert(0, template.node("node-1"));
     }
-    // Split starts without example rules that would accidentally affect real traffic.
     config["routing"] = json!({"rules":[]});
+    if scene == Scene::Split {
+        let mut state = State::default();
+        if split_preset {
+            apply_geosite_bypass_preset(&mut config, &mut state);
+        }
+        if split_sniffing {
+            enable_inbound_sniffing(&mut config, &mut state);
+        }
+    }
     config
+}
+
+pub fn append_share_nodes(
+    config: &mut Value,
+    names: &mut BTreeMap<String, String>,
+    nodes: Vec<xray_config::share_link::ParsedShareNode>,
+    prepend_index: Option<usize>,
+) -> Result<(usize, Vec<String>), &'static str> {
+    if config.get("outbounds").is_none() {
+        patch(config, "/outbounds", json!([]))?;
+    }
+    if !config.get("outbounds").is_some_and(Value::is_array) {
+        return Err("出站字段不是数组，请在原始 JSON 中修正");
+    }
+    let mut added = 0;
+    let mut warnings = Vec::new();
+    for (offset, mut parsed) in nodes.into_iter().enumerate() {
+        let tag = next_tag(config, names);
+        if let Some(obj) = parsed.outbound.as_object_mut() {
+            obj.insert("tag".into(), Value::String(tag.clone()));
+        }
+        let label = parsed
+            .name
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| format!("{} 节点", parsed.protocol.to_uppercase()));
+        names.insert(tag, label.chars().take(80).collect());
+        if let Some(list) = config.get_mut("outbounds").and_then(Value::as_array_mut) {
+            if let Some(base) = prepend_index {
+                list.insert((base + offset).min(list.len()), parsed.outbound);
+            } else {
+                list.push(parsed.outbound);
+            }
+        }
+        warnings.extend(parsed.warnings);
+        added += 1;
+    }
+    Ok((added, warnings))
 }
 
 pub fn node_name(node: &Value, names: &BTreeMap<String, String>) -> String {

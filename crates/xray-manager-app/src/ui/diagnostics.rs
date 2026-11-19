@@ -41,6 +41,15 @@ impl App {
                         .map(|g| mode_name(g.proxy_mode))
                         .unwrap_or("未应用"),
                 );
+                if let Some((pac_mode, pac_summary)) = self.active_pac_strategy() {
+                    let desc = match pac_summary {
+                        Some(summary) => {
+                            format!("{}（{summary}）", Self::pac_mode_label(pac_mode))
+                        }
+                        None => Self::pac_mode_label(pac_mode).into(),
+                    };
+                    line(ui, "生效 PAC 策略", &desc);
+                }
                 line(
                     ui,
                     "恢复状态",
@@ -162,33 +171,48 @@ impl App {
                 .weak(),
             );
             let field_width = (ui.available_width() - 164.0).max(140.0);
-            egui::Grid::new("route-fields")
+            let (host_resp, port_resp) = egui::Grid::new("route-fields")
                 .num_columns(2)
                 .min_col_width(148.0)
                 .min_row_height(CONTROL_HEIGHT)
                 .spacing(egui::vec2(16.0, 10.0))
                 .show(ui, |ui| {
                     ui.label("目标域名或 IP");
-                    ui.add(singleline(&mut self.route_host, field_width));
+                    let host_resp = crate::widgets::singleline_select_all(
+                        ui,
+                        &mut self.route_host,
+                        field_width,
+                        "example.com",
+                    );
                     ui.end_row();
                     ui.label("端口 / 网络");
-                    ui.horizontal(|ui| {
-                        ui.add(singleline(&mut self.ui.route_port, 100.0));
-                        egui::ComboBox::from_id_salt("route-network")
-                            .width(100.0)
-                            .selected_text(&self.route_network)
-                            .show_ui(ui, |ui| {
-                                for network in ["tcp", "udp"] {
-                                    ui.selectable_value(
-                                        &mut self.route_network,
-                                        network.into(),
-                                        network,
-                                    );
-                                }
-                            });
-                    });
+                    let port_resp = ui
+                        .horizontal(|ui| {
+                            let port_resp = crate::widgets::singleline_select_all(
+                                ui,
+                                &mut self.ui.route_port,
+                                100.0,
+                                "",
+                            );
+                            egui::ComboBox::from_id_salt("route-network")
+                                .width(100.0)
+                                .selected_text(&self.route_network)
+                                .show_ui(ui, |ui| {
+                                    for network in ["tcp", "udp"] {
+                                        ui.selectable_value(
+                                            &mut self.route_network,
+                                            network.into(),
+                                            network,
+                                        );
+                                    }
+                                });
+                            port_resp
+                        })
+                        .inner;
                     ui.end_row();
-                });
+                    (host_resp, port_resp)
+                })
+                .inner;
             egui::CollapsingHeader::new("高级匹配条件（可选）").show(ui, |ui| {
                 egui::Grid::new("route-advanced-fields")
                     .num_columns(2)
@@ -232,11 +256,10 @@ impl App {
                     .weak(),
                 );
             });
-            if primary(
-                ui,
-                "预测命中规则与出站",
-                self.ui.connected && self.is_running() && !self.busy,
-            ) {
+            let can_predict = self.ui.connected && self.is_running() && !self.busy;
+            let enter = (host_resp.lost_focus() || port_resp.lost_focus())
+                && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if primary(ui, "预测命中规则与出站", can_predict) || (enter && can_predict) {
                 let port = if self.ui.route_port.trim().is_empty() {
                     Some(None)
                 } else {
@@ -302,6 +325,7 @@ impl App {
                 } else {
                     self.message = "请输入目标、1–65535 的端口和有效的目标 IP（可留空）。".into();
                 }
+                crate::widgets::focus_and_select_all(ui.ctx(), &host_resp, &self.route_host);
             }
             ui.label(RichText::new("仅使用冻结的当前运行配置。域名解析、sniffing 或未支持的前序条件可能使结果未知。").small().weak());
             if let Some((_, context)) = &self.ui.route_tested {
@@ -532,6 +556,38 @@ impl App {
             "日志",
             "查看 Core 输出与界面操作记录，按消息或请求身份定位问题。",
         );
+        if !self.profile_id.is_empty() {
+            let can_edit = self.write_blocker().is_none()
+                && !self.ui.draft_conflict
+                && self.selected_profile == self.profile_id
+                && self.ui.number_inputs.is_empty();
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Core 日志输出级别");
+                self.core_log_level_picker(ui, can_edit, "logs-core-loglevel");
+                if let Some(running_level) = self.running_core_log_level()
+                    && self.is_running()
+                {
+                    ui.label(
+                        RichText::new(format!("运行中级别：{running_level}"))
+                            .small()
+                            .weak(),
+                    );
+                }
+                let can_apply = can_edit && !self.core_path.is_empty();
+                let needs_apply = self.running_core_log_level().as_deref()
+                    != Some(self.core_log_level().as_str())
+                    || !self.is_running();
+                if needs_apply
+                    && ui
+                        .add_enabled(can_apply, egui::Button::new("应用到 Core"))
+                        .on_hover_text("校验当前配置并将所选日志级别应用到运行中的 Core")
+                        .clicked()
+                {
+                    self.validate_and_apply_draft();
+                }
+            });
+            ui.add_space(6.0);
+        }
         let search_width = (ui.available_width() - 298.0).max(120.0);
         ui.horizontal(|ui| {
             ui.label("搜索");

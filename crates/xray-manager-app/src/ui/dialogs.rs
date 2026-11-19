@@ -26,13 +26,13 @@ impl Action {
         match self {
             Action::Switch(_) => (
                 "切换编辑对象？",
-                "当前草稿会独立保留，返回此配置可继续编辑。切换编辑对象不会切换运行配置。",
-                "保留草稿并切换",
+                "当前有未解决的冲突或损坏缓冲，切换后暂保留本地编辑，不会影响当前运行版本。",
+                "保留本地编辑并切换",
             ),
             Action::Discard(_) => (
-                "放弃当前草稿？",
-                "恢复到最近读取的已保存版本，运行配置保持不变。",
-                "放弃草稿",
+                "放弃未落盘的本地修改？",
+                "恢复到上次已保存的磁盘版本，当前运行版本保持不变。",
+                "放弃未保存修改",
             ),
             Action::Delete { .. } => (
                 "删除此配置？",
@@ -70,9 +70,9 @@ impl Action {
                 "确认切换",
             ),
             Action::AdoptDraft(_) => (
-                "保留草稿并重新检查？",
-                "保留草稿内容，将最新已保存版本作为新的基准。请在预览中仔细核对差异，确认后才会应用。",
-                "保留草稿内容",
+                "用本地内容覆盖保存？",
+                "保留当前编辑器中的内容，基于最新磁盘版本直接覆盖保存，不会立即重启 Core。",
+                "保留本地内容",
             ),
             Action::ClearPacDomains(_) => (
                 "清空 PAC 代理域名清单？",
@@ -102,7 +102,6 @@ impl App {
             ui.set_width((ctx.content_rect().width() - 100.0).clamp(300.0, width));
             match &dialog {
                 Dialog::Create => self.create_dialog_contents(ui),
-                Dialog::Rename(profile) => self.rename_dialog_contents(ui, profile),
                 Dialog::Confirm(action) => self.confirm_dialog_contents(ui, action, ctx),
                 Dialog::HistoryDiff => self.history_diff_dialog_contents(ui),
                 Dialog::ExitChoice => self.exit_choice_dialog_contents(ui),
@@ -367,48 +366,235 @@ impl App {
                     json_editor(ui, &mut self.ui.new_json, "import-json", height);
                 } else {
                     use crate::guided_config::{Scene, Template};
-                    if !self.ui.new_guided_started {
-                        ui.label("选择使用场景");
-                        ui.horizontal_wrapped(|ui| {
-                            for scene in Scene::ALL { ui.selectable_value(&mut self.ui.new_scene, scene, scene.label()); }
-                        });
-                        if self.ui.new_scene != Scene::Direct {
-                            ui.label("选择与服务端一致的连接模板");
-                            egui::ComboBox::from_id_salt("create-template").selected_text(self.ui.new_template.label()).show_ui(ui, |ui| {
-                                for template in Template::ALL { ui.selectable_value(&mut self.ui.new_template, template, template.label()); }
-                            });
-                        }
-                        ui.label("模板自动准备本机 HTTP / SOCKS 入口及基础出站。远端地址、端口和认证参数按服务端资料填写。");
-                        if ui.button("开始填写").clicked() {
-                            self.ui.new_json = serde_json::to_string_pretty(&crate::guided_config::scene(self.ui.new_scene, self.ui.new_template)).unwrap();
-                            self.ui.new_guided_started = true;
+                    let desired_key = (
+                        self.ui.new_scene,
+                        self.ui.new_template,
+                        self.ui.new_split_preset,
+                        self.ui.new_split_sniffing,
+                    );
+                    if self.ui.new_config_key != Some(desired_key) {
+                        self.ui.new_config_key = Some(desired_key);
+                        if !self.ui.new_share_imported {
+                            self.ui.new_json = serde_json::to_string_pretty(
+                                &crate::guided_config::scene_with_options(
+                                    self.ui.new_scene,
+                                    self.ui.new_template,
+                                    self.ui.new_split_preset,
+                                    self.ui.new_split_sniffing,
+                                ),
+                            )
+                            .unwrap();
+                            self.ui.new_node_names.clear();
                             if self.ui.new_scene != Scene::Direct {
-                                self.ui.new_node_names.insert("node-1".into(), format!("{} 节点", self.ui.new_template.label()));
+                                self.ui.new_node_names.insert(
+                                    "node-1".into(),
+                                    format!("{} 节点", self.ui.new_template.label()),
+                                );
                             }
-                        }
-                    } else {
-                        ui.label(RichText::new(format!("{} · {}", self.ui.new_scene.label(), if self.ui.new_scene == Scene::Direct { "本地诊断" } else { self.ui.new_template.label() })).strong());
-                        if let Ok(mut value) = xray_config::parse_document(self.ui.new_json.as_bytes()) {
-                            let mut changed = false;
-                            if self.ui.new_scene != Scene::Direct {
-                                ui.label("节点显示名称");
-                                let name = self.ui.new_node_names.entry("node-1".into()).or_default();
-                                ui.add(singleline(name, f32::INFINITY).char_limit(80));
-                                changed |= ui.push_id(("new-node", self.ui.new_editor_epoch), |ui| crate::guided_config::node_form(ui, &mut value["outbounds"][0], None)).inner;
-                            }
-                            if changed { self.ui.new_json = serde_json::to_string_pretty(&value).unwrap(); }
+                            self.ui.new_editor_epoch = self.ui.new_editor_epoch.wrapping_add(1);
+                        } else if let Ok(mut value) =
+                            xray_config::parse_document(self.ui.new_json.as_bytes())
+                        {
+                            value["routing"] = serde_json::json!({"rules":[]});
                             if self.ui.new_scene == Scene::Split {
-                                ui.label("保存后进入「分流规则」，添加需要走代理、直连或阻止的网站。未设置例外时默认通过此节点。");
+                                let mut st = crate::guided_config::State::default();
+                                if self.ui.new_split_preset {
+                                    crate::guided_config::apply_geosite_bypass_preset(&mut value, &mut st);
+                                }
+                                if self.ui.new_split_sniffing {
+                                    crate::guided_config::enable_inbound_sniffing(&mut value, &mut st);
+                                }
                             }
-                            crate::guided_config::summary(ui, &value, &self.ui.new_node_names);
+                            self.ui.new_json = serde_json::to_string_pretty(&value).unwrap();
                         }
-                        ui.label(RichText::new("本机端口将在检查和应用时核对，不会自动替换正在使用的端口。系统代理接管在应用预览前单独选择。").small().weak());
                     }
+
+                    ui.label("选择使用场景");
+                    ui.horizontal_wrapped(|ui| {
+                        for scene in Scene::ALL {
+                            ui.selectable_value(&mut self.ui.new_scene, scene, scene.label());
+                        }
+                    });
+                    if self.ui.new_scene == Scene::Split {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.checkbox(&mut self.ui.new_split_preset, "添加国内外分流预设 (GeoSite / GeoIP 直连)");
+                            ui.checkbox(&mut self.ui.new_split_sniffing, "开启本地入口 Sniffing");
+                        });
+                        if self.ui.new_split_preset {
+                            let asset_dir = resolve_path(&self.root, std::path::Path::new(self.asset_root.trim()));
+                            if !asset_dir.join("geosite.dat").is_file() || !asset_dir.join("geoip.dat").is_file() {
+                                ui.label(
+                                    RichText::new("提示：当前资源目录暂未检测到 geosite.dat / geoip.dat，可在「设置 → Core 与依赖」一键下载。")
+                                        .small()
+                                        .color(ui.visuals().warn_fg_color),
+                                );
+                            }
+                        }
+                    }
+                    if self.ui.new_scene != Scene::Direct {
+                        ui.separator();
+                        ui.label("从分享链接快速填入（纯本地离线解析，支持 vless / trojan / ss / vmess / socks / http，可多行）");
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.ui.new_share_input)
+                                .desired_rows(2)
+                                .desired_width(f32::INFINITY)
+                                .hint_text("粘贴 vless://... 或多行分享链接"),
+                        );
+                        ui.horizontal_wrapped(|ui| {
+                            if ui
+                                .add_enabled(
+                                    !self.ui.new_share_input.trim().is_empty(),
+                                    egui::Button::new("解析并填入"),
+                                )
+                                .clicked()
+                            {
+                                let batch = xray_config::share_link::parse_share_links(&self.ui.new_share_input);
+                                if batch.nodes.is_empty() {
+                                    self.ui.new_share_error = Some(
+                                        batch
+                                            .errors
+                                            .first()
+                                            .map(|e| format!("第 {} 行：{}", e.line, e.message))
+                                            .unwrap_or_else(|| "未识别到有效的分享链接".into()),
+                                    );
+                                } else {
+                                    let mut base = crate::guided_config::scene_with_options(
+                                        Scene::Direct,
+                                        self.ui.new_template,
+                                        false,
+                                        false,
+                                    );
+                                    if self.ui.new_scene == Scene::Split {
+                                        let mut st = crate::guided_config::State::default();
+                                        if self.ui.new_split_preset {
+                                            crate::guided_config::apply_geosite_bypass_preset(&mut base, &mut st);
+                                        }
+                                        if self.ui.new_split_sniffing {
+                                            crate::guided_config::enable_inbound_sniffing(&mut base, &mut st);
+                                        }
+                                    }
+                                    let mut names = std::collections::BTreeMap::new();
+                                    let first_name = batch.nodes.first().and_then(|n| n.name.clone());
+                                    match crate::guided_config::append_share_nodes(
+                                        &mut base,
+                                        &mut names,
+                                        batch.nodes,
+                                        Some(0),
+                                    ) {
+                                        Ok((count, warnings)) => {
+                                            self.ui.new_json = serde_json::to_string_pretty(&base).unwrap();
+                                            self.ui.new_node_names = names;
+                                            if self.ui.new_name.trim().is_empty()
+                                                && let Some(name) = first_name
+                                            {
+                                                self.ui.new_name = name.chars().take(80).collect();
+                                            }
+                                            self.ui.new_share_imported = true;
+                                            self.ui.new_share_warnings = warnings;
+                                            self.ui.new_share_error = if batch.errors.is_empty() {
+                                                None
+                                            } else {
+                                                Some(format!(
+                                                    "已导入 {count} 个节点；另有 {} 行未能解析（如第 {} 行：{}）。",
+                                                    batch.errors.len(),
+                                                    batch.errors[0].line,
+                                                    batch.errors[0].message
+                                                ))
+                                            };
+                                            self.ui.new_editor_epoch = self.ui.new_editor_epoch.wrapping_add(1);
+                                        }
+                                        Err(err) => self.ui.new_share_error = Some(err.into()),
+                                    }
+                                }
+                            }
+                            if self.ui.new_share_imported && ui.button("恢复模板手动填写").clicked() {
+                                self.ui.new_share_imported = false;
+                                self.ui.new_config_key = None;
+                                self.ui.new_share_warnings.clear();
+                                self.ui.new_share_error = None;
+                            }
+                        });
+                        if let Some(err) = &self.ui.new_share_error {
+                            ui.colored_label(ui.visuals().warn_fg_color, err);
+                        }
+                        for warn in &self.ui.new_share_warnings {
+                            ui.colored_label(ui.visuals().warn_fg_color, warn);
+                        }
+                        if !self.ui.new_share_imported {
+                            ui.label("连接模板");
+                            egui::ComboBox::from_id_salt("create-template")
+                                .selected_text(self.ui.new_template.label())
+                                .show_ui(ui, |ui| {
+                                    for template in Template::ALL {
+                                        ui.selectable_value(
+                                            &mut self.ui.new_template,
+                                            template,
+                                            template.label(),
+                                        );
+                                    }
+                                });
+                        }
+                    }
+
+                    if let Ok(mut value) = xray_config::parse_document(self.ui.new_json.as_bytes()) {
+                        let proxy_count = value
+                            .get("outbounds")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter(|n| {
+                                        !matches!(
+                                            n.get("protocol").and_then(|p| p.as_str()),
+                                            Some("freedom" | "blackhole")
+                                        )
+                                    })
+                                    .count()
+                            })
+                            .unwrap_or(0);
+                        let mut changed = false;
+                        if self.ui.new_scene != Scene::Direct && proxy_count == 1 {
+                            let tag = value["outbounds"][0]["tag"]
+                                .as_str()
+                                .unwrap_or("node-1")
+                                .to_owned();
+                            ui.label("节点显示名称");
+                            let name = self.ui.new_node_names.entry(tag).or_default();
+                            ui.add(singleline(name, f32::INFINITY).char_limit(80));
+                            changed |= ui
+                                .push_id(("new-node", self.ui.new_editor_epoch), |ui| {
+                                    crate::guided_config::node_form(ui, &mut value["outbounds"][0], None)
+                                })
+                                .inner;
+                        } else if proxy_count > 1 {
+                            ui.label(RichText::new(format!("已从分享链接解析 {proxy_count} 个节点（首个为默认访问节点）：")).strong());
+                            if let Some(outbounds) = value.get("outbounds").and_then(|v| v.as_array()) {
+                                for node in outbounds.iter().take(proxy_count) {
+                                    let label = crate::guided_config::node_name(node, &self.ui.new_node_names);
+                                    let proto = node["protocol"].as_str().unwrap_or("");
+                                    let addr = node
+                                        .pointer("/settings/vnext/0/address")
+                                        .or_else(|| node.pointer("/settings/servers/0/address"))
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    ui.label(format!("• {label} ({proto}) · {addr}"));
+                                }
+                            }
+                        }
+                        if changed {
+                            self.ui.new_json = serde_json::to_string_pretty(&value).unwrap();
+                        }
+                        crate::guided_config::summary(ui, &value, &self.ui.new_node_names);
+                    }
+                    ui.label(
+                        RichText::new("模板自动准备本机 HTTP / SOCKS 入口；保存后仍可随时在「节点」与「分流规则」调整。")
+                            .small()
+                            .weak(),
+                    );
                 }
                 match xray_config::parse_document(self.ui.new_json.as_bytes()) {
                     Ok(value) => {
-                        can_import = self.ui.import_json || self.ui.new_guided_started;
-                        if can_import { needs_work = config_review(ui, &value); }
+                        can_import = true;
+                        needs_work = config_review(ui, &value);
                     }
                     Err(error) => {
                         ui.colored_label(ui.visuals().error_fg_color, "JSON 暂时无法解析，请修正后保存；当前输入会保留。");
@@ -455,31 +641,6 @@ impl App {
                 return false;
             }
             ui.label(RichText::new("仅保存配置，不启动 Core").small().weak());
-            true
-        })
-        .inner
-    }
-    fn rename_dialog_contents(&mut self, ui: &mut egui::Ui, profile: &str) -> bool {
-        dialog_title(
-            ui,
-            "修改配置显示名称",
-            "名称不改变配置标识、JSON 内容或运行版本。",
-        );
-        ui.label("配置显示名称");
-        ui.add(singleline(&mut self.ui.rename, f32::INFINITY));
-        dialog_actions(ui);
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("取消").clicked() {
-                return false;
-            }
-            if primary(ui, "保存名称", !self.ui.rename.trim().is_empty()) {
-                self.ui.workspace.names.insert(
-                    profile.into(),
-                    self.ui.rename.trim().chars().take(80).collect(),
-                );
-                self.save_workspace();
-                return false;
-            }
             true
         })
         .inner

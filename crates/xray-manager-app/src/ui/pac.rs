@@ -533,9 +533,11 @@ impl App {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label("搜索分组");
-                    ui.add(
-                        crate::widgets::singleline(&mut self.ui.pac_geosite_search, f32::INFINITY)
-                            .hint_text("输入关键词过滤，如 apple / steam / google / cn"),
+                    crate::widgets::singleline_select_all(
+                        ui,
+                        &mut self.ui.pac_geosite_search,
+                        f32::INFINITY,
+                        "输入关键词过滤，如 apple / steam / google / cn",
                     );
                 });
                 let needle = self.ui.pac_geosite_search.trim().to_ascii_lowercase();
@@ -603,14 +605,28 @@ impl App {
 
         ui.horizontal(|ui| {
             let input_width = (ui.available_width() - 88.0).max(160.0);
-            let response = ui.add(
-                crate::widgets::singleline(&mut self.ui.pac_domain_input, input_width)
-                    .hint_text("example.com 或 *.example.com / full:exact.com / geosite:cn"),
+            let response = crate::widgets::singleline_select_all(
+                ui,
+                &mut self.ui.pac_domain_input,
+                input_width,
+                "example.com 或 *.example.com / full:exact.com / geosite:cn",
             );
             let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             let clicked = ui.button("添加").clicked();
             if enter || clicked {
-                self.add_pac_domain(draft, endpoint);
+                let added = self.add_pac_domain(draft, endpoint);
+                response.request_focus();
+                if !added
+                    && !self.ui.pac_domain_input.is_empty()
+                    && let Some(state) = egui::TextEdit::load_state(ui.ctx(), response.id)
+                {
+                    crate::widgets::select_all_text(
+                        ui.ctx(),
+                        state,
+                        response.id,
+                        self.ui.pac_domain_input.chars().count(),
+                    );
+                }
             }
         });
 
@@ -670,9 +686,11 @@ impl App {
         ui.add_space(8.0);
         ui.horizontal_wrapped(|ui| {
             ui.label("筛选");
-            ui.add(
-                crate::widgets::singleline(&mut self.ui.pac_domain_filter, 210.0)
-                    .hint_text("按域名搜索"),
+            crate::widgets::singleline_select_all(
+                ui,
+                &mut self.ui.pac_domain_filter,
+                210.0,
+                "按域名搜索",
             );
             if !self.ui.pac_domain_filter.is_empty() && ui.small_button("清除").clicked() {
                 self.ui.pac_domain_filter.clear();
@@ -835,6 +853,144 @@ impl App {
         }
     }
 
+    fn active_pac_banner(&mut self, ui: &mut egui::Ui, draft: &PacDraft) {
+        let running = self.is_running();
+        let owned = self
+            .status
+            .as_ref()
+            .is_some_and(|s| s.proxy_state == "Owned");
+        let generation = self.status.as_ref().and_then(|s| s.generation.clone());
+        let pac_service = self
+            .status
+            .as_ref()
+            .map(|s| s.pac_state.as_str())
+            .unwrap_or("");
+        let active_strategy = self.active_pac_strategy();
+
+        card(ui, |ui| {
+            ui.label(RichText::new("当前生效的 PAC 状态").strong().size(18.0));
+            match (
+                &generation,
+                generation.as_ref().and_then(|g| g.pac.as_ref()),
+            ) {
+                (Some(g), Some(pac)) if g.proxy_mode == ProxyMode::Pac => {
+                    let state_text = if running && owned && pac_service == "Serving" {
+                        "生效中 · PAC 自动代理正在接管系统代理"
+                    } else if running && owned {
+                        "已应用 PAC · 等待 PAC 服务就绪"
+                    } else if running {
+                        "Core 运行中（系统代理未由本程序接管）"
+                    } else {
+                        "Core 当前未运行（下列为上次应用的 PAC 版本）"
+                    };
+                    ui.label(RichText::new(state_text).strong().color(
+                        if running && owned && pac_service == "Serving" {
+                            accent(ui)
+                        } else {
+                            ui.visuals().warn_fg_color
+                        },
+                    ));
+                    let strategy_desc = match active_strategy {
+                        Some((mode, Some(summary))) => {
+                            format!("{}（{summary}）", Self::pac_mode_label(mode))
+                        }
+                        Some((mode, None)) => Self::pac_mode_label(mode).to_owned(),
+                        None => format!(
+                            "历史版本（修订 {}）",
+                            &pac.revision[..pac.revision.len().min(8)]
+                        ),
+                    };
+                    line(ui, "正在生效策略", &strategy_desc);
+                    line(
+                        ui,
+                        "所属配置",
+                        self.ui.workspace.name(&g.candidate.profile_id),
+                    );
+                    line(
+                        ui,
+                        "PAC 服务",
+                        if pac_service == "Serving" {
+                            "已发布（正在监听本地端口）"
+                        } else {
+                            "未发布"
+                        },
+                    );
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new("PAC URL").small().weak());
+                        ui.monospace(&pac.url);
+                        if ui.small_button("复制 URL").clicked() {
+                            ui.ctx().copy_text(pac.url.clone());
+                            self.message = "已复制正在生效的 PAC URL。".into();
+                        }
+                    });
+                    let matches_draft = g.candidate.profile_id == self.profile_id
+                        && pac.revision == hash(draft.script.as_bytes());
+                    if matches_draft {
+                        ui.label(
+                            RichText::new("与本页当前编辑内容一致，无需重新应用。")
+                                .small()
+                                .color(accent(ui)),
+                        );
+                    } else {
+                        ui.colored_label(
+                            ui.visuals().warn_fg_color,
+                            "注意：正在生效的 PAC 与本页当前编辑不一致；修改需点击下方「检查并应用 PAC」后才会生效。",
+                        );
+                    }
+                    let pac_file = resolve_path(&self.root, &pac.path);
+                    egui::CollapsingHeader::new("查看正在生效的 PAC 脚本内容")
+                        .id_salt("active-pac-script-view")
+                        .show(ui, |ui| {
+                            if let Ok(content) = std::fs::read_to_string(&pac_file) {
+                                let mut preview: String =
+                                    content.lines().take(120).collect::<Vec<_>>().join("\n");
+                                if content.lines().count() > 120 {
+                                    preview.push_str("\n// ...（已截断，仅展示前 120 行）");
+                                }
+                                egui::ScrollArea::vertical()
+                                    .id_salt("active-pac-script-scroll")
+                                    .max_height(180.0)
+                                    .show(ui, |ui| {
+                                        ui.monospace(preview);
+                                    });
+                            } else {
+                                ui.label(
+                                    RichText::new("暂未读取到已落盘的 PAC 脚本文件。")
+                                        .small()
+                                        .weak(),
+                                );
+                            }
+                        });
+                }
+                (Some(g), _) if running => {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        format!(
+                            "未启用 PAC · 当前系统代理方式为「{}」",
+                            mode_name(g.proxy_mode)
+                        ),
+                    );
+                    ui.label(
+                        RichText::new(
+                            "在下方配置好策略后，点击「检查并应用 PAC」即可切换到 PAC 自动代理。",
+                        )
+                        .small()
+                        .weak(),
+                    );
+                }
+                _ => {
+                    ui.label(RichText::new("当前未生效 PAC（Core 尚未启动）").weak());
+                    ui.label(
+                        RichText::new("配置好策略后点击「检查并应用 PAC」即可校验并启用。")
+                            .small()
+                            .weak(),
+                    );
+                }
+            }
+        });
+        ui.add_space(12.0);
+    }
+
     pub(in crate::app) fn pac_page(&mut self, ui: &mut egui::Ui) {
         heading(
             ui,
@@ -854,6 +1010,8 @@ impl App {
         if self.sync_pac_script(&mut draft, endpoint, cached_geo.as_ref()) {
             changed = true;
         }
+
+        self.active_pac_banner(ui, &draft);
 
         // Card 1: mode & GeoSite picker.
         card(ui, |ui| {
@@ -1012,16 +1170,18 @@ impl App {
             ui.horizontal(|ui| {
                 ui.label("测试 URL");
                 let input_w = (ui.available_width() - 190.0).max(160.0);
-                ui.add(
-                    crate::widgets::singleline(&mut self.ui.pac_test_url, input_w)
-                        .hint_text("https://example.com/"),
+                let resp = crate::widgets::singleline_select_all(
+                    ui,
+                    &mut self.ui.pac_test_url,
+                    input_w,
+                    "https://example.com/",
                 );
+                let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let can_test = self.ui.connected && !draft.script.trim().is_empty() && !self.busy;
                 if ui
-                    .add_enabled(
-                        self.ui.connected && !draft.script.trim().is_empty() && !self.busy,
-                        egui::Button::new("测试命中结果"),
-                    )
+                    .add_enabled(can_test, egui::Button::new("测试命中结果"))
                     .clicked()
+                    || (enter && can_test)
                 {
                     match xray_pac::normalize_test_url(&self.ui.pac_test_url) {
                         Ok(url) => {
@@ -1033,6 +1193,7 @@ impl App {
                         }
                         Err(error) => self.message = error.message,
                     }
+                    crate::widgets::focus_and_select_all(ui.ctx(), &resp, &self.ui.pac_test_url);
                 }
             });
 
@@ -1083,7 +1244,7 @@ impl App {
             ) {
                 self.save_pac_draft(draft.clone());
                 self.mode = ProxyMode::Pac;
-                self.validate_draft();
+                self.validate_and_apply_draft();
                 changed = false;
             }
         });

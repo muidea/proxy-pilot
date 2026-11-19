@@ -765,6 +765,7 @@ pub fn edit_nodes(
             .weak(),
     );
     let mut remove = None;
+    let mut promote_default = None;
     if let Some(nodes) = config.get_mut("outbounds").and_then(Value::as_array_mut) {
         for (index, node) in nodes.iter_mut().enumerate() {
             let tag = node
@@ -836,6 +837,9 @@ pub fn edit_nodes(
                         }
                         out.changed |= node_form(ui, node, local_focus.as_deref());
                         ui.horizontal_wrapped(|ui| {
+                            if index != 0 && ui.button("设为默认").clicked() {
+                                promote_default = Some(index);
+                            }
                             if ui.button("查看原生字段").clicked() {
                                 out.raw = true;
                             }
@@ -851,6 +855,12 @@ pub fn edit_nodes(
         }
     } else {
         ui.label("出站字段不是数组，可切换到原始 JSON 修正。");
+    }
+    if let Some(index) = promote_default
+        && set_default(config, index)
+    {
+        out.changed = true;
+        state.notice = None;
     }
     if let Some(index) = remove {
         match remove_node(config, index) {
@@ -876,7 +886,7 @@ fn find_outbound_tag(config: &Value, protocol: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn apply_geosite_bypass_preset(config: &mut Value, state: &mut State) -> bool {
+pub(crate) fn apply_geosite_bypass_preset(config: &mut Value, state: &mut State) -> bool {
     let direct_tag = match find_outbound_tag(config, "freedom") {
         Some(tag) => tag,
         None => {
@@ -960,7 +970,7 @@ fn apply_geosite_bypass_preset(config: &mut Value, state: &mut State) -> bool {
     changed
 }
 
-pub(super) fn enable_inbound_sniffing(config: &mut Value, state: &mut State) -> bool {
+pub(crate) fn enable_inbound_sniffing(config: &mut Value, state: &mut State) -> bool {
     let Some(inbounds) = config.get_mut("inbounds").and_then(Value::as_array_mut) else {
         state.notice = Some("入站字段不是数组或尚未添加入站，请先检查本地入口。".into());
         return false;

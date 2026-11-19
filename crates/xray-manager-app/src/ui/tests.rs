@@ -110,16 +110,16 @@ fn native_pages_and_dialogs_render_in_both_themes_at_supported_sizes() {
                 app.ui.page = page;
                 render(&mut app, &ctx, width, height);
             }
-            for tab in [
-                ProfileTab::Summary,
-                ProfileTab::Inbounds,
-                ProfileTab::Outbounds,
-                ProfileTab::Routing,
-                ProfileTab::Json,
-                ProfileTab::History,
+            for (tab, adv) in [
+                (ProfileTab::Outbounds, AdvancedTab::Inbounds),
+                (ProfileTab::Routing, AdvancedTab::Inbounds),
+                (ProfileTab::Advanced, AdvancedTab::Inbounds),
+                (ProfileTab::Advanced, AdvancedTab::Json),
+                (ProfileTab::Advanced, AdvancedTab::History),
             ] {
                 app.ui.page = Page::Profiles;
                 app.ui.profile_tab = tab;
+                app.ui.advanced_tab = adv;
                 render(&mut app, &ctx, width, height);
             }
             for tab in [
@@ -136,7 +136,6 @@ fn native_pages_and_dialogs_render_in_both_themes_at_supported_sizes() {
                 Dialog::Confirm(Action::Stop),
                 Dialog::Confirm(Action::Restart),
                 Dialog::UnsavedExit(ExitKind::Shutdown),
-                Dialog::Rename("work".into()),
                 Dialog::Create,
             ] {
                 app.ui.dialog = Some(dialog);
@@ -579,12 +578,6 @@ fn dialogs_stay_inside_the_smallest_window_in_both_themes() {
         for (dialog, title, action, name) in [
             (Dialog::Create, "添加 / 导入配置", "添加配置", "import"),
             (
-                Dialog::Rename("work".into()),
-                "修改配置显示名称",
-                "保存名称",
-                "rename",
-            ),
-            (
                 Dialog::Confirm(Action::Restart),
                 "启动 / 重启上次应用版本？",
                 "启动 / 重启",
@@ -594,7 +587,6 @@ fn dialogs_stay_inside_the_smallest_window_in_both_themes() {
             let mut app = app();
             app.ui.import_json = true;
             app.ui.new_name = "中文配置".into();
-            app.ui.rename = "工作网络".into();
             app.ui.dialog = Some(dialog);
             let ctx = egui::Context::default();
             configure(&ctx);
@@ -782,7 +774,8 @@ fn profile_editors_follow_parent_size_for_short_and_long_documents_and_resizing(
         for long in [false, true] {
             let mut app = app();
             app.ui.page = Page::Profiles;
-            app.ui.profile_tab = ProfileTab::Json;
+            app.ui.profile_tab = ProfileTab::Advanced;
+            app.ui.advanced_tab = AdvancedTab::Json;
             app.editor = if long {
                 serde_json::to_string_pretty(&serde_json::json!({"metadata": {
                     "long_line": "native-value-".repeat(200),
@@ -836,7 +829,7 @@ fn profile_editors_follow_parent_size_for_short_and_long_documents_and_resizing(
                 let editors = json_viewport_rects(&output);
                 assert_eq!(editors.len(), 1);
                 let editor = editors[0];
-                let footer = enclosing_rect(&output, "检查并预览", CONTROL_HEIGHT);
+                let footer = enclosing_rect(&output, "检查并应用", CONTROL_HEIGHT);
                 assert!(editor.height() >= 79.0, "collapsed editor: {editor:?}");
                 assert!(
                     editor.width() > 250.0 && editor.right() <= width - 24.0,
@@ -1234,20 +1227,34 @@ fn long_content_on_all_pages_keeps_visible_text_separate() {
     for appearance in [Appearance::Light, Appearance::Dark] {
         for (width, height) in [(760.0, 500.0), (1100.0, 760.0), (1920.0, 1040.0)] {
             let mut cases = vec![
-                (Page::Overview, ProfileTab::Summary, SettingsTab::Core),
-                (Page::Diagnostics, ProfileTab::Summary, SettingsTab::Core),
-                (Page::Logs, ProfileTab::Summary, SettingsTab::Core),
+                (
+                    Page::Overview,
+                    ProfileTab::Outbounds,
+                    AdvancedTab::Inbounds,
+                    SettingsTab::Core,
+                ),
+                (
+                    Page::Diagnostics,
+                    ProfileTab::Outbounds,
+                    AdvancedTab::Inbounds,
+                    SettingsTab::Core,
+                ),
+                (
+                    Page::Logs,
+                    ProfileTab::Outbounds,
+                    AdvancedTab::Inbounds,
+                    SettingsTab::Core,
+                ),
             ];
             cases.extend(
                 [
-                    ProfileTab::Summary,
-                    ProfileTab::Inbounds,
-                    ProfileTab::Outbounds,
-                    ProfileTab::Routing,
-                    ProfileTab::Json,
-                    ProfileTab::History,
+                    (ProfileTab::Outbounds, AdvancedTab::Inbounds),
+                    (ProfileTab::Routing, AdvancedTab::Inbounds),
+                    (ProfileTab::Advanced, AdvancedTab::Inbounds),
+                    (ProfileTab::Advanced, AdvancedTab::Json),
+                    (ProfileTab::Advanced, AdvancedTab::History),
                 ]
-                .map(|tab| (Page::Profiles, tab, SettingsTab::Core)),
+                .map(|(tab, adv)| (Page::Profiles, tab, adv, SettingsTab::Core)),
             );
             cases.extend(
                 [
@@ -1256,9 +1263,16 @@ fn long_content_on_all_pages_keeps_visible_text_separate() {
                     SettingsTab::Appearance,
                     SettingsTab::Storage,
                 ]
-                .map(|tab| (Page::Settings, ProfileTab::Summary, tab)),
+                .map(|tab| {
+                    (
+                        Page::Settings,
+                        ProfileTab::Outbounds,
+                        AdvancedTab::Inbounds,
+                        tab,
+                    )
+                }),
             );
-            for (page, profile_tab, settings_tab) in cases {
+            for (page, profile_tab, advanced_tab, settings_tab) in cases {
                 let ctx = egui::Context::default();
                 configure(&ctx);
                 appearance.apply(&ctx);
@@ -1285,6 +1299,7 @@ fn long_content_on_all_pages_keeps_visible_text_separate() {
                 });
                 app.ui.page = page;
                 app.ui.profile_tab = profile_tab;
+                app.ui.advanced_tab = advanced_tab;
                 app.ui.settings_tab = settings_tab;
                 app.status.as_mut().unwrap().last_error = Some(Error::new(
                     "RECOVERY_REQUIRED",
@@ -1434,7 +1449,9 @@ fn long_content_on_all_pages_keeps_visible_text_separate() {
                     && width == 760.0
                     && (page == Page::Diagnostics
                         || page == Page::Logs
-                        || (page == Page::Profiles && profile_tab == ProfileTab::Json)
+                        || (page == Page::Profiles
+                            && profile_tab == ProfileTab::Advanced
+                            && advanced_tab == AdvancedTab::Json)
                         || (page == Page::Settings
                             && matches!(settings_tab, SettingsTab::Core | SettingsTab::Storage)))
                 {
@@ -1446,12 +1463,13 @@ fn long_content_on_all_pages_keeps_visible_text_separate() {
                         height,
                     );
                 }
-                if matches!(
-                    profile_tab,
-                    ProfileTab::Inbounds | ProfileTab::Outbounds | ProfileTab::Routing
-                ) {
+                if page == Page::Profiles
+                    && (matches!(profile_tab, ProfileTab::Outbounds | ProfileTab::Routing)
+                        || (profile_tab == ProfileTab::Advanced
+                            && advanced_tab == AdvancedTab::Inbounds))
+                {
                     assert!(
-                        expanded.contains(if profile_tab == ProfileTab::Inbounds {
+                        expanded.contains(if profile_tab == ProfileTab::Advanced {
                             "原生字段"
                         } else {
                             "高级：原生字段编辑"
@@ -1773,8 +1791,6 @@ fn new_wizard_keeps_actions_visible_and_only_saves_incomplete_native_profiles() 
                 let ctx = egui::Context::default();
                 configure(&ctx);
                 appearance.apply(&ctx);
-                guided_click(&mut app, &ctx, "开始填写", width, height);
-                assert!(app.ui.new_guided_started);
                 let mut output = guided_frame(&mut app, &ctx, vec![], width, height);
                 for _ in 0..12 {
                     output = guided_frame(&mut app, &ctx, vec![], width, height);
@@ -1804,7 +1820,11 @@ fn new_wizard_keeps_actions_visible_and_only_saves_incomplete_native_profiles() 
                 };
                 let value: serde_json::Value = serde_json::from_str(&json).unwrap();
                 assert_eq!(value["outbounds"][0]["tag"], "node-1");
-                assert_eq!(value["routing"]["rules"], serde_json::json!([]));
+                assert!(
+                    !value["routing"]["rules"].as_array().unwrap().is_empty(),
+                    "split preset should populate default bypass rules"
+                );
+                assert_eq!(value["inbounds"][0]["sniffing"]["enabled"], true);
                 assert!(requests.try_recv().is_err());
                 assert!(app.ui.workspace.node_names.contains_key(&profile_id));
                 assert_eq!(app.mode, ProxyMode::Direct);
@@ -1823,7 +1843,7 @@ fn issue_action_opens_the_node_form_and_edits_only_the_draft() {
     config["outbounds"][0] = serde_json::json!({"tag":"node-1","protocol":"socks","settings":{"servers":[{"port":0,"custom":"preserved"}]},"extension":{"keep":true}});
     app.editor = serde_json::to_string_pretty(&config).unwrap();
     app.ui.page = Page::Profiles;
-    app.ui.profile_tab = ProfileTab::Summary;
+    app.ui.profile_tab = ProfileTab::Outbounds;
     app.ui.guided.native = true;
     let original = app.editor.clone();
     let runtime = app.ui.runtime.as_ref().unwrap().json.clone();
@@ -1873,7 +1893,13 @@ fn a_new_wizard_hides_authentication_even_if_the_previous_wizard_revealed_it() {
     configure(&ctx);
     let prepare = |app: &mut App| {
         app.begin_create(false, false);
-        app.ui.new_guided_started = true;
+        app.ui.new_template = Template::VlessTls;
+        app.ui.new_config_key = Some((
+            Scene::Single,
+            Template::VlessTls,
+            app.ui.new_split_preset,
+            app.ui.new_split_sniffing,
+        ));
         let mut value = crate::guided_config::scene(Scene::Single, Template::VlessTls);
         value["outbounds"][0]["settings"]["vnext"][0]["users"][0]["id"] =
             serde_json::json!("test-credential-only");
@@ -1930,7 +1956,7 @@ fn guided_node_and_routing_forms_fit_the_parent_without_overlapping_text() {
                 assert_eq!(app.editor, original);
                 if tab == ProfileTab::Routing && width >= 1100.0 {
                     let first_match = text_bounds(&output, "example.com\nfull:only.example.org");
-                    let footer = text_bounds(&output, "检查并预览");
+                    let footer = text_bounds(&output, "检查并应用");
                     assert!(
                         first_match.bottom() < footer.top(),
                         "first rule input must be visible: {first_match:?} / {footer:?}"
@@ -1954,7 +1980,8 @@ fn unfinished_number_notice_locates_its_field_without_losing_input_or_overlappin
         for (width, height) in [(760.0, 500.0), (1100.0, 760.0), (1920.0, 1040.0)] {
             let mut app = app();
             app.ui.page = Page::Profiles;
-            app.ui.profile_tab = ProfileTab::Json;
+            app.ui.profile_tab = ProfileTab::Advanced;
+            app.ui.advanced_tab = AdvancedTab::Json;
             let path = "/inbounds/0/port";
             let source = serde_json::from_str::<serde_json::Value>(&app.editor)
                 .unwrap()
@@ -1997,7 +2024,8 @@ fn unfinished_number_notice_locates_its_field_without_losing_input_or_overlappin
                 }
             }
             guided_click(&mut app, &ctx, "定位未完成数值", width, height);
-            assert_eq!(app.ui.profile_tab, ProfileTab::Inbounds);
+            assert_eq!(app.ui.profile_tab, ProfileTab::Advanced);
+            assert_eq!(app.ui.advanced_tab, AdvancedTab::Inbounds);
             assert!(app.ui.guided.native);
             let mut output = guided_frame(&mut app, &ctx, vec![], width, height);
             for _ in 0..4 {
@@ -2384,7 +2412,7 @@ fn onboarding_actions_share_one_row() {
         },
         |ctx| app.render(ctx),
     );
-    let save = text_bounds(&output, "保存并继续");
+    let save = text_bounds(&output, "下一步：添加配置");
     let later = text_bounds(&output, "稍后设置，进入总览");
     assert!((save.center().y - later.center().y).abs() < 4.0);
 }
@@ -2741,7 +2769,7 @@ fn pac_large_domain_list_uses_bounded_virtualized_viewport_and_filters() {
     // Bounded scroll area keeps apply card reachable without stretching the page.
     let apply_section = text_bounds(&output, "测试与一键应用");
     assert!(
-        apply_section.top() < 1100.0,
+        apply_section.top() < 1300.0,
         "apply section pushed too far down: {}",
         apply_section.top()
     );
@@ -3116,4 +3144,222 @@ fn portable_relative_paths_work_across_settings_workspace_and_geodata_cache() {
 
     let cache = app.refresh_geodata_cache().unwrap();
     assert!(cache.data.resolve_domain_spec("geosite:cn").is_some());
+}
+
+#[test]
+fn share_link_import_works_in_create_dialog_and_nodes_tab_with_default_promotion() {
+    let mut app = app();
+    let (tx, requests) = mpsc::sync_channel(MAX_PENDING);
+    app.tx = tx;
+    app.pending.clear();
+    let ctx = egui::Context::default();
+    configure(&ctx);
+
+    // 1. Create dialog multi-line share link import without intermediate "开始填写".
+    app.begin_create(false, false);
+    app.ui.new_share_input = [
+        "vless://11111111-2222-3333-4444-555555555555@jp.example.com:443?security=reality&sni=www.microsoft.com&fp=chrome&pbk=PK_TEST#Tokyo",
+        "trojan://secret@hk.example.com:443?security=tls&sni=hk.example.com#HongKong",
+    ]
+    .join("\n");
+    guided_click(&mut app, &ctx, "解析并填入", 1100.0, 760.0);
+    assert!(app.ui.new_share_imported);
+    assert_eq!(app.ui.new_name, "Tokyo");
+    assert!(app.ui.new_share_error.is_none());
+    let created: serde_json::Value = serde_json::from_str(&app.ui.new_json).unwrap();
+    assert_eq!(
+        created["outbounds"][0]["settings"]["vnext"][0]["address"],
+        "jp.example.com"
+    );
+    assert_eq!(
+        created["outbounds"][1]["settings"]["servers"][0]["address"],
+        "hk.example.com"
+    );
+
+    guided_click(&mut app, &ctx, "添加配置", 1100.0, 760.0);
+    assert!(app.ui.dialog.is_none());
+    let req = requests.try_recv().unwrap();
+    assert!(matches!(req.command, Command::CreateProfile { .. }));
+    app.busy = false;
+
+    // 2. Outbounds tab share link import + one-click "设为默认".
+    app.ui.page = Page::Profiles;
+    app.ui.profile_tab = ProfileTab::Outbounds;
+    guided_click(&mut app, &ctx, "从分享链接导入节点…", 1100.0, 760.0);
+    assert!(app.ui.node_share_open);
+    app.ui.node_share_input =
+        "ss://YWVzLTI1Ni1nY206cGFzczEyMw@sg.example.com:8388#Singapore".into();
+    guided_click(&mut app, &ctx, "导入节点", 1100.0, 760.0);
+
+    let edited: serde_json::Value = serde_json::from_str(&app.editor).unwrap();
+    let outbounds = edited["outbounds"].as_array().unwrap();
+    let sg_tag = outbounds.last().unwrap()["tag"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        app.ui.workspace.node_names["work"]
+            .get(&sg_tag)
+            .map(String::as_str),
+        Some("Singapore")
+    );
+    assert_eq!(
+        outbounds.last().unwrap()["settings"]["servers"][0]["address"],
+        "sg.example.com"
+    );
+}
+
+#[test]
+fn active_pac_strategy_banner_shows_effective_mode_summary_and_draft_mismatch() {
+    let mut app = app();
+    let status = app.status.as_mut().unwrap();
+    status.proxy_state = "Owned".into();
+    status.pac_state = "Serving".into();
+    let g = status.generation.as_mut().unwrap();
+    g.proxy_mode = ProxyMode::Pac;
+    g.pac = Some(PacPublication {
+        revision: "active-pac-revision-00000000".into(),
+        sha256: "active-pac-revision-00000000".into(),
+        url: "http://127.0.0.1:18080/pac/active/proxy.pac".into(),
+        port: 18080,
+        path: PathBuf::from("runtime/pac/active/proxy.pac"),
+        mode: Some(xray_model::PacMode::ProxyList),
+        summary: Some("1 个 GeoSite · 2 条代理域名（2 条生效），其余直连".into()),
+    });
+    app.ui.workspace.pac.insert(
+        "work".into(),
+        PacDraft {
+            mode: xray_model::PacMode::AutoRules,
+            ..Default::default()
+        },
+    );
+
+    let ctx = egui::Context::default();
+    configure(&ctx);
+    app.ui.page = Page::Pac;
+    let output = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    let _ = text_bounds(&output, "生效中 · PAC 自动代理正在接管系统代理");
+    let _ = text_bounds(
+        &output,
+        "仅代理选中 GeoSite 与域名，其余直连（1 个 GeoSite · 2 条代理域名（2 条生效），其余直连）",
+    );
+    let _ = text_bounds(
+        &output,
+        "注意：正在生效的 PAC 与本页当前编辑不一致；修改需点击下方「检查并应用 PAC」后才会生效。",
+    );
+
+    app.ui.page = Page::Overview;
+    let overview = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    let _ = text_bounds(&overview, "生效 PAC 策略");
+}
+
+#[test]
+fn pac_inputs_auto_select_all_on_focus_for_easy_replacement() {
+    let mut app = app();
+    let (tx, requests) = mpsc::sync_channel(MAX_PENDING);
+    app.tx = tx;
+    app.pending.clear();
+    app.ui.page = Page::Pac;
+    assert_eq!(app.ui.pac_test_url, "https://example.com/");
+
+    let ctx = egui::Context::default();
+    configure(&ctx);
+    let output = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    let url_pos = text_bounds(&output, "https://example.com/").center();
+    guided_frame(&mut app, &ctx, pointer_click(url_pos), 1100.0, 900.0);
+    guided_frame(
+        &mut app,
+        &ctx,
+        vec![egui::Event::Text("https://google.com/".into())],
+        1100.0,
+        900.0,
+    );
+    assert_eq!(app.ui.pac_test_url, "https://google.com/");
+
+    guided_click(&mut app, &ctx, "测试命中结果", 1100.0, 900.0);
+    assert!(matches!(
+        requests.try_recv(),
+        Ok(Request {
+            command: Command::TestPac { url, .. },
+            ..
+        }) if url == "https://google.com/"
+    ));
+
+    // Clicking "测试命中结果" re-focuses and selects all in the URL box so typing replaces it cleanly.
+    guided_frame(
+        &mut app,
+        &ctx,
+        vec![egui::Event::Text("https://github.com/".into())],
+        1100.0,
+        900.0,
+    );
+    assert_eq!(app.ui.pac_test_url, "https://github.com/");
+}
+
+#[test]
+fn core_log_level_can_be_adjusted_from_logs_and_profile_settings() {
+    let mut app = app();
+    let (tx, requests) = mpsc::sync_channel(MAX_PENDING);
+    app.tx = tx;
+    app.pending.clear();
+    assert_eq!(app.core_log_level(), "warning");
+
+    assert!(app.set_core_log_level("debug"));
+    assert_eq!(app.core_log_level(), "debug");
+    let edited: serde_json::Value = serde_json::from_str(&app.editor).unwrap();
+    assert_eq!(edited["log"]["loglevel"], "debug");
+
+    let ctx = egui::Context::default();
+    configure(&ctx);
+    app.ui.page = Page::Logs;
+    let output = guided_frame(&mut app, &ctx, vec![], 1100.0, 760.0);
+    assert!(overlapping_visible_text(&output).is_empty());
+    let _ = text_bounds(&output, "Core 日志输出级别");
+    let _ = text_bounds(&output, "运行中级别：warning");
+    guided_click(&mut app, &ctx, "应用到 Core", 1100.0, 760.0);
+    let req = requests.try_recv().unwrap();
+    assert!(matches!(req.command, Command::ValidateDraft { .. }));
+}
+
+#[test]
+fn route_prediction_input_retains_focus_and_selects_all_after_predict() {
+    let mut app = app();
+    let (tx, requests) = mpsc::sync_channel(MAX_PENDING);
+    app.tx = tx;
+    app.pending.clear();
+    app.ui.page = Page::Diagnostics;
+    assert_eq!(app.route_host, "example.com");
+
+    let ctx = egui::Context::default();
+    configure(&ctx);
+    let output = guided_frame(&mut app, &ctx, vec![], 1100.0, 1200.0);
+    let host_pos = text_bounds(&output, "example.com").center();
+    guided_frame(&mut app, &ctx, pointer_click(host_pos), 1100.0, 1200.0);
+    guided_frame(
+        &mut app,
+        &ctx,
+        vec![egui::Event::Text("google.com".into())],
+        1100.0,
+        1200.0,
+    );
+    assert_eq!(app.route_host, "google.com");
+
+    guided_click(&mut app, &ctx, "预测命中规则与出站", 1100.0, 1200.0);
+    assert!(matches!(
+        requests.try_recv(),
+        Ok(Request {
+            command: Command::TestRunningRoute { context, .. },
+            ..
+        }) if context.host == "google.com"
+    ));
+
+    // Clicking "预测命中规则与出站" re-focuses and selects all in the host box for easy replacement.
+    guided_frame(
+        &mut app,
+        &ctx,
+        vec![egui::Event::Text("github.com".into())],
+        1100.0,
+        1200.0,
+    );
+    assert_eq!(app.route_host, "github.com");
 }

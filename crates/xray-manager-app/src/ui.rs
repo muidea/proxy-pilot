@@ -48,10 +48,14 @@ pub(super) enum Page {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum ProfileTab {
     #[default]
-    Summary,
-    Inbounds,
     Outbounds,
     Routing,
+    Advanced,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum AdvancedTab {
+    #[default]
+    Inbounds,
     Json,
     History,
 }
@@ -110,7 +114,6 @@ pub(super) enum Dialog {
     #[cfg_attr(not(any(windows, test)), allow(dead_code))]
     ExitChoice,
     Create,
-    Rename(String),
     PacBatch,
 }
 #[derive(Clone)]
@@ -140,6 +143,7 @@ struct Event {
 pub(super) struct UiState {
     pub page: Page,
     profile_tab: ProfileTab,
+    advanced_tab: AdvancedTab,
     settings_tab: SettingsTab,
     pub workspace: Workspace,
     pub connected: bool,
@@ -152,6 +156,7 @@ pub(super) struct UiState {
     unreadable_drafts: std::collections::HashSet<String>,
     deleted_profiles: std::collections::HashSet<String>,
     pub validation_epoch: u64,
+    pub pending_auto_apply: bool,
     pub preview_open: bool,
     pub runtime: Option<RuntimeConfig>,
     pub uncertain: Option<Uncertain>,
@@ -163,21 +168,35 @@ pub(super) struct UiState {
     pub(super) number_inputs: crate::workspace::NumberInputs,
     pending_draft_writes: std::collections::HashSet<String>,
     discarded_draft_state: Option<String>,
-    draft_conflict: bool,
+    pub(super) draft_conflict: bool,
     pub(super) dialog: Option<Dialog>,
     new_name: String,
     new_json: String,
     import_json: bool,
     new_scene: crate::guided_config::Scene,
     new_template: crate::guided_config::Template,
-    new_guided_started: bool,
+    new_split_preset: bool,
+    new_split_sniffing: bool,
+    new_config_key: Option<(
+        crate::guided_config::Scene,
+        crate::guided_config::Template,
+        bool,
+        bool,
+    )>,
+    new_share_imported: bool,
+    new_share_input: String,
+    new_share_warnings: Vec<String>,
+    new_share_error: Option<String>,
     new_editor_epoch: u64,
     new_node_names: std::collections::BTreeMap<String, String>,
+    pub(super) node_share_open: bool,
+    pub(super) node_share_input: String,
+    pub(super) node_share_feedback: Option<String>,
+    pub(super) inline_rename: Option<String>,
     pub(super) guided: crate::guided_config::State,
     import_error: Option<String>,
     import_source: Option<PathBuf>,
     import_use_source_assets: bool,
-    rename: String,
     pub onboarding: bool,
     setup_initialized: bool,
     setup_step: usize,
@@ -230,7 +249,8 @@ impl Default for UiState {
     fn default() -> Self {
         Self {
             page: Page::Overview,
-            profile_tab: ProfileTab::Summary,
+            profile_tab: ProfileTab::Outbounds,
+            advanced_tab: AdvancedTab::Inbounds,
             settings_tab: SettingsTab::Core,
             workspace: Workspace::default(),
             connected: false,
@@ -243,6 +263,7 @@ impl Default for UiState {
             unreadable_drafts: Default::default(),
             deleted_profiles: Default::default(),
             validation_epoch: 0,
+            pending_auto_apply: false,
             preview_open: false,
             runtime: None,
             uncertain: None,
@@ -261,14 +282,23 @@ impl Default for UiState {
             import_json: false,
             new_scene: Default::default(),
             new_template: Default::default(),
-            new_guided_started: false,
+            new_split_preset: true,
+            new_split_sniffing: true,
+            new_config_key: None,
+            new_share_imported: false,
+            new_share_input: String::new(),
+            new_share_warnings: Vec::new(),
+            new_share_error: None,
             new_editor_epoch: 0,
             new_node_names: Default::default(),
+            node_share_open: false,
+            node_share_input: String::new(),
+            node_share_feedback: None,
+            inline_rename: None,
             guided: Default::default(),
             import_error: None,
             import_source: None,
             import_use_source_assets: false,
-            rename: String::new(),
             onboarding: true,
             setup_initialized: false,
             setup_step: 0,
@@ -487,6 +517,7 @@ pub(super) fn command_name(command: &Command) -> &'static str {
         Command::ValidateDraft { .. } => "检查配置",
         Command::ApplyProfile { .. } => "应用配置",
         Command::CreateProfile { .. } => "创建配置",
+        Command::UpdateProfile { .. } => "保存配置",
         Command::DeleteProfile { .. } => "删除配置",
         Command::StageHistory { .. } => "载入历史",
         Command::SaveSettings { .. } => "保存设置",
@@ -944,13 +975,128 @@ impl App {
             }
         }
     }
+    pub(super) fn can_auto_save_profile(&self) -> bool {
+        !self.profile_id.is_empty()
+            && !self.ui.deleted_profiles.contains(&self.profile_id)
+            && self.selected_profile == self.profile_id
+            && self.editor != self.saved_json
+            && self.ui.number_inputs.is_empty()
+            && !self.ui.draft_conflict
+            && self.write_blocker().is_none()
+            && xray_config::parse_document(self.editor.as_bytes()).is_ok()
+    }
+    pub(super) fn auto_save_profile(&mut self) {
+        if !self.can_auto_save_profile() {
+            return;
+        }
+        self.send(Command::UpdateProfile {
+            profile_id: self.profile_id.clone(),
+            expected_revision: self.revision.clone(),
+            json: self.editor.clone(),
+        });
+    }
+    pub(super) fn profile_updated(&mut self, profile: Profile) {
+        self.ui
+            .profile_cache
+            .insert(profile.id.clone(), profile.clone());
+        if self.profile_id == profile.id {
+            self.saved_json = profile.json.clone();
+            self.revision = profile.revision.clone();
+            self.ui.draft_conflict = false;
+            if self.editor == self.saved_json && self.ui.number_inputs.is_empty() {
+                self.ui.drafts.remove(&profile.id);
+                self.ui.pending_draft_writes.remove(&profile.id);
+                self.ui.draft_dirty_since = None;
+                if self.ui.persistence
+                    && let Err(error) = Draft::remove(&self.root, &profile.id)
+                {
+                    self.fail(error, String::new());
+                }
+            } else {
+                self.ui.draft_dirty_since = Some(Instant::now());
+            }
+        }
+    }
+    pub(super) fn has_unapplied_runtime_diff(&self) -> bool {
+        if self.committed_id() != Some(self.profile_id.as_str()) {
+            return false;
+        }
+        let Some(generation) = self.status.as_ref().and_then(|s| s.generation.as_ref()) else {
+            return false;
+        };
+        let Some(runtime) = self
+            .ui
+            .runtime
+            .as_ref()
+            .filter(|r| r.generation_id == generation.id)
+        else {
+            return false;
+        };
+        self.editor != runtime.json
+    }
+    pub(super) fn revert_to_running_config(&mut self) {
+        let Some(generation) = self.status.as_ref().and_then(|s| s.generation.as_ref()) else {
+            return;
+        };
+        if generation.candidate.profile_id != self.profile_id {
+            return;
+        }
+        let Some(runtime) = self
+            .ui
+            .runtime
+            .as_ref()
+            .filter(|r| r.generation_id == generation.id)
+        else {
+            return;
+        };
+        self.editor = runtime.json.clone();
+        self.ui.number_inputs.clear();
+        self.ui.draft_conflict = false;
+        self.draft_edited();
+        self.message = "已恢复到当前运行版本的配置内容。".into();
+    }
+    pub(super) fn compatible_http_listeners(&self) -> Vec<(String, String)> {
+        serde_json::from_str::<serde_json::Value>(&self.editor)
+            .ok()
+            .and_then(|v| v.get("inbounds").and_then(|a| a.as_array()).cloned())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|v| matches!(v["protocol"].as_str(), Some("http" | "mixed")))
+            .filter_map(|v| {
+                let tag = v["tag"].as_str()?.to_owned();
+                Some((
+                    tag.clone(),
+                    format!(
+                        "{}:{} · {}",
+                        v["listen"].as_str().unwrap_or("默认监听"),
+                        v.get("port")
+                            .map(|p| p.to_string())
+                            .unwrap_or_else(|| "待补充端口".into()),
+                        tag
+                    ),
+                ))
+            })
+            .collect()
+    }
+    pub(super) fn sync_http_tag(&mut self) {
+        let listeners = self.compatible_http_listeners();
+        if let Some((first, _)) = listeners.first()
+            && !listeners.iter().any(|(tag, _)| tag == &self.http_tag)
+        {
+            self.http_tag = first.clone();
+        }
+    }
     pub(super) fn flush_draft_if_due(&mut self) {
         if self
             .ui
             .draft_dirty_since
             .is_some_and(|since| since.elapsed() > Duration::from_millis(800))
         {
-            self.stash_draft();
+            if self.can_auto_save_profile() {
+                self.auto_save_profile();
+            } else {
+                self.stash_draft();
+            }
         }
     }
     pub(super) fn restore_draft(&mut self) {
@@ -982,6 +1128,9 @@ impl App {
                 self.editor = draft.json.clone();
                 self.ui.number_inputs = draft.number_inputs.clone();
                 self.ui.draft_conflict = draft.base_revision != self.revision;
+                if !self.ui.draft_conflict && self.ui.number_inputs.is_empty() {
+                    self.ui.draft_dirty_since = Some(Instant::now());
+                }
             } else {
                 self.ui.drafts.remove(&self.profile_id);
             }
@@ -1065,7 +1214,7 @@ impl App {
         if self.selected_profile == profile {
             return;
         }
-        if self.has_draft_edits() {
+        if self.ui.draft_conflict || self.ui.unreadable_drafts.contains(&self.profile_id) {
             self.ui.dialog = Some(Dialog::Confirm(Action::Switch(profile.into())));
         } else {
             self.switch_profile(profile.into());
@@ -1077,26 +1226,49 @@ impl App {
         } else {
             String::new()
         };
-        self.ui.new_json = if duplicate {
-            self.editor.clone()
-        } else {
-            default_config()
-        };
         self.ui.import_json = import || duplicate;
         self.ui.new_scene = Default::default();
         self.ui.new_template = Default::default();
-        self.ui.new_guided_started = false;
+        self.ui.new_split_preset = true;
+        self.ui.new_split_sniffing = true;
+        self.ui.new_config_key = None;
+        self.ui.new_share_imported = false;
+        self.ui.new_share_input.clear();
+        self.ui.new_share_warnings.clear();
+        self.ui.new_share_error = None;
         self.ui.new_editor_epoch = self.ui.new_editor_epoch.wrapping_add(1);
-        self.ui.new_node_names = if duplicate {
-            self.ui
+        if duplicate {
+            self.ui.new_json = self.editor.clone();
+            self.ui.new_node_names = self
+                .ui
                 .workspace
                 .node_names
                 .get(&self.profile_id)
                 .cloned()
-                .unwrap_or_default()
+                .unwrap_or_default();
+        } else if import {
+            self.ui.new_json = default_config();
+            self.ui.new_node_names = Default::default();
         } else {
-            Default::default()
-        };
+            self.ui.new_config_key = Some((
+                self.ui.new_scene,
+                self.ui.new_template,
+                self.ui.new_split_preset,
+                self.ui.new_split_sniffing,
+            ));
+            self.ui.new_json =
+                serde_json::to_string_pretty(&crate::guided_config::scene_with_options(
+                    self.ui.new_scene,
+                    self.ui.new_template,
+                    self.ui.new_split_preset,
+                    self.ui.new_split_sniffing,
+                ))
+                .unwrap();
+            self.ui.new_node_names = std::collections::BTreeMap::from([(
+                "node-1".into(),
+                format!("{} 节点", self.ui.new_template.label()),
+            )]);
+        }
         self.ui.import_error = None;
         self.ui.import_source = None;
         self.ui.import_use_source_assets = false;
@@ -1117,21 +1289,31 @@ impl App {
         self.clear_request_failure();
         if needs_review {
             self.ui.page = Page::Profiles;
-            self.ui.profile_tab = ProfileTab::Summary;
+            self.ui.profile_tab = ProfileTab::Outbounds;
             self.message = "配置原文已保留，请按字段提示补充 / 核对后检查；尚未应用。".into();
         } else {
             self.message = "配置已添加，尚未应用".into();
         }
     }
     pub(super) fn validate_draft(&mut self) {
+        self.validate_draft_with_mode(false);
+    }
+    pub(super) fn validate_and_apply_draft(&mut self) {
+        self.validate_draft_with_mode(true);
+    }
+    fn validate_draft_with_mode(&mut self, auto_apply: bool) {
         if !self.ui.number_inputs.is_empty() {
             self.message = "有未完成的数值输入，请在高级字段中补全或明确放弃草稿后再检查。".into();
             return;
         }
         if self.ui.draft_conflict {
-            self.message = "草稿基于旧版本，请先确认如何处理草稿冲突。".into();
+            self.message = "本地修改与磁盘最新版本存在冲突，请先确认处理方式。".into();
             return;
         }
+        if matches!(self.mode, ProxyMode::Global | ProxyMode::Pac) {
+            self.sync_http_tag();
+        }
+        self.ui.pending_auto_apply = auto_apply;
         self.send(Command::ValidateDraft {
             profile_id: self.profile_id.clone(),
             expected_revision: self.revision.clone(),
@@ -1263,5 +1445,125 @@ impl App {
             self.failed_request = Some(request_id.into());
         }
         self.send(Command::GetStatus);
+    }
+
+    pub(super) const CORE_LOG_LEVELS: [(&'static str, &'static str); 5] = [
+        ("warning", "warning（警告 · 默认）"),
+        ("info", "info（信息 · 记录连接）"),
+        ("debug", "debug（调试 · 最详细）"),
+        ("error", "error（仅错误）"),
+        ("none", "none（关闭日志）"),
+    ];
+
+    pub(super) fn core_log_level(&self) -> String {
+        serde_json::from_str::<serde_json::Value>(&self.editor)
+            .ok()
+            .and_then(|v| {
+                v.pointer("/log/loglevel")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.trim().to_ascii_lowercase())
+            })
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "warning".into())
+    }
+
+    pub(super) fn running_core_log_level(&self) -> Option<String> {
+        let g = self.status.as_ref().and_then(|s| s.generation.as_ref())?;
+        let runtime = self
+            .ui
+            .runtime
+            .as_ref()
+            .filter(|r| r.generation_id == g.id)?;
+        Some(
+            serde_json::from_str::<serde_json::Value>(&runtime.json)
+                .ok()
+                .and_then(|v| {
+                    v.pointer("/log/loglevel")
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.trim().to_ascii_lowercase())
+                })
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "warning".into()),
+        )
+    }
+
+    pub(super) fn set_core_log_level(&mut self, level: &str) -> bool {
+        let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&self.editor) else {
+            self.message =
+                "当前配置 JSON 语法有误，请先在「更多与源码 → 原始 JSON」中修正。".into();
+            return false;
+        };
+        if let Err(err) =
+            crate::guided_config::patch(&mut value, "/log/loglevel", serde_json::json!(level))
+        {
+            self.message = err.into();
+            return false;
+        }
+        self.editor = serde_json::to_string_pretty(&value).unwrap();
+        self.draft_edited();
+        true
+    }
+
+    pub(super) fn core_log_level_picker(
+        &mut self,
+        ui: &mut egui::Ui,
+        enabled: bool,
+        id_salt: &str,
+    ) {
+        let current = self.core_log_level();
+        let selected_label = Self::CORE_LOG_LEVELS
+            .iter()
+            .find(|(v, _)| *v == current)
+            .map(|(_, label)| *label)
+            .unwrap_or(current.as_str());
+        let mut chosen = current.clone();
+        ui.add_enabled_ui(enabled, |ui| {
+            egui::ComboBox::from_id_salt(id_salt)
+                .width(190.0)
+                .selected_text(selected_label)
+                .show_ui(ui, |ui| {
+                    for (value, label) in Self::CORE_LOG_LEVELS {
+                        ui.selectable_value(&mut chosen, value.into(), label);
+                    }
+                });
+        });
+        if chosen != current && self.set_core_log_level(&chosen) {
+            self.message = format!("已将 Core 日志级别设为 {chosen}（应用后生效）。");
+        }
+    }
+
+    pub(super) fn pac_mode_label(mode: PacMode) -> &'static str {
+        match mode {
+            PacMode::AutoRules => "按当前路由规则自动生成",
+            PacMode::DirectList => "选中 GeoSite 与域名直连，其余代理",
+            PacMode::ProxyList => "仅代理选中 GeoSite 与域名，其余直连",
+            PacMode::All => "全部代理（本地/局域网直连）",
+            PacMode::Custom => "自定义 PAC 脚本",
+        }
+    }
+
+    pub(super) fn active_pac_strategy(&self) -> Option<(PacMode, Option<String>)> {
+        let g = self.status.as_ref().and_then(|s| s.generation.as_ref())?;
+        if g.proxy_mode != ProxyMode::Pac {
+            return None;
+        }
+        let pac = g.pac.as_ref()?;
+        if let Some(mode) = pac.mode {
+            return Some((mode, pac.summary.clone()));
+        }
+        if let Some(last) = self
+            .ui
+            .workspace
+            .last_pac
+            .as_ref()
+            .filter(|d| hash(d.script.as_bytes()) == pac.revision)
+        {
+            return Some((last.mode, None));
+        }
+        let draft = self.pac_draft_for(&g.candidate.profile_id);
+        if hash(draft.script.as_bytes()) == pac.revision {
+            return Some((draft.mode, None));
+        }
+        None
     }
 }

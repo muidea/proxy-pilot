@@ -723,6 +723,27 @@ impl<B: ProxyBackend> Supervisor<B> {
                 })?;
                 self.publish_effect(op, path, None, Some(json.clone()), success)
             }
+            Command::UpdateProfile {
+                profile_id,
+                expected_revision,
+                json,
+            } => {
+                parse_document(json.as_bytes())?;
+                self.store.check_revision(profile_id, expected_revision)?;
+                let path = self.store.profile_path(profile_id)?;
+                let success = serde_json::to_value(Profile {
+                    id: profile_id.clone(),
+                    json: json.clone(),
+                    revision: hash(json.as_bytes()),
+                })?;
+                self.publish_effect(
+                    op,
+                    path,
+                    Some(expected_revision.clone()),
+                    Some(json.clone()),
+                    success,
+                )
+            }
             Command::DeleteProfile {
                 profile_id,
                 expected_revision,
@@ -1037,7 +1058,40 @@ impl<B: ProxyBackend> Supervisor<B> {
             revision,
             port,
             path: relative_path,
+            mode: None,
+            summary: None,
         })
+    }
+    fn pac_publication_summary(draft: &PacDraft, stats: &xray_pac::PacCompileStats) -> String {
+        let total =
+            stats.domain_count + stats.full_count + stats.subdomain_count + stats.keyword_count;
+        match draft.mode {
+            PacMode::AutoRules => {
+                if total == 0 && stats.resolved_geosites.is_empty() {
+                    "路由自动生成（无直连/拦截域名规则，全部经由 Xray）".into()
+                } else {
+                    format!(
+                        "路由自动生成（{} 个 GeoSite · {} 条域名规则）",
+                        stats.resolved_geosites.len(),
+                        total
+                    )
+                }
+            }
+            PacMode::DirectList => format!(
+                "{} 个 GeoSite · {} 条直连域名（{} 条生效），其余走代理",
+                draft.geosites.len(),
+                draft.domains.len(),
+                total
+            ),
+            PacMode::ProxyList => format!(
+                "{} 个 GeoSite · {} 条代理域名（{} 条生效），其余直连",
+                draft.geosites.len(),
+                draft.domains.len(),
+                total
+            ),
+            PacMode::All => "全部代理（本地回环与局域网直连）".into(),
+            PacMode::Custom => format!("自定义脚本（{} B）", stats.script_bytes),
+        }
     }
     fn ensure_pac_server(&mut self, port: u16) -> Result<&mut PacServer> {
         if let Some(index) = self.pac_servers.iter().position(|s| s.port() == port) {
@@ -1158,7 +1212,11 @@ impl<B: ProxyBackend> Supervisor<B> {
                         ),
                     );
                     xray_pac::validate(&generated.script)?;
-                    pac_publication = Some(self.prepare_pac(&generated.script, draft.port)?);
+                    let mut pub_meta = self.prepare_pac(&generated.script, draft.port)?;
+                    pub_meta.mode = Some(draft.mode);
+                    pub_meta.summary =
+                        Some(Self::pac_publication_summary(&draft, &generated.stats));
+                    pac_publication = Some(pub_meta);
                 }
                 None => {
                     // Restart/auto-connect of the same committed candidate may

@@ -126,6 +126,10 @@ pub struct PacPublication {
     pub url: String,
     pub port: u16,
     pub path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<PacMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 /// Read-only WinHTTP proxy state. WinHTTP is a separate, machine-wide
@@ -268,6 +272,11 @@ pub enum Command {
     },
     CreateProfile {
         profile_id: String,
+        json: String,
+    },
+    UpdateProfile {
+        profile_id: String,
+        expected_revision: String,
         json: String,
     },
     DeleteProfile {

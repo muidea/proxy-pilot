@@ -25,6 +25,7 @@ impl<B: ProxyBackend> Supervisor<B> {
         matches!(
             command,
             Command::CreateProfile { .. }
+                | Command::UpdateProfile { .. }
                 | Command::DeleteProfile { .. }
                 | Command::ValidateDraft { .. }
                 | Command::StageHistory { .. }
