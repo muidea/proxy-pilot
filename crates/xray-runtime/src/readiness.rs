@@ -9,6 +9,7 @@ enum Kind {
     Http,
     Socks,
     Mixed,
+    TcpForward,
 }
 #[derive(Clone)]
 pub struct Listener {
@@ -53,14 +54,37 @@ pub fn listener_plan(config: &Value) -> Result<(Vec<Listener>, Vec<String>)> {
                     .pointer("/header/type")
                     .is_some_and(|v| v != "none")
         });
+        let is_forward = protocol == "dokodemo-door";
+        let forward_network = inbound
+            .pointer("/settings/network")
+            .and_then(Value::as_str)
+            .unwrap_or("tcp");
+        let forward_has_tcp = forward_network
+            .split(',')
+            .any(|part| part.trim().eq_ignore_ascii_case("tcp"));
+        let forward_has_udp = forward_network
+            .split(',')
+            .any(|part| part.trim().eq_ignore_ascii_case("udp"));
         if wrapped
-            || !matches!(protocol, "http" | "socks" | "mixed")
+            || (!matches!(protocol, "http" | "socks" | "mixed") && !is_forward)
             || !matches!(network, "tcp" | "raw")
             || security != "none"
             || port.is_none()
             || ip.is_none()
         {
             notes.push(format!("WARNING Local readiness does not cover inbound {index}; Core validation and process survival do not prove protocol readiness"));
+            continue;
+        }
+        if is_forward && !forward_has_tcp {
+            if forward_has_udp {
+                notes.push(format!(
+                    "Inbound {index} is a UDP-only port forward; Core validation verified socket configuration without a TCP probe"
+                ));
+            } else {
+                notes.push(format!(
+                    "WARNING Local readiness does not cover inbound {index}; Core validation and process survival do not prove protocol readiness"
+                ));
+            }
             continue;
         }
         // Probe only addresses on this machine. Arbitrary/non-loopback bind addresses remain explicit limitations.
@@ -70,6 +94,14 @@ pub fn listener_plan(config: &Value) -> Result<(Vec<Listener>, Vec<String>)> {
             ));
             continue;
         };
+        if is_forward {
+            plan.push(Listener {
+                endpoint: SocketAddr::new(ip, port.unwrap() as u16),
+                kind: Kind::TcpForward,
+                account: None,
+            });
+            continue;
+        }
         let account = inbound
             .pointer("/settings/accounts")
             .and_then(Value::as_array)
@@ -174,6 +206,7 @@ async fn once(listener: &Listener) -> std::io::Result<()> {
             // on a fresh connection rather than treating one protocol as failure.
             Err(_) => http_once(listener).await,
         },
+        Kind::TcpForward => TcpStream::connect(listener.endpoint).await.map(|_| ()),
     }
 }
 async fn probe(listener: Listener) -> Result<()> {
@@ -306,6 +339,36 @@ mod tests {
         let (plan, notes)=listener_plan(&serde_json::json!({"inbounds":[{"protocol":"http","port":10809,"streamSettings":{"rawSettings":{"acceptProxyProtocol":true}}},{"protocol":"socks","port":10808,"streamSettings":{"tcpSettings":{"header":{"type":"http"}}}}]})).unwrap();
         assert!(plan.is_empty());
         assert_eq!(notes.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn dokodemo_door_tcp_forward_probes_connect_and_udp_only_skips_warning() {
+        let (plan, notes) = listener_plan(&serde_json::json!({
+            "inbounds": [
+                {"tag": "pf-tcp", "protocol": "dokodemo-door", "listen": "127.0.0.1", "port": 13306, "settings": {"address": "10.0.0.5", "port": 3306, "network": "tcp"}},
+                {"tag": "pf-both", "protocol": "dokodemo-door", "listen": "0.0.0.0", "port": 13307, "settings": {"address": "10.0.0.5", "port": 3307, "network": "tcp,udp"}},
+                {"tag": "pf-udp", "protocol": "dokodemo-door", "listen": "127.0.0.1", "port": 19987, "settings": {"address": "203.0.113.8", "port": 9987, "network": "udp"}}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(plan.len(), 2);
+        assert!(plan.iter().all(|l| l.kind == Kind::TcpForward));
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("UDP-only port forward"));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accept = tokio::spawn(async move {
+            let _ = listener.accept().await.unwrap();
+        });
+        probe(Listener {
+            endpoint: addr,
+            kind: Kind::TcpForward,
+            account: None,
+        })
+        .await
+        .unwrap();
+        accept.await.unwrap();
     }
 }
 

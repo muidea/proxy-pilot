@@ -72,6 +72,7 @@ fn allowed(path: &str) -> &'static [&'static str] {
             "userLevel",
             "allowTransparent",
             "address",
+            "port",
             "network",
             "followRedirect",
             "timeout",
@@ -376,10 +377,13 @@ pub fn uncovered(value: &Value) -> Vec<String> {
                 if path == "/inbounds/[]"
                     && !matches!(
                         map.get("protocol").and_then(Value::as_str),
-                        Some("http" | "socks" | "mixed")
+                        Some("http" | "socks" | "mixed" | "dokodemo-door")
                     )
                 {
-                    notes.push("Automatic recovery covers HTTP/SOCKS/Mixed inbounds only".into());
+                    notes.push(
+                        "Automatic recovery covers HTTP/SOCKS/Mixed/dokodemo-door inbounds only"
+                            .into(),
+                    );
                 }
                 if path == "/outbounds/[]"
                     && !matches!(
@@ -429,7 +433,10 @@ mod tests {
         let value = serde_json::json!({
             "log": {"loglevel": "warning", "access": "none"},
             "dns": {"servers": [{"address": "1.1.1.1", "domains": ["geosite:cn"], "expectIPs": ["geoip:cn"]}]},
-            "inbounds": [{"tag": "mixed-in", "protocol": "mixed", "listen": "127.0.0.1", "port": 1080, "settings": {"auth": "noauth", "udp": true}}],
+            "inbounds": [
+                {"tag": "mixed-in", "protocol": "mixed", "listen": "127.0.0.1", "port": 1080, "settings": {"auth": "noauth", "udp": true}},
+                {"tag": "pf-1", "protocol": "dokodemo-door", "listen": "127.0.0.1", "port": 13306, "settings": {"address": "10.0.0.5", "port": 3306, "network": "tcp", "followRedirect": false}}
+            ],
             "outbounds": [{"tag": "vless", "protocol": "vless", "settings": {"vnext": [{"address": "a", "port": 443, "users": [{"id": "u"}]}]}, "streamSettings": {
                 "network": "ws", "security": "tls",
                 "tlsSettings": {"serverName": "a", "minVersion": "1.2", "certificates": [{"certificateFile": "cert.pem"}]},

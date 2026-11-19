@@ -2,7 +2,7 @@
 
 更新时间：2026-11-19
 
-本文用于把当前工作区交给下一位开发者、评审者或 Windows 验证人员。当前已发布基线为 `efe1fcf`（`v0.1.1-rc.4`）；当前源码版本为 `v0.1.1-rc.31`。不能把已发布的 `v0.1.1-rc.4` 当作当前源码版本。
+本文用于把当前工作区交给下一位开发者、评审者或 Windows 验证人员。当前已发布基线为 `efe1fcf`（`v0.1.1-rc.4`）；当前源码版本为 `v0.1.1-rc.33`。不能把已发布的 `v0.1.1-rc.4` 当作当前源码版本。
 
 ## 当前产品边界
 
@@ -12,7 +12,7 @@ Windows Global / PAC 模式只接管当前用户的 WinINet 设置。Linux 主�
 
 ## 已完成的源码收口
 
-- 配置交互：协议模板、节点独立名称、多服务器/用户/账号编辑、原生字段编辑、未完成数值草稿持久化、缺项定位、草稿级撤销/重做和三种显示主题。
+- 配置交互：协议模板、节点独立名称、多服务器/用户/账号编辑、原生字段编辑、未完成数值草稿持久化、缺项定位、草稿级撤销/重做、独立卡片式端口转发（`dokodemo-door` + 置顶 `inboundTag` 联动路由 + 工作区停用保留）、以及三种显示主题。
 - PAC 与 GeoSite：`xray-config::geodata` 提供零外部依赖 `geosite.dat`（含 `@attr`/`@!attr`）与 `geoip.dat` 解析及静态路由预测（`simulate_with_geo`）；PAC 模型统一为 `PacMode`（`AutoRules`/`DirectList`/`ProxyList`/`All`/`Custom`）与 `PacDraft { mode, geosites, domains, script, port }`；`xray-pac` 编译支持 `geosite:`/`ext:` 展开、母域折叠、512 KiB 体积警示、ES3 哈希查表与故障关闭安全守卫；PAC 页自动编译与语法校验并支持 GeoSite 速选芯片/分组浏览器，路由编辑器提供一键国内外分流预设。
 - 诊断与运维：静态顺序/遮蔽冲突提示、出站 TCP 延迟探测、Mixed 入站就绪、HTTP/Mixed 代理端点、WinHTTP 只读诊断、本地入口/PAC 服务状态分层、持久化日志（时间戳、代次上下文、凭据脱敏、4 MiB 轮转备份）、动态外部依赖 opt-in 与重校验；**日志**页新增单条复制、空列表保护的筛选复制/导出（`.log`/`.txt`）与持久化会话日志（自动按序拼接 `logs/supervisor.log.1` + `logs/supervisor.log`）一键复制/导出，**设置 → 数据与存储**同步支持复制日志路径、复制日志内容与导出会话日志。
 - 配置校验：API/反向代理内部目标识别；常见节点参数提示；Reality/TLS 和路由字段提示；SOCKS/HTTP 账号 `user`/`pass` 缺项及错误类型提示。提示不回显凭据，不替代官方 Core 校验。
@@ -84,8 +84,8 @@ Windows GNU 原生验证使用用户指定的 `C:\v2rayN\bin\Xray\xray.exe`，�
 ## 重要文件入口
 
 - [README.md](../README.md)：用户安装、配置和部署说明。
-- [validation-guide.md](validation-guide.md)：当前验证包实操指南（`v0.1.1-rc.31`）。
-- [releases/v0.1.1-rc.31.md](releases/v0.1.1-rc.31.md)：`rc.31` 变更与测试摘要（另见 `v0.1.1-rc.19.md`–`v0.1.1-rc.30.md`）。
+- [validation-guide.md](validation-guide.md)：当前验证包实操指南（`v0.1.1-rc.33`）。
+- [releases/v0.1.1-rc.33.md](releases/v0.1.1-rc.33.md)：`rc.33` 变更与测试摘要（另见 `v0.1.1-rc.19.md`–`v0.1.1-rc.32.md`）。
 - [phase0-2-backlog.md](phase0-2-backlog.md)：验收编号和剩余能力清单。
 - [phase0-2-remaining-closeout.md](phase0-2-remaining-closeout.md)：本轮收口内容与证据。
 - [phase0-2-design-crosscheck.md](phase0-2-design-crosscheck.md)：按设计文档逐项核对后的剩余项、未登记设计项和证据边界。
@@ -97,6 +97,7 @@ Windows GNU 原生验证使用用户指定的 `C:\v2rayN\bin\Xray\xray.exe`，�
 - `crates/xray-supervisor/src/maintenance.rs`：离线维护和终态证据校验。
 - `crates/xray-runtime/src/readiness.rs`：本地 HTTP/SOCKS 就绪握手。
 - `crates/xray-manager-app/src/guided_config/`：配置模板和结构化编辑器。
+- `crates/xray-manager-app/src/port_forward.rs`：`dokodemo-door` 端口转发模型、JSON 同步、端口冲突与停用保留逻辑。
 - `crates/xray-manager-app/src/{wakeup.rs,tray.rs}`：DWM 遮蔽防闪烁唤醒与托盘事件处理。
 - `crates/xray-manager-app/src/ui/{pac.rs,diagnostics.rs,settings.rs}`：PAC 批量管理、日志复制导出与存储设置。
 - `crates/xray-pac/`：PAC 生成、校验与有界执行测试。

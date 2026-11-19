@@ -119,6 +119,40 @@ pub fn inspect_config(value: &Value) -> Vec<ConfigIssue> {
             }
         }
     }
+    let api_tag = value.pointer("/api/tag").and_then(Value::as_str);
+    if let Some(inbounds) = value.get("inbounds").and_then(Value::as_array) {
+        for (conflict_index, message) in inbound_port_conflicts(inbounds) {
+            push(
+                format!("/inbounds/{conflict_index}/port"),
+                message,
+                "调整本机监听地址或端口，避免同一协议端口与已有入口或其它端口转发冲突。",
+                true,
+                "STATIC_VALIDATION_FAILED",
+            );
+        }
+        for (index, item) in inbounds.iter().enumerate() {
+            if item.get("protocol").and_then(Value::as_str) == Some("dokodemo-door")
+                && api_tag != item.get("tag").and_then(Value::as_str)
+            {
+                let listen = item
+                    .get("listen")
+                    .and_then(Value::as_str)
+                    .unwrap_or("0.0.0.0");
+                let loopback = listen
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback());
+                if !loopback {
+                    push(
+                        format!("/inbounds/{index}/listen"),
+                        "dokodemo-door 监听非回环地址时无密码认证保护".into(),
+                        "如仅本机使用建议设为 127.0.0.1；使用 0.0.0.0 时请确认局域网访问安全。",
+                        false,
+                        "CONFIG_REVIEW",
+                    );
+                }
+            }
+        }
+    }
     let mut targets: HashSet<&str> = value
         .get("outbounds")
         .and_then(Value::as_array)
@@ -383,6 +417,96 @@ fn connection_advice(value: &Value) -> Vec<ConfigIssue> {
     issues
 }
 
+fn inbound_tcp_udp(inbound: &Value) -> (bool, bool) {
+    let protocol = inbound
+        .get("protocol")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if protocol == "dokodemo-door" {
+        let net = inbound
+            .pointer("/settings/network")
+            .and_then(Value::as_str)
+            .unwrap_or("tcp");
+        let tcp = net
+            .split(',')
+            .any(|part| part.trim().eq_ignore_ascii_case("tcp"));
+        let udp = net
+            .split(',')
+            .any(|part| part.trim().eq_ignore_ascii_case("udp"));
+        return (tcp, udp);
+    }
+    if matches!(protocol, "socks" | "mixed") {
+        let udp = inbound
+            .pointer("/settings/udp")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        return (true, udp);
+    }
+    (true, false)
+}
+
+fn listen_overlaps(a: &str, b: &str) -> bool {
+    let norm = |s: &str| {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            "0.0.0.0".to_owned()
+        } else if let Ok(ip) = trimmed.parse::<std::net::IpAddr>() {
+            ip.to_string()
+        } else {
+            trimmed.to_ascii_lowercase()
+        }
+    };
+    let a = norm(a);
+    let b = norm(b);
+    let is_wild = |ip: &str| ip == "0.0.0.0" || ip == "::";
+    a == b || is_wild(&a) || is_wild(&b)
+}
+
+/// Detect overlapping `(listen, port, tcp/udp)` listeners across `inbounds[]`.
+pub fn inbound_port_conflicts(inbounds: &[Value]) -> Vec<(usize, String)> {
+    let mut conflicts = Vec::new();
+    let parsed: Vec<(usize, &str, u16, bool, bool, String)> = inbounds
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            let port = item
+                .get("port")
+                .and_then(Value::as_u64)
+                .and_then(|p| u16::try_from(p).ok())
+                .filter(|p| *p > 0)?;
+            let listen = item
+                .get("listen")
+                .and_then(Value::as_str)
+                .unwrap_or("0.0.0.0");
+            let (tcp, udp) = inbound_tcp_udp(item);
+            let label = item
+                .get("tag")
+                .and_then(Value::as_str)
+                .filter(|t| !t.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("入口 {}", index + 1));
+            Some((index, listen, port, tcp, udp, label))
+        })
+        .collect();
+
+    for (pos, (idx_a, listen_a, port_a, tcp_a, udp_a, _)) in parsed.iter().enumerate() {
+        for (idx_b, listen_b, port_b, tcp_b, udp_b, label_b) in &parsed[..pos] {
+            if port_a == port_b
+                && listen_overlaps(listen_a, listen_b)
+                && ((*tcp_a && *tcp_b) || (*udp_a && *udp_b))
+            {
+                let _ = idx_b;
+                conflicts.push((
+                    *idx_a,
+                    format!("端口 {port_a} 与「{label_b}」({listen_b}:{port_b}) 监听冲突"),
+                ));
+                break;
+            }
+        }
+    }
+    conflicts
+}
+
 fn geo_and_routing_advice(value: &Value) -> Vec<ConfigIssue> {
     let mut issues = Vec::new();
     let mut advice = |path: String, message: &str, help| {
@@ -442,13 +566,17 @@ fn geo_and_routing_advice(value: &Value) -> Vec<ConfigIssue> {
         .and_then(Value::as_array)
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let any_sniffing = inbounds.iter().any(|inbound| {
+    let proxy_inbounds: Vec<&Value> = inbounds
+        .iter()
+        .filter(|inbound| inbound.get("protocol").and_then(Value::as_str) != Some("dokodemo-door"))
+        .collect();
+    let any_sniffing = proxy_inbounds.iter().any(|inbound| {
         inbound
             .pointer("/sniffing/enabled")
             .and_then(Value::as_bool)
             == Some(true)
     });
-    if uses_geosite && !inbounds.is_empty() && !any_sniffing {
+    if uses_geosite && !proxy_inbounds.is_empty() && !any_sniffing {
         advice(
             "/inbounds".into(),
             "路由包含 GeoSite 域名规则，但入站未启用流量嗅探 (sniffing)",
@@ -631,5 +759,43 @@ mod tests {
             "{:?}",
             fixed_issues.iter().map(|i| &i.path).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn inbound_port_conflicts_catch_overlapping_listeners_and_allow_distinct_udp_tcp() {
+        let conflicting = parse_document(
+            br#"{
+                "inbounds":[
+                    {"tag":"http-in","protocol":"http","listen":"127.0.0.1","port":10809},
+                    {"tag":"pf-1","protocol":"dokodemo-door","listen":"0.0.0.0","port":10809,"settings":{"address":"10.0.0.5","port":3306,"network":"tcp"}}
+                ],
+                "outbounds":[{"tag":"direct","protocol":"freedom"}]
+            }"#,
+        )
+        .unwrap();
+        let issues = inspect_config(&conflicting);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.blocking && i.path == "/inbounds/1/port")
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|i| !i.blocking && i.path == "/inbounds/1/listen")
+        );
+
+        let disjoint_transport = parse_document(
+            br#"{
+                "inbounds":[
+                    {"tag":"http-in","protocol":"http","listen":"127.0.0.1","port":10809},
+                    {"tag":"pf-udp","protocol":"dokodemo-door","listen":"127.0.0.1","port":10809,"settings":{"address":"10.0.0.5","port":9987,"network":"udp"}}
+                ],
+                "outbounds":[{"tag":"direct","protocol":"freedom"}]
+            }"#,
+        )
+        .unwrap();
+        let issues = inspect_config(&disjoint_transport);
+        assert!(!issues.iter().any(|i| i.blocking));
     }
 }

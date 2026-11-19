@@ -121,8 +121,37 @@ fn any_overlap(a: &[Pattern], b: &[Pattern]) -> bool {
     a.iter().any(|a| b.iter().any(|b| overlaps(a, b)))
 }
 
+fn inbound_tags(rule: &Value) -> Vec<&str> {
+    rule.get("inboundTag")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect()
+}
+
+fn is_dokodemo_scoped(rule: &Value, dokodemo_tags: &std::collections::HashSet<&str>) -> bool {
+    let tags = inbound_tags(rule);
+    !tags.is_empty() && tags.iter().all(|tag| dokodemo_tags.contains(tag))
+}
+
+fn shares_inbound_tag(a: &Value, b: &Value) -> bool {
+    let a_tags = inbound_tags(a);
+    let b_tags = inbound_tags(b);
+    !a_tags.is_empty() && !b_tags.is_empty() && a_tags.iter().any(|tag| b_tags.contains(tag))
+}
+
 /// Return static conflicts without claiming that a rule actually matches.
 pub fn conflicts(config: &Value) -> Vec<RouteConflict> {
+    let dokodemo_tags: std::collections::HashSet<&str> = config
+        .get("inbounds")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|inbound| inbound.get("protocol").and_then(Value::as_str) == Some("dokodemo-door"))
+        .filter_map(|inbound| inbound.get("tag").and_then(Value::as_str))
+        .filter(|tag| !tag.is_empty())
+        .collect();
     let protocols: std::collections::BTreeMap<String, String> = config
         .get("outbounds")
         .and_then(Value::as_array)
@@ -160,6 +189,9 @@ pub fn conflicts(config: &Value) -> Vec<RouteConflict> {
         for (earlier, other) in rules[..index].iter().enumerate() {
             let other_action = action(other, &protocols);
             if current_action != Action::Direct || other_action == Action::Direct {
+                continue;
+            }
+            if is_dokodemo_scoped(other, &dokodemo_tags) && !shares_inbound_tag(rule, other) {
                 continue;
             }
             let other_domains = domains(other);
@@ -229,5 +261,23 @@ mod tests {
                 .any(|c| c.index == 4 && c.kind == "unreachable")
         );
         assert!(!found.iter().any(|c| c.index == 2));
+    }
+    #[test]
+    fn dokodemo_door_inbound_rules_do_not_shadow_later_direct_domain_rules() {
+        let config = json!({
+            "inbounds": [
+                {"tag": "http-in", "protocol": "http"},
+                {"tag": "pf-1", "protocol": "dokodemo-door", "settings": {"address": "10.0.0.5", "port": 3306}}
+            ],
+            "outbounds": [
+                {"tag": "proxy", "protocol": "vless"},
+                {"tag": "direct", "protocol": "freedom"}
+            ],
+            "routing": {"rules": [
+                {"type": "field", "inboundTag": ["pf-1"], "outboundTag": "proxy"},
+                {"type": "field", "domain": ["geosite:cn"], "outboundTag": "direct"}
+            ]}
+        });
+        assert!(conflicts(&config).is_empty());
     }
 }

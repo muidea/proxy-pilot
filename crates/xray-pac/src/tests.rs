@@ -20,6 +20,37 @@ fn config() -> Value {
 }
 
 #[test]
+fn dokodemo_door_inbound_rules_do_not_break_default_direct_pac() {
+    let config = json!({
+        "inbounds": [
+            {"tag": "http-in", "listen": "127.0.0.1", "port": 10809, "protocol": "http"},
+            {"tag": "pf-1", "listen": "127.0.0.1", "port": 13306, "protocol": "dokodemo-door", "settings": {"address": "10.0.0.5", "port": 3306, "network": "tcp"}}
+        ],
+        "outbounds": [
+            {"tag": "direct", "protocol": "freedom"},
+            {"tag": "proxy", "protocol": "vless"}
+        ],
+        "routing": {"rules": [
+            {"type": "field", "inboundTag": ["pf-1"], "outboundTag": "proxy"},
+            {"type": "field", "domain": ["full:proxy.example"], "outboundTag": "proxy"}
+        ]}
+    });
+    let generated = generate(&config, endpoint());
+    assert_eq!(
+        evaluate(&generated.script, "https://normal.example/")
+            .unwrap()
+            .kind,
+        "DIRECT"
+    );
+    assert_eq!(
+        evaluate(&generated.script, "https://proxy.example/")
+            .unwrap()
+            .kind,
+        "PROXY"
+    );
+}
+
+#[test]
 fn generated_pac_directs_only_explicit_freedom_domains() {
     let generated = generate(&config(), endpoint());
     validate(&generated.script).unwrap();

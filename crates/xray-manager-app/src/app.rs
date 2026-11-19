@@ -414,12 +414,32 @@ impl App {
                     == Some(true)
             })
     }
+    pub(in crate::app) fn has_exposed_port_forward(value: &serde_json::Value) -> bool {
+        let tags = crate::port_forward::dokodemo_tags(value);
+        value
+            .get("inbounds")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .any(|inbound| {
+                inbound
+                    .get("tag")
+                    .and_then(|t| t.as_str())
+                    .is_some_and(|t| tags.contains(t))
+                    && !crate::port_forward::is_loopback_listen(
+                        inbound
+                            .get("listen")
+                            .and_then(|l| l.as_str())
+                            .unwrap_or(crate::port_forward::LISTEN_LAN),
+                    )
+            })
+    }
     fn should_confirm_preview(&self, c: &Candidate) -> bool {
         if !c.resources.complete || !c.resources.dynamic.is_empty() {
             return true;
         }
         if xray_config::parse_document(self.editor.as_bytes())
-            .is_ok_and(|v| Self::has_insecure_tls(&v))
+            .is_ok_and(|v| Self::has_insecure_tls(&v) || Self::has_exposed_port_forward(&v))
         {
             return true;
         }

@@ -10,12 +10,31 @@ pub enum ExitDefault {
     Shutdown,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PausedPortForward {
+    pub tag: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    pub listen: String,
+    pub port: u16,
+    pub network: String,
+    pub target_host: String,
+    pub target_port: u16,
+    pub outbound_tag: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_inbound: Option<serde_json::Value>,
+}
+
 #[derive(Clone, Default, Deserialize, Serialize)]
 pub struct Workspace {
     #[serde(default)]
     pub names: BTreeMap<String, String>,
     #[serde(default)]
     pub node_names: BTreeMap<String, BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub port_forward_names: BTreeMap<String, BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub paused_port_forwards: BTreeMap<String, Vec<PausedPortForward>>,
     #[serde(default)]
     pub asset_roots: BTreeMap<String, String>,
     /// Per-profile PAC editor draft. Never applied until an explicit run transaction.

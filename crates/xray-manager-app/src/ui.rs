@@ -50,6 +50,7 @@ enum ProfileTab {
     #[default]
     Outbounds,
     Routing,
+    PortForward,
     Advanced,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -115,6 +116,7 @@ pub(super) enum Dialog {
     ExitChoice,
     Create,
     PacBatch,
+    PortForward,
 }
 #[derive(Clone)]
 pub(super) struct HistoryPreview {
@@ -192,6 +194,8 @@ pub(super) struct UiState {
     pub(super) node_share_open: bool,
     pub(super) node_share_input: String,
     pub(super) node_share_feedback: Option<String>,
+    pub(super) pf_form: crate::port_forward::PortForwardForm,
+    pub(super) pf_error: Option<String>,
     pub(super) inline_rename: Option<String>,
     pub(super) guided: crate::guided_config::State,
     import_error: Option<String>,
@@ -294,6 +298,8 @@ impl Default for UiState {
             node_share_open: false,
             node_share_input: String::new(),
             node_share_feedback: None,
+            pf_form: Default::default(),
+            pf_error: None,
             inline_rename: None,
             guided: Default::default(),
             import_error: None,
@@ -1154,6 +1160,8 @@ impl App {
         self.ui.profile_cache.remove(profile);
         self.ui.workspace.names.remove(profile);
         self.ui.workspace.node_names.remove(profile);
+        self.ui.workspace.port_forward_names.remove(profile);
+        self.ui.workspace.paused_port_forwards.remove(profile);
         self.save_workspace();
         if self.ui.persistence
             && let Err(error) = Draft::remove(&self.root, profile)

@@ -107,6 +107,7 @@ impl App {
                 Dialog::ExitChoice => self.exit_choice_dialog_contents(ui),
                 Dialog::UnsavedExit(kind) => self.unsaved_exit_dialog_contents(ui, *kind),
                 Dialog::PacBatch => self.pac_batch_dialog_contents(ui),
+                Dialog::PortForward => self.port_forward_dialog_contents(ui),
             }
         });
         if response.inner && !response.should_close() {
@@ -808,6 +809,17 @@ impl App {
             );
         }
         if let Ok(value) = xray_config::parse_document(self.editor.as_bytes()) {
+            if Self::has_exposed_port_forward(&value) {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(
+                            "风险提示：包含监听于 0.0.0.0 或非回环地址的 dokodemo-door 端口转发（无密码认证保护），局域网设备可直接连接。",
+                        )
+                        .color(ui.visuals().warn_fg_color),
+                    )
+                    .wrap(),
+                );
+            }
             let names = self
                 .ui
                 .workspace
@@ -999,6 +1011,279 @@ impl App {
         });
         keep_open
     }
+    fn port_forward_dialog_contents(&mut self, ui: &mut egui::Ui) -> bool {
+        let is_edit =
+            self.ui.pf_form.editing_tag.is_some() || self.ui.pf_form.editing_paused_index.is_some();
+        let subtitle = if let Some(tag) = &self.ui.pf_form.editing_tag {
+            format!("入站 Tag：{tag} · 将自动同步对应 dokodemo-door 入站与置顶 inboundTag 路由规则")
+        } else {
+            "将自动在配置中添加 dokodemo-door 入站，并在分流规则顶部维护对应的 inboundTag 规则。"
+                .into()
+        };
+        dialog_title(
+            ui,
+            if is_edit {
+                "编辑端口转发"
+            } else {
+                "添加端口转发"
+            },
+            &subtitle,
+        );
+
+        let parsed = serde_json::from_str::<serde_json::Value>(&self.editor);
+        let Ok(mut value) = parsed else {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                "当前配置 JSON 语法有误，请先在「更多与源码 → 原始 JSON」中修正。",
+            );
+            dialog_actions(ui);
+            return !ui.button("关闭").clicked();
+        };
+
+        let node_names = self
+            .ui
+            .workspace
+            .node_names
+            .get(&self.profile_id)
+            .cloned()
+            .unwrap_or_default();
+        let outbounds = crate::port_forward::available_outbounds(&value, &node_names);
+        if self.ui.pf_form.outbound_tag.is_empty()
+            && let Some((first, _)) = outbounds.first()
+        {
+            self.ui.pf_form.outbound_tag = first.clone();
+        }
+
+        let body_height = (ui.ctx().content_rect().height() - 250.0).max(160.0);
+        egui::ScrollArea::vertical()
+            .id_salt("port-forward-dialog-body")
+            .max_height(body_height)
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.label("备注名称（可选，仅保存在工作区界面识别）");
+                crate::widgets::singleline_select_all(
+                    ui,
+                    &mut self.ui.pf_form.name,
+                    ui.available_width(),
+                    "例如：公司内网 MySQL",
+                );
+
+                ui.add_space(6.0);
+                ui.label("本机监听范围");
+                let mut focus_custom_listen = false;
+                ui.horizontal_wrapped(|ui| {
+                    let is_local =
+                        self.ui.pf_form.listen.trim() == crate::port_forward::LISTEN_LOCAL;
+                    let is_lan =
+                        self.ui.pf_form.listen.trim() == crate::port_forward::LISTEN_LAN;
+                    if ui
+                        .selectable_label(is_local, "仅本机 (127.0.0.1)")
+                        .clicked()
+                    {
+                        self.ui.pf_form.listen = crate::port_forward::LISTEN_LOCAL.into();
+                        self.ui.pf_error = None;
+                    }
+                    if ui
+                        .selectable_label(is_lan, "局域网可访问 (0.0.0.0)")
+                        .clicked()
+                    {
+                        self.ui.pf_form.listen = crate::port_forward::LISTEN_LAN.into();
+                        self.ui.pf_error = None;
+                    }
+                    if ui.selectable_label(!is_local && !is_lan, "自定义 IP").clicked() {
+                        focus_custom_listen = true;
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("监听 IP");
+                    let ip_w = (ui.available_width() - 230.0).max(140.0);
+                    let listen_resp = crate::widgets::singleline_select_all(
+                        ui,
+                        &mut self.ui.pf_form.listen,
+                        ip_w,
+                        "127.0.0.1",
+                    );
+                    if focus_custom_listen {
+                        crate::widgets::focus_and_select_all(
+                            ui.ctx(),
+                            &listen_resp,
+                            &self.ui.pf_form.listen,
+                        );
+                    }
+                    if listen_resp.changed() {
+                        self.ui.pf_error = None;
+                    }
+                    ui.label("本机端口");
+                    if crate::widgets::singleline_select_all(
+                        ui,
+                        &mut self.ui.pf_form.local_port,
+                        100.0,
+                        "10820",
+                    )
+                    .changed()
+                    {
+                        self.ui.pf_error = None;
+                    }
+                });
+                if !crate::port_forward::is_loopback_listen(&self.ui.pf_form.listen)
+                    && self
+                        .ui
+                        .pf_form
+                        .listen
+                        .trim()
+                        .parse::<std::net::IpAddr>()
+                        .is_ok()
+                {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        "注意：dokodemo-door 无密码认证保护，绑定非回环地址后局域网设备均可直连此端口。",
+                    );
+                }
+
+                ui.add_space(6.0);
+                ui.label("传输协议");
+                ui.horizontal_wrapped(|ui| {
+                    for (net, label) in [
+                        ("tcp", "TCP"),
+                        ("udp", "UDP"),
+                        ("tcp,udp", "TCP + UDP"),
+                    ] {
+                        if ui
+                            .selectable_label(self.ui.pf_form.network == net, label)
+                            .clicked()
+                        {
+                            self.ui.pf_form.network = net.into();
+                            self.ui.pf_error = None;
+                        }
+                    }
+                });
+
+                ui.add_space(6.0);
+                ui.label("目标地址与端口（支持直接粘贴 host:port 自动拆分）");
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("目标地址");
+                    let host_w = (ui.available_width() - 230.0).max(150.0);
+                    if crate::widgets::singleline_select_all(
+                        ui,
+                        &mut self.ui.pf_form.target_host,
+                        host_w,
+                        "10.0.0.5 或 db.internal:3306",
+                    )
+                    .changed()
+                    {
+                        if let Some((h, p)) =
+                            crate::port_forward::parse_host_port_paste(&self.ui.pf_form.target_host)
+                        {
+                            self.ui.pf_form.target_host = h;
+                            self.ui.pf_form.target_port = p;
+                        }
+                        self.ui.pf_error = None;
+                    }
+                    ui.label("目标端口");
+                    if crate::widgets::singleline_select_all(
+                        ui,
+                        &mut self.ui.pf_form.target_port,
+                        100.0,
+                        "3306",
+                    )
+                    .changed()
+                    {
+                        self.ui.pf_error = None;
+                    }
+                });
+
+                ui.add_space(6.0);
+                ui.label("转发出口（出站）");
+                let selected_outbound_label = outbounds
+                    .iter()
+                    .find(|(tag, _)| *tag == self.ui.pf_form.outbound_tag)
+                    .map(|(_, label)| label.clone())
+                    .unwrap_or_else(|| self.ui.pf_form.outbound_tag.clone());
+                egui::ComboBox::from_id_salt("pf-outbound-select")
+                    .width(ui.available_width().min(420.0))
+                    .selected_text(selected_outbound_label)
+                    .show_ui(ui, |ui| {
+                        for (tag, label) in &outbounds {
+                            if ui
+                                .selectable_value(
+                                    &mut self.ui.pf_form.outbound_tag,
+                                    tag.clone(),
+                                    label,
+                                )
+                                .clicked()
+                            {
+                                self.ui.pf_error = None;
+                            }
+                        }
+                    });
+
+                let outbound_is_direct = value
+                    .get("outbounds")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|arr| {
+                        arr.iter().any(|o| {
+                            o.get("tag").and_then(|t| t.as_str())
+                                == Some(self.ui.pf_form.outbound_tag.as_str())
+                                && o.get("protocol").and_then(|p| p.as_str()) == Some("freedom")
+                        })
+                    });
+                if !outbound_is_direct
+                    && crate::port_forward::is_private_or_loopback_host(&self.ui.pf_form.target_host)
+                {
+                    ui.label(
+                        RichText::new(
+                            "提示：目标为内网/回环地址且出口走代理节点；请确认远端 Xray 服务端未通过 geoip:private 拦截。",
+                        )
+                        .small()
+                        .weak(),
+                    );
+                }
+
+                if let Some(err) = self
+                    .ui
+                    .pf_error
+                    .clone()
+                    .or_else(|| crate::port_forward::check_form_error(&value, &self.ui.pf_form))
+                {
+                    ui.add_space(4.0);
+                    ui.colored_label(ui.visuals().error_fg_color, err);
+                }
+            });
+
+        dialog_actions(ui);
+        let mut keep_open = true;
+        let can_save = crate::port_forward::check_form_error(&value, &self.ui.pf_form).is_none();
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("取消").clicked() {
+                self.ui.pf_error = None;
+                keep_open = false;
+            }
+            if primary(ui, "保存草稿", can_save) {
+                let form = self.ui.pf_form.clone();
+                match crate::port_forward::save_entry(
+                    &mut value,
+                    &mut self.ui.workspace,
+                    &self.profile_id,
+                    &form,
+                ) {
+                    Ok(tag) => {
+                        self.save_workspace();
+                        if form.editing_paused_index.is_none() {
+                            self.editor = serde_json::to_string_pretty(&value).unwrap();
+                            self.draft_edited();
+                        }
+                        self.ui.pf_error = None;
+                        self.message = format!("已保存端口转发：{tag}");
+                        keep_open = false;
+                    }
+                    Err(err) => {
+                        self.ui.pf_error = Some(err);
+                    }
+                }
+            }
+        });
+        keep_open
+    }
 }
 
 /// Explain coverage limitations without changing the persisted backend evidence.
@@ -1010,8 +1295,10 @@ fn resource_note(note: &str) -> String {
         format!("尚未覆盖字段：{path}")
     } else {
         match note {
-            "Automatic recovery covers HTTP/SOCKS inbounds only" => {
-                "自动恢复目前仅覆盖 HTTP / SOCKS 入站。".into()
+            "Automatic recovery covers HTTP/SOCKS inbounds only"
+            | "Automatic recovery covers HTTP/SOCKS/Mixed inbounds only"
+            | "Automatic recovery covers HTTP/SOCKS/Mixed/dokodemo-door inbounds only" => {
+                "自动恢复目前仅覆盖 HTTP / SOCKS / Mixed / dokodemo-door 入站。".into()
             }
             "Outbound protocol dependency coverage is incomplete" => {
                 "此出站协议的依赖覆盖尚不完整。".into()

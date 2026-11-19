@@ -3363,3 +3363,94 @@ fn route_prediction_input_retains_focus_and_selects_all_after_predict() {
     );
     assert_eq!(app.route_host, "github.com");
 }
+
+#[test]
+fn port_forward_tab_creates_links_routing_skips_sniffing_and_pauses_cleanly() {
+    let mut app = app();
+    app.ui.page = Page::Profiles;
+    app.ui.profile_tab = ProfileTab::PortForward;
+
+    let ctx = egui::Context::default();
+    configure(&ctx);
+    let output = guided_frame(&mut app, &ctx, vec![], 1100.0, 860.0);
+    assert!(overlapping_visible_text(&output).is_empty());
+
+    // Open Add Port Forward modal, fill fields, and save.
+    guided_click(&mut app, &ctx, "+ 添加端口转发", 1100.0, 860.0);
+    assert!(matches!(app.ui.dialog, Some(Dialog::PortForward)));
+    app.ui.pf_form.name = "内网 MySQL".into();
+    app.ui.pf_form.local_port = "13306".into();
+    app.ui.pf_form.target_host = "10.0.0.5".into();
+    app.ui.pf_form.target_port = "3306".into();
+    app.ui.pf_form.outbound_tag = "direct".into();
+    guided_click(&mut app, &ctx, "保存草稿", 1100.0, 860.0);
+    assert!(app.ui.dialog.is_none());
+
+    let parsed: serde_json::Value = serde_json::from_str(&app.editor).unwrap();
+    assert_eq!(parsed["inbounds"][2]["protocol"], "dokodemo-door");
+    assert_eq!(parsed["inbounds"][2]["port"], 13306);
+    assert_eq!(parsed["routing"]["rules"][0]["inboundTag"][0], "pf-1");
+
+    // Card renders cleanly at desktop and compact widths without text overlap.
+    for width in [1100.0, 880.0] {
+        let out = guided_frame(&mut app, &ctx, vec![], width, 860.0);
+        assert!(overlapping_visible_text(&out).is_empty());
+        let _ = text_bounds(&out, "内网 MySQL");
+        let _ = text_bounds(&out, "待应用");
+    }
+
+    // Routing tab shows linkage card and "开启 Sniffing" skips dokodemo-door inbounds.
+    app.ui.profile_tab = ProfileTab::Routing;
+    let routing_out = guided_frame(&mut app, &ctx, vec![], 1100.0, 860.0);
+    assert!(overlapping_visible_text(&routing_out).is_empty());
+    let _ = text_bounds(&routing_out, "前往端口转发");
+    guided_click(&mut app, &ctx, "开启 Sniffing", 1100.0, 860.0);
+    let after_sniff: serde_json::Value = serde_json::from_str(&app.editor).unwrap();
+    assert_eq!(after_sniff["inbounds"][0]["sniffing"]["enabled"], true);
+    assert!(after_sniff["inbounds"][2].get("sniffing").is_none());
+
+    // Clicking "前往端口转发" navigates back to PortForward tab.
+    guided_click(&mut app, &ctx, "前往端口转发", 1100.0, 860.0);
+    assert_eq!(app.ui.profile_tab, ProfileTab::PortForward);
+}
+
+#[test]
+fn exposed_port_forward_requires_preview_confirmation() {
+    let mut app = app();
+    let (tx, _requests) = mpsc::sync_channel(MAX_PENDING);
+    app.tx = tx;
+    let mut value: serde_json::Value = serde_json::from_str(&app.editor).unwrap();
+    let mut form = crate::port_forward::PortForwardForm::from_new(&value, &[]);
+    form.listen = "0.0.0.0".into();
+    form.local_port = "18080".into();
+    form.target_host = "192.168.1.20".into();
+    form.target_port = "80".into();
+    crate::port_forward::save_entry(&mut value, &mut app.ui.workspace, &app.profile_id, &form)
+        .unwrap();
+    app.editor = serde_json::to_string_pretty(&value).unwrap();
+    assert!(App::has_exposed_port_forward(&value));
+
+    let candidate = Candidate {
+        id: "cand-1".into(),
+        digest: "dig-1".into(),
+        profile_id: app.profile_id.clone(),
+        base_revision: app.revision.clone(),
+        revision: hash(app.editor.as_bytes()),
+        config_path: "config.json".into(),
+        core: CoreIdentity {
+            path: "core".into(),
+            sha256: "sha".into(),
+            version: "Xray test".into(),
+        },
+        resources: Resources {
+            id: "res-1".into(),
+            root: "resources".into(),
+            files: vec![],
+            complete: true,
+            notes: vec![],
+            dynamic: vec![],
+        },
+    };
+    app.accept_candidate_with_mode(candidate, true);
+    assert!(app.ui.preview_open);
+}

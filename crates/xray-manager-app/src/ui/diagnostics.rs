@@ -221,7 +221,33 @@ impl App {
                     .spacing(egui::vec2(16.0, 10.0))
                     .show(ui, |ui| {
                         ui.label("入站 Tag");
-                        ui.add(singleline(&mut self.route_inbound, field_width));
+                        ui.vertical(|ui| {
+                            ui.add(singleline(&mut self.route_inbound, field_width));
+                            let runtime_tags: Vec<String> = self
+                                .ui
+                                .runtime
+                                .as_ref()
+                                .and_then(|r| serde_json::from_str::<serde_json::Value>(&r.json).ok())
+                                .and_then(|v| {
+                                    v.get("inbounds")?.as_array().map(|arr| {
+                                        arr.iter()
+                                            .filter_map(|ib| ib.get("tag").and_then(|t| t.as_str()))
+                                            .filter(|t| !t.is_empty())
+                                            .map(str::to_owned)
+                                            .collect()
+                                    })
+                                })
+                                .unwrap_or_default();
+                            if !runtime_tags.is_empty() {
+                                ui.horizontal_wrapped(|ui| {
+                                    for tag in runtime_tags {
+                                        if ui.small_button(&tag).clicked() {
+                                            self.route_inbound = tag;
+                                        }
+                                    }
+                                });
+                            }
+                        });
                         ui.end_row();
                         ui.label("已知目标 IP");
                         ui.add(singleline(&mut self.ui.route_ip, field_width));

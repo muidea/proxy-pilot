@@ -13,6 +13,7 @@ pub struct Outcome {
     pub changed: bool,
     pub names_changed: bool,
     pub raw: bool,
+    pub port_forward: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -980,10 +981,17 @@ pub(crate) fn enable_inbound_sniffing(config: &mut Value, state: &mut State) -> 
         return false;
     }
     let mut changed = false;
+    let mut skipped_forward = 0usize;
+    let mut proxy_count = 0usize;
     for inbound in inbounds {
         let Some(obj) = inbound.as_object_mut() else {
             continue;
         };
+        if obj.get("protocol").and_then(Value::as_str) == Some("dokodemo-door") {
+            skipped_forward += 1;
+            continue;
+        }
+        proxy_count += 1;
         let sniffing = obj.entry("sniffing").or_insert_with(|| json!({}));
         let Some(sniff_obj) = sniffing.as_object_mut() else {
             continue;
@@ -1001,8 +1009,18 @@ pub(crate) fn enable_inbound_sniffing(config: &mut Value, state: &mut State) -> 
             changed = true;
         }
     }
-    if !changed {
-        state.notice = Some("所有入站已开启 sniffing（routeOnly: true）。".into());
+    if proxy_count == 0 {
+        state.notice = Some("当前仅包含端口转发入口；固定端口转发默认不开启 Sniffing。".into());
+    } else if !changed {
+        state.notice = Some(if skipped_forward > 0 {
+            "所有代理入站已开启 sniffing（routeOnly: true，已自动跳过端口转发入口）。".into()
+        } else {
+            "所有入站已开启 sniffing（routeOnly: true）。".into()
+        });
+    } else if skipped_forward > 0 {
+        state.notice = Some(format!(
+            "已为代理入站开启 sniffing（routeOnly: true），并自动跳过 {skipped_forward} 条端口转发入口。"
+        ));
     }
     changed
 }
@@ -1079,11 +1097,51 @@ pub fn edit_routes(
         }
     });
     let mut action = None;
+    let dokodemo_tags = crate::port_forward::dokodemo_tags(config);
     if let Some(rules) = config
         .pointer_mut("/routing/rules")
         .and_then(Value::as_array_mut)
     {
         for (index, rule) in rules.iter_mut().enumerate() {
+            let linked_forward = rule
+                .get("inboundTag")
+                .and_then(Value::as_array)
+                .and_then(|tags| (tags.len() == 1).then(|| tags[0].as_str()).flatten())
+                .filter(|tag| {
+                    dokodemo_tags.contains(*tag)
+                        && crate::port_forward::is_managed_rule_for_tag(rule, tag)
+                })
+                .map(str::to_owned);
+            if let Some(pf_tag) = linked_forward {
+                let outbound_tag = rule
+                    .get("outboundTag")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let outbound_display = targets
+                    .iter()
+                    .find(|(t, _)| t == outbound_tag)
+                    .map(|(_, name)| name.as_str())
+                    .unwrap_or(outbound_tag);
+                ui.push_id(index, |ui| {
+                    ui.separator();
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(format!("规则 {}", index + 1)).strong());
+                        ui.label(
+                            RichText::new(format!(
+                                "端口转发联动：{pf_tag} → {outbound_display}（自动置顶，在「端口转发」页签管理）"
+                            ))
+                            .small(),
+                        );
+                        if ui.button("前往端口转发").clicked() {
+                            out.port_forward = true;
+                        }
+                        if ui.small_button("编辑原生规则").clicked() {
+                            out.raw = true;
+                        }
+                    });
+                });
+                continue;
+            }
             ui.push_id(index, |ui| {
                 ui.separator();
                 let simple = simple_rule(rule);

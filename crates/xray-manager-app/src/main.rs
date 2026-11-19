@@ -5,6 +5,7 @@ mod guided_config;
 mod icon;
 mod native_editor;
 mod path_display;
+mod port_forward;
 mod preferences;
 mod single_instance;
 #[cfg(windows)]

@@ -2,7 +2,7 @@ pub mod conflicts;
 mod coverage;
 pub mod geodata;
 mod validation;
-pub use validation::{ConfigIssue, inspect_config, parse_document};
+pub use validation::{ConfigIssue, inbound_port_conflicts, inspect_config, parse_document};
 pub mod resources;
 pub mod routing;
 pub mod security;

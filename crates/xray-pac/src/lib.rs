@@ -766,6 +766,16 @@ pub fn generate_with_geo(
         catch_all: bool,
     }
 
+    let dokodemo_tags: HashSet<&str> = config
+        .get("inbounds")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|inbound| inbound.get("protocol").and_then(Value::as_str) == Some("dokodemo-door"))
+        .filter_map(|inbound| inbound.get("tag").and_then(Value::as_str))
+        .filter(|tag| !tag.is_empty())
+        .collect();
+
     let mut resolved = vec![];
     for (index, rule) in rules.iter().enumerate() {
         let map = match rule.as_object() {
@@ -775,6 +785,15 @@ pub fn generate_with_geo(
                 continue;
             }
         };
+        if let Some(tags) = map.get("inboundTag").and_then(Value::as_array)
+            && !tags.is_empty()
+            && tags
+                .iter()
+                .all(|tag| tag.as_str().is_some_and(|t| dokodemo_tags.contains(t)))
+        {
+            // Port-forward listeners do not serve system-proxy PAC traffic.
+            continue;
+        }
         let outbound = map.get("outboundTag").and_then(Value::as_str);
         let balancer = map.get("balancerTag").and_then(Value::as_str);
         let action = if balancer.is_some() {

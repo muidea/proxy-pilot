@@ -354,6 +354,14 @@ impl App {
             .runtime
             .as_ref()
             .filter(|r| generation.as_ref().is_some_and(|g| g.id == r.generation_id));
+        let pf_count = if running {
+            runtime
+                .and_then(|r| serde_json::from_str::<serde_json::Value>(&r.json).ok())
+                .map(|v| crate::port_forward::dokodemo_tags(&v).len())
+                .unwrap_or(0)
+        } else {
+            0
+        };
         let endpoint = runtime
             .and_then(|r| serde_json::from_str::<serde_json::Value>(&r.json).ok())
             .and_then(|v| {
@@ -456,6 +464,19 @@ impl App {
                     None => Self::pac_mode_label(pac_mode).into(),
                 };
                 line(ui, "生效 PAC 策略", &desc);
+            }
+            if pf_count > 0 {
+                ui.horizontal_wrapped(|ui| {
+                    line(
+                        ui,
+                        "端口转发",
+                        &format!("{pf_count} 条独立监听生效中（不依赖系统代理模式）"),
+                    );
+                    if ui.small_button("管理端口转发").clicked() {
+                        self.ui.page = Page::Profiles;
+                        self.ui.profile_tab = ProfileTab::PortForward;
+                    }
+                });
             }
             line(ui, "网络连通性", "未检测");
             line(ui, "实际出口", "未验证");
