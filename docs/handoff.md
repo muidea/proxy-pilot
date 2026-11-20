@@ -2,7 +2,7 @@
 
 更新时间：2026-11-20
 
-本文用于把当前工作区交给下一位开发者、评审者或 Windows 验证人员。当前已发布基线为 `efe1fcf`（`v0.1.1-rc.4`）；当前源码版本为 `v0.1.1-rc.39`。不能把已发布的 `v0.1.1-rc.4` 当作当前源码版本。
+本文用于把当前工作区交给下一位开发者、评审者或 Windows 验证人员。当前已发布基线为 `efe1fcf`（`v0.1.1-rc.4`）；当前源码版本为 `v0.1.1-rc.40`。不能把已发布的 `v0.1.1-rc.4` 当作当前源码版本。
 
 ## 当前产品边界
 
@@ -12,8 +12,8 @@ Windows Global / PAC 模式只接管当前用户的 WinINet 设置。Linux 主�
 
 ## 已完成的源码收口
 
-- 配置交互：协议模板、节点独立名称、多服务器/用户/账号编辑、原生字段编辑、未完成数值草稿持久化、缺项定位、草稿级撤销/重做、独立卡片式端口转发（`dokodemo-door` + 置顶 `inboundTag` 联动路由 + 工作区停用保留）、以及三种显示主题。
-- PAC 与 GeoSite：`proxy-config::geodata` 提供零外部依赖 `geosite.dat`（含 `@attr`/`@!attr`）与 `geoip.dat` 解析及静态路由预测（`simulate_with_geo`）；PAC 模型统一为 `PacMode`（`AutoRules`/`DirectList`/`ProxyList`/`All`/`Custom`）与 `PacDraft { mode, geosites, domains, script, port }`；`proxy-pac` 编译支持 `geosite:`/`ext:` 展开、母域折叠、512 KiB 体积警示、ES3 哈希查表与故障关闭安全守卫；PAC 页自动编译与语法校验并支持 GeoSite 速选芯片/分组浏览器，路由编辑器提供一键国内外分流预设。
+- 配置交互：协议模板、离线分享链接导入与批量节点解析、节点独立名称、多服务器/用户/账号编辑、原生字段编辑、未完成数值草稿持久化、缺项定位、草稿级撤销/重做、按配置独立持久化代理模式与 PAC 策略（方案 A）、独立卡片式 Xray 端口转发（`dokodemo-door` + 置顶 `inboundTag` 联动路由 + 工作区停用保留）、**独立的 SSH 凭证管理（Windows DPAPI 加密 / 零明文回显）与纯 Rust `russh` SSH 本地 TCP 端口转发（总览按需独立启停）**，以及三种显示主题与总览默认精简视图。
+- PAC 与 GeoSite：`proxy-config::geodata` 提供零外部依赖 `geosite.dat`（含 `@attr`/`@!attr`）与 `geoip.dat` 解析及静态路由预测（`simulate_with_geo`）；PAC 模型统一为 `PacMode`（`AutoRules`/`DirectList`/`ProxyList`/`All`/`Custom`）与 `PacDraft { mode, geosites, domains, script, port }`；`proxy-pac` 编译支持 `geosite:`/`ext:` 展开、母域折叠、512 KiB 体积警示、ES3 哈希查表与故障关闭安全守卫；PAC 页自动跟随当前激活配置并支持运行中热同步生效，路由编辑器提供一键国内外分流预设。
 - 诊断与运维：静态顺序/遮蔽冲突提示、出站 TCP 延迟探测、Mixed 入站就绪、HTTP/Mixed 代理端点、WinHTTP 只读诊断、本地入口/PAC 服务状态分层、持久化日志（时间戳、代次上下文、凭据脱敏、4 MiB 轮转备份）、动态外部依赖 opt-in 与重校验；**日志**页新增单条复制、空列表保护的筛选复制/导出（`.log`/`.txt`）与持久化会话日志（自动按序拼接 `logs/supervisor.log.1` + `logs/supervisor.log`）一键复制/导出，**设置 → 数据与存储**同步支持复制日志路径、复制日志内容与导出会话日志。
 - 配置校验：API/反向代理内部目标识别；常见节点参数提示；Reality/TLS 和路由字段提示；SOCKS/HTTP 账号 `user`/`pass` 缺项及错误类型提示。提示不回显凭据，不替代官方 Core 校验。
 - 依赖与资源：常见 DNS、geo、ext、RAW 字段冻结；未分类字段会尝试启动和恢复，显式动态外部文件会跳过自动连接/恢复，不会静默猜测路径。
@@ -34,7 +34,7 @@ cargo fmt --all -- --check
 git diff --check
 ```
 
-最近一次全工作区回归为 **233 项通过，7 项需显式环境用例忽略**（含官方 Core PAC 专项）；`proxy-pilot` 单元/无窗口回归 **101 项通过**（1 项需显式 Core 忽略），覆盖 `geosite.dat`/`geoip.dat` 解析与母域折叠、`AutoRules` 与清单模式展开、`geosite` 速选与路由预设、PAC 5,000 条域名与 2,000 条虚拟滚动、开机 `--background` 二帧隐藏与托盘唤醒、后台 IPC 并发就绪检测与只读重连、日志复制与持久化日志导出、外部代理冲突解除及恢复期取消开机自启等场景。已交叉编译构建 `v0.1.1-rc.24` Windows x64 本地验证包并完成 CRC 与逐文件一致性校验。
+当前基线（`v0.1.1-rc.40`）全工作区 `--locked` 常规回归为 **283 项通过，7 项需显式 `XRAY_TEST_CORE` 环境用例忽略**；其中 `proxy-pilot`（`proxy-manager-app`）单元/无窗口回归 **128 项通过**（1 项需显式 Core 忽略），`proxy-supervisor` 库测试 **49 项通过**（1 项需显式 Core 忽略），集成测试 **31 项通过**，完整覆盖 `geosite.dat`/`geoip.dat` 解析与母域折叠、`AutoRules`/清单模板、PAC 自动随激活配置联动热同步、5,000 条域名与 2,000 条虚拟滚动、SSH 凭证 DPAPI/脱敏存储与 Mock SSH `direct-tcpip` 端到端转发、总览按需启停与默认精简视图、弹出框边框与 `18 px` 标题字号布局、草稿保存后重启 Core 无 `ASSET_REVISION_CONFLICT`、`--background` 二帧隐藏与托盘唤醒、后台 IPC 并发就绪检测、日志级别调节与导出、外部代理冲突解除及恢复期取消开机自启等场景。已交叉编译构建 `dist/proxy-pilot-0.1.1-rc.40-windows-x64.zip` 并完成 CRC 与逐文件一致性校验。
 
 Windows GNU 原生验证使用用户指定的 `C:\v2rayN\bin\Xray\xray.exe`，已通过：
 
@@ -84,8 +84,8 @@ Windows GNU 原生验证使用用户指定的 `C:\v2rayN\bin\Xray\xray.exe`，�
 ## 重要文件入口
 
 - [README.md](../README.md)：用户安装、配置和部署说明。
-- [validation-guide.md](validation-guide.md)：当前验证包实操指南（`v0.1.1-rc.39`）。
-- [releases/v0.1.1-rc.39.md](releases/v0.1.1-rc.39.md)：`rc.39` 变更与测试摘要（另见 `v0.1.1-rc.19.md`–`v0.1.1-rc.38.md`）。
+- [validation-guide.md](validation-guide.md)：当前验证包实操指南（`v0.1.1-rc.40`）。
+- [releases/v0.1.1-rc.40.md](releases/v0.1.1-rc.40.md)：`rc.40` 变更与测试摘要（另见 `v0.1.1-rc.19.md`–`v0.1.1-rc.39.md`）。
 - [phase0-2-backlog.md](phase0-2-backlog.md)：验收编号和剩余能力清单。
 - [phase0-2-remaining-closeout.md](phase0-2-remaining-closeout.md)：本轮收口内容与证据。
 - [phase0-2-design-crosscheck.md](phase0-2-design-crosscheck.md)：按设计文档逐项核对后的剩余项、未登记设计项和证据边界。
@@ -97,18 +97,18 @@ Windows GNU 原生验证使用用户指定的 `C:\v2rayN\bin\Xray\xray.exe`，�
 - `crates/proxy-supervisor/src/maintenance.rs`：离线维护和终态证据校验。
 - `crates/proxy-runtime/src/readiness.rs`：本地 HTTP/SOCKS 就绪握手。
 - `crates/proxy-manager-app/src/guided_config/`：配置模板和结构化编辑器。
-- `crates/proxy-manager-app/src/port_forward.rs`：`dokodemo-door` 端口转发模型、JSON 同步、端口冲突与停用保留逻辑。
+- `crates/proxy-manager-app/src/port_forward.rs`：Xray `dokodemo-door` 端口转发模型、JSON 同步、统一端口冲突检查（含 SSH）与停用保留逻辑。
+- `crates/proxy-supervisor/src/{ssh_store.rs,ssh_tunnel.rs}`：独立 SSH 凭证（Windows DPAPI 加密/脱敏）、跳板机指纹与 `russh` `direct-tcpip` 本地 TCP 转发引擎。
 - `crates/proxy-manager-app/src/{wakeup.rs,tray.rs}`：DWM 遮蔽防闪烁唤醒与托盘事件处理。
-- `crates/proxy-manager-app/src/ui/{pac.rs,diagnostics.rs,settings.rs}`：PAC 批量管理、日志复制导出与存储设置。
+- `crates/proxy-manager-app/src/ui/{pac.rs,diagnostics.rs,settings.rs}`：PAC 自动联动/热同步与批量管理、日志复制导出、外观与存储设置。
 - `crates/proxy-pac/`：PAC 生成、校验与有界执行测试。
 - `crates/proxy-supervisor/src/pac_server.rs`：回环 PAC HTTP 发布与轮转。
 - `crates/proxy-runtime/src/lib.rs`：日志持久化/脱敏与本地就绪。
 
 ## 接手后的建议顺序
 
-1. 保持当前用户模式不变，先运行 Linux 全工作区测试和双目标 Clippy。
-2. 在干净 Windows 测试账户与原有 `rc.23` 保留 `data/` 目录上实机验证 `v0.1.1-rc.28`：包括主动退出前处于 PAC / 全局代理模式后重启自动恢复原连接方式、日志本地时区时间显示（操作记录与 Core/Supervisor 日志、`logs/supervisor.log`）、单实例防重复托盘图标（`--background` 自启后再次打开 `proxy-pilot.exe` 唤醒唯一窗口）、历史操作免误报恢复启动、smoke/便携目录、PAC GeoSite 展开与 `AutoRules`/清单分流、路由国内外分流预设、Windows 冷启动自动自启、`--background` 仅驻留系统托盘与唤醒、`PROXY_LEASE_CONFLICT` 外部代理冲突解除与冲突期内取消/保存开机自启、日志复制与导出。
-3. 单独安排真实 WinINet、注销/登录、跨 SID、磁盘满和断电测试；测试前保存代理设置及数据目录备份。
-4. 当前源码尚未提交（`v0.1.1-rc.28`）；提交后运行远端 CI，再生成正式发布包和 SHA-256 校验文件。
-5. 只有在对应证据完成后，才更新 V01/V02/V04–V10 状态；不要用单元测试或 GNU 本机构建替代 MSVC、真实系统代理、PAC 客户端和人工交互验收。
-6. 当前源码（含开机自启 IPC 服务就绪保护、外部代理冲突解除、PAC 批量优化、`--background` 托盘隐藏与日志复制导出）尚未正式发布（已发布基线仍为 `v0.1.1-rc.4`）；发布前仍需完成 V09 的远端 CI、MSVC 和正式包验收。
+1. 保持当前用户模式不变，先运行 Linux 全工作区 `--locked` 测试和双目标 Clippy。
+2. 在干净 Windows 测试账户实机验证 **`v0.1.1-rc.40`**（若从 `rc.38` 升级，注意旧版名为 `xray-manager.exe` 与 `XrayPilot-*` 自启任务，请先完全退出旧版并取消旧自启后再解压新目录并按需拷贝 `data/`）：重点验证 **SSH 凭证账号密码/私钥 DPAPI 持久化、真实 SSH 跳板机指纹探测与 TCP 转发、总览按需独立启停、保留原 Xray `dokodemo-door` 转发、配置自动保存后重启 Core、PAC 自动联动激活配置与热同步、总览默认隐藏「最近活动与版本」、优化后的弹出框边框/字号比例、Windows 冷启动 `--background` 防闪烁托盘唤醒与 `PROXY_LEASE_CONFLICT` 解除**。
+3. 单独安排真实 WinINet（V01/V10）、注销/登录（V02）、跨 SID（V06）、磁盘满和断电测试（V04/V05）；测试前保存代理设置及数据目录备份。
+4. 当前代码基线已更新至 `v0.1.1-rc.40`；推送并运行远端 GitHub Actions CI（V09）后，再生成正式发布包和 SHA-256 校验文件。
+5. 只有在对应真实环境证据完成后，才更新 V01/V02/V04–V10 状态；不要用单元测试或 GNU 本机构建替代 MSVC、真实系统代理、PAC 客户端和人工交互验收。

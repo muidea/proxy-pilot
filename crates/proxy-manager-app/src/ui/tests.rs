@@ -3914,3 +3914,107 @@ fn ssh_credentials_hosts_forwards_and_overview_on_demand_start_stop() {
         .is_some()
     );
 }
+
+#[test]
+fn modal_dialogs_use_balanced_widths_padding_and_harmonized_title_size() {
+    let measure_modal = |appearance: Appearance, dialog: Dialog, title: &str, size: (f32, f32)| {
+        let mut app = app();
+        app.ui.history_preview = Some(HistoryPreview {
+            json: app.editor.clone(),
+            core: "xray.exe".into(),
+        });
+        app.ui.dialog = Some(dialog);
+        let ctx = egui::Context::default();
+        configure(&ctx);
+        appearance.apply(&ctx);
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size.0, size.1));
+        let mut output = None;
+        for frame in 0..8 {
+            output = Some(ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(viewport),
+                    time: Some(frame as f64 * 0.05),
+                    ..Default::default()
+                },
+                |ctx| app.render(ctx),
+            ));
+        }
+        let output = output.unwrap();
+        let title_rect = text_bounds(&output, title);
+        let mut rects = vec![];
+        for shape in &output.shapes {
+            painted_rects(&shape.shape, &mut rects);
+        }
+        let modal = rects
+            .into_iter()
+            .rev()
+            .find(|rect| {
+                rect.contains(title_rect.center()) && rect.height() >= CONTROL_HEIGHT * 2.0
+            })
+            .unwrap();
+        assert!(viewport.contains_rect(modal), "{title}: overflow {modal:?}");
+        // 18px title + 20x16 padding keeps title comfortably inset from modal border.
+        assert!(title_rect.height() < 28.0, "title too tall: {title_rect:?}");
+        assert!(title_rect.left() - modal.left() >= 18.0);
+        assert!(title_rect.top() - modal.top() >= 14.0);
+        modal
+    };
+
+    for appearance in [Appearance::Light, Appearance::Dark] {
+        let confirm = measure_modal(
+            appearance,
+            Dialog::Confirm(Action::Stop),
+            "停止 Core？",
+            (1100.0, 760.0),
+        );
+        let exit_choice = measure_modal(
+            appearance,
+            Dialog::ExitChoice,
+            "退出 Proxy Pilot",
+            (1100.0, 760.0),
+        );
+        let port_forward = measure_modal(
+            appearance,
+            Dialog::PortForward,
+            "添加端口转发",
+            (1100.0, 760.0),
+        );
+        let ssh_cred = measure_modal(
+            appearance,
+            Dialog::SshCredential,
+            "新建 SSH 凭证",
+            (1100.0, 760.0),
+        );
+        let ssh_host = measure_modal(
+            appearance,
+            Dialog::SshHost,
+            "新建 SSH 跳板机",
+            (1100.0, 760.0),
+        );
+        let create = measure_modal(appearance, Dialog::Create, "新建配置", (1100.0, 760.0));
+        let pac_batch = measure_modal(
+            appearance,
+            Dialog::PacBatch,
+            "批量导入 / 编辑 PAC 域名",
+            (1100.0, 760.0),
+        );
+        assert!(confirm.width() < port_forward.width());
+        assert!(exit_choice.width() < port_forward.width());
+        assert!(port_forward.width() < create.width());
+        assert!((ssh_cred.width() - ssh_host.width()).abs() < 1.0);
+        assert!((create.width() - pac_batch.width()).abs() < 1.0);
+        assert!(create.width() < 840.0);
+
+        for (dialog, title) in [
+            (Dialog::ExitChoice, "退出 Proxy Pilot"),
+            (Dialog::PortForward, "添加端口转发"),
+            (Dialog::SshCredential, "新建 SSH 凭证"),
+            (Dialog::SshHost, "新建 SSH 跳板机"),
+            (Dialog::HistoryDiff, "比较历史版本与当前草稿"),
+            (Dialog::PacBatch, "批量导入 / 编辑 PAC 域名"),
+        ] {
+            let small = measure_modal(appearance, dialog, title, (760.0, 500.0));
+            assert!(small.width() < 740.0, "{title}: {small:?}");
+        }
+    }
+}

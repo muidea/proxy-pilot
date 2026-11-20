@@ -183,4 +183,23 @@ git diff --check
 2. 在 F02 / F05 / V08 中继续登记剩余组合与语义级边界，避免“已实现”被理解为覆盖全部设计能力。
 3. N01 / N02 已按当前源码实现并纳入交付说明；后续可把日志级别、保留策略和 WinHTTP 诊断扩展为独立能力项。
 4. 设计 §2.5 的 PAC 阶段口径已按“当前源码支持基础 PAC、完整验收归 V10”更新说明。
-5. 当前源码已提交为 `ab08756`（rc.18）；下一步跑远端 CI、生成正式验证包，并按 V01–V10 补齐系统验收。
+5. （历史基线 `ab08756` / rc.18 已演进至最新 `rc.40`，见第八节。）
+
+## 八、2026-11-20 `v0.1.1-rc.40` 对齐刷新（Proxy Pilot 更名、PAC 联动与 SSH 隧道）
+
+相对 `2026-11-12` 核对基线（`ab08756` / rc.18），`rc.19`–`rc.40` 完成以下重要设计演进与缺口收敛：
+
+1. **品牌与工程彻底更名（`Proxy Pilot` / `proxy-*`）**：
+   - Workspace crates：`proxy-model`、`proxy-config`、`proxy-pac`、`proxy-runtime`、`proxy-supervisor`、`proxy-manager-app`、`windows-integration`；可执行文件：`proxy-pilot.exe`、`proxy-supervisor.exe`、`proxyctl.exe`；Named Pipe 与计划任务前缀改为 `\\.\pipe\proxy-pilot-*` 与 `ProxyPilot-*`。
+2. **界面优先级重构与配置交互简化（3A + 分享链接 + GeoData + 方案 A）**：
+   - 顶栏导航重排为 `总览 → 配置 → PAC → 日志 → 诊断 → 设置`，修复 `egui::Sides` 右侧对齐方向，总览默认隐藏「最近活动与版本」（可在「设置 → 外观」切换）。
+   - `proxy-config::share_link` 支持离线分享链接导入与批量节点解析；`proxy-config::geodata` 支持零外部依赖 `geosite.dat`/`geoip.dat` 与路由预设；按配置独立记忆 `ProxyMode` 与 `PacDraft`，PAC 页自动联动激活配置并热同步更新。
+3. **双轨端口转发与 SSH 凭证管理（登记为 F06）**：
+   - 原 Xray Core `dokodemo-door`（TCP/UDP、置顶规则、停用保留、Sniffing 自动跳过）100% 保留。
+   - 新增独立于 Xray Core 的纯 Rust（`russh`）SSH 凭证管理（`data/ssh/config.json`，Windows DPAPI `CryptProtectData` 加密，IPC/日志零明文回显）、跳板机 SHA256 Host Key 核验与 TCP 本地端口转发，在「总览」支持独立按需启停；核查确认 `proxyctl maintenance` 仅清理 `candidates`/`resources`/`cores`/`runtime/pac`，不会误清 `data/ssh/`，但外部绝对私钥路径暂不自动拷贝冻结（仍归 F02/F06 边界）。
+4. **重启 Core 修订冲突修复**：
+   - 修复 `UpdateProfile` 草稿自动保存后执行 `RestartCore` / `SetProxyMode` 时误触发 `ASSET_REVISION_CONFLICT` 并企图回写正式配置的问题（`runtime_flow::restart_core_and_set_proxy_mode_succeed_after_profile_draft_auto_save`）。
+5. **最新本地复测基线（`v0.1.1-rc.40`）**：
+   - 弹出框统一配置 `dialog_frame`（`1.0 px` `border_strong` 边框、`12 px` 圆角、`20×16` 内边距）、按内容分级宽度（`500` / `580` / `700` / `780`）与 `18.0` 标题字号，并同步更新 `windows-smoke.ps1 -Gui` 托盘「退出…」交互。
+   - `cargo fmt --all -- --check`、`git diff --check`、Linux 与 `x86_64-pc-windows-gnu` 双目标严格 Clippy（`-D warnings`）、`cargo test --offline --workspace --locked -- --test-threads=4` 全部通过（**283 项通过**，7 项需 `XRAY_TEST_CORE` 的用例默认忽略；其中 `proxy-manager-app` **128 项**、`proxy-supervisor` 库 **49 项**、集成回归 31 项）。
+   - V01 / V02 / V04–V10 的真实 Windows 环境与远端 MSVC CI 验收边界继续保留，最新记录见 [遗留清单](phase0-2-backlog.md) 与 [交接文档](handoff.md)。

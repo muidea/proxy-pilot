@@ -23,7 +23,7 @@ cargo run -p proxy-manager-app -- --data-dir /absolute/path/to/data
 
 CLI 命令与源码入口见 [proxyctl.rs](../crates/proxy-supervisor/src/bin/proxyctl.rs)。`operation ID` 返回操作记录或大记录摘要；`operation-details ID` 分块还原完整记录。
 
-`request` 从标准输入接收完整的 `xray_model::Request` JSON。写操作须带当前 `expected_generation`，首次应用为 null。请求重试须保留 request ID 和全部原内容；改变内容返回 REQUEST_ID_CONFLICT。
+`request` 从标准输入接收完整的 `proxy_model::Request` JSON。写操作须带当前 `expected_generation`，首次应用为 null。请求重试须保留 request ID 和全部原内容；改变内容返回 REQUEST_ID_CONFLICT。
 
 ```json
 {
@@ -143,7 +143,7 @@ Windows 默认数据目录与启动位置一致性验收（在隔离临时安装
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-portable-check.ps1 -BinaryDir .\target\release
 ```
 
-`windows-smoke.ps1 -Gui` 现在通过真实托盘弹出菜单的文本解析菜单 ID，并投递同一原生菜单命令，验证隐藏窗口重开、隐藏/可见窗口的仅退 GUI、后台隐藏启动后的完整退出。运行过程使用 Direct，不改真实 WinINet。
+`windows-smoke.ps1 -Gui` 通过真实托盘弹出菜单的文本解析菜单 ID，并投递同一原生菜单命令，验证关闭主窗体隐藏到托盘、托盘“打开 Proxy Pilot”唤醒、托盘“退出…”唤醒确认窗口、独立 Core 生命周期与重开，以及 `--background` 启动保持隐藏和“退出…”唤醒后的完整退出。运行过程使用 Direct，不改真实 WinINet。
 
 ## 程序图标资源
 

@@ -92,12 +92,16 @@ pub fn border_color(ui: &egui::Ui) -> egui::Color32 {
     }
 }
 
-pub fn border_strong_color(ui: &egui::Ui) -> egui::Color32 {
-    if ui.visuals().dark_mode {
+pub fn border_strong(dark: bool) -> egui::Color32 {
+    if dark {
         egui::Color32::from_rgb(60, 76, 99)
     } else {
         egui::Color32::from_rgb(197, 208, 224)
     }
+}
+
+pub fn border_strong_color(ui: &egui::Ui) -> egui::Color32 {
+    border_strong(ui.visuals().dark_mode)
 }
 
 pub fn tone_palette(

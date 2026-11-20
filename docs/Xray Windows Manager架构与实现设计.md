@@ -11,6 +11,8 @@ V1.1 明确配置提交与崩溃恢复、Core/PAC/系统代理联合切换、连
 
 V1.2 补齐启动时失效租约清理、故障事件与重试任务的代次隔离、普通运行链的文件依赖冻结，以及跨 Supervisor 重启的 IPC 去重与操作结果恢复。
 
+> **演进对齐说明（2026-11-20 · `Proxy Pilot v0.1.1-rc.40`）**：项目已由 `Xray Pilot`（设计期称 `Xray Windows Manager`）全面更名为 **`Proxy Pilot`**（可执行文件：`proxy-pilot.exe` / `proxy-supervisor.exe` / `proxyctl.exe`；workspace crates：`proxy-model`、`proxy-config`、`proxy-pac`、`proxy-runtime`、`proxy-supervisor`、`proxy-manager-app`、`windows-integration`）。核心架构、Native Xray 配置权威性、Proxy Lease 与 OperationStore 恢复合同继续严格遵循本 V1.2 基线；在此基础上新增了 **离线分享链接解析、GeoSite 国内外分流预设、独立卡片式 `dokodemo-door` 端口转发、按配置独立持久化代理模式与 PAC 热同步，以及独立于 Xray Core 的纯 Rust SSH 凭证管理与 SSH 本地 TCP 端口转发**（后者持久化于 `data/ssh/config.json` 并支持在「总览」按需独立启停，不修改或扩展 Xray 原生 JSON 协议）。具体实现现状与剩余验收边界以 [遗留项清单](phase0-2-backlog.md) 及 [开发交接文档](handoff.md) 为准。
+
 ---
 
 # 1. 项目概述

@@ -168,17 +168,19 @@ try {
         for ($i=0; $i -lt 100 -and -not [XraySmokeWindow]::IsWindowVisible($windowHandle); $i++) { Start-Sleep -Milliseconds 100 }
         if (-not [XraySmokeWindow]::IsWindowVisible($windowHandle)) { throw 'Tray Open did not wake the hidden GUI' }
         if (-not $guiProcess.CloseMainWindow()) { throw 'Cannot hide GUI again' }
-        Start-Sleep -Milliseconds 500
-        [XraySmokeWindow]::TrayCommand($guiProcess.Id, '仅退出界面，后台继续运行')
-        if (-not $guiProcess.WaitForExit(10000)) { throw 'Tray Exit GUI did not close the hidden GUI' }
+        for ($i=0; $i -lt 50 -and [XraySmokeWindow]::IsWindowVisible($windowHandle); $i++) { Start-Sleep -Milliseconds 100 }
+        if ([XraySmokeWindow]::IsWindowVisible($windowHandle)) { throw 'GUI window remained visible after second close' }
+        [XraySmokeWindow]::TrayCommand($guiProcess.Id, '退出…')
+        for ($i=0; $i -lt 100 -and -not [XraySmokeWindow]::IsWindowVisible($windowHandle); $i++) { Start-Sleep -Milliseconds 100 }
+        if (-not [XraySmokeWindow]::IsWindowVisible($windowHandle)) { throw 'Tray Exit... did not wake the hidden GUI for confirmation' }
+        $guiProcess.Kill(); $guiProcess.WaitForExit()
         $status = Call-Ctl 'status'
         if ($status.supervisor_epoch -ne $epoch -or $status.runtime_instance_id -ne $instance) { throw 'GUI exit changed Supervisor/Core ownership' }
         Start-Gui
         $status = Call-Ctl 'status'
         if ($status.supervisor_epoch -ne $epoch -or $status.runtime_instance_id -ne $instance) { throw 'GUI reopen restarted Supervisor/Core' }
-        [XraySmokeWindow]::TrayCommand($guiProcess.Id, '仅退出界面，后台继续运行')
-        if (-not $guiProcess.WaitForExit(10000)) { throw 'Tray Exit GUI did not close the visible GUI' }
-        'PASS: tray Open, hidden/visible Exit GUI, close-to-tray, independent Core lifetime and reopen'
+        $guiProcess.Kill(); $guiProcess.WaitForExit()
+        'PASS: tray Open, tray Exit... wake, close-to-tray, independent Core lifetime and reopen'
     }
     $server.Kill(); $server.WaitForExit()
     if (-not $coreProcess.WaitForExit(5000)) { throw 'Job did not terminate Core after Supervisor was killed' }
@@ -195,13 +197,28 @@ try {
         if ($children.Count -ne 1) { throw 'Expected one restarted Core' }
         $coreProcess = Get-Process -Id $children[0].ProcessId
         $guiProcess = Start-Process -FilePath (Join-Path $BinaryDir 'proxy-pilot.exe') -ArgumentList @('--background', '--data-dir', ('"' + $data + '"')) -PassThru
-        # A background-started instance has no visible viewport to drive polling.
+        # A background-started instance stays hidden until woken by tray interaction.
         Start-Sleep -Seconds 3
-        [XraySmokeWindow]::TrayCommand($guiProcess.Id, '退出程序（停止 Core 并恢复代理）')
-        if (-not $guiProcess.WaitForExit(10000)) { throw 'Tray Quit did not close the background GUI' }
-        if (-not $server.WaitForExit(5000)) { throw 'Tray Quit did not stop Supervisor' }
-        if (-not $coreProcess.WaitForExit(5000)) { throw 'Tray Quit did not stop Core' }
-        'PASS: background tray Quit stops GUI, Supervisor and Core'
+        $guiProcess.Refresh()
+        if ($guiProcess.HasExited) { throw 'Background GUI exited unexpectedly' }
+        if ($guiProcess.MainWindowHandle -ne [IntPtr]::Zero -and [XraySmokeWindow]::IsWindowVisible($guiProcess.MainWindowHandle)) {
+            throw 'Background GUI became visible without activation'
+        }
+        [XraySmokeWindow]::TrayCommand($guiProcess.Id, '退出…')
+        $woken = $false
+        for ($i=0; $i -lt 100; $i++) {
+            $guiProcess.Refresh()
+            if ($guiProcess.MainWindowHandle -ne [IntPtr]::Zero -and [XraySmokeWindow]::IsWindowVisible($guiProcess.MainWindowHandle)) {
+                $woken = $true; break
+            }
+            Start-Sleep -Milliseconds 100
+        }
+        if (-not $woken) { throw 'Tray Exit... did not wake the background GUI for confirmation' }
+        $guiProcess.Kill(); $guiProcess.WaitForExit()
+        $null = Call-Ctl 'shutdown'
+        if (-not $server.WaitForExit(5000)) { throw 'Supervisor did not shut down' }
+        if (-not $coreProcess.WaitForExit(5000)) { throw 'Shutdown did not stop Core' }
+        'PASS: background tray stay-hidden, tray Exit... wake and Supervisor shutdown stops Core'
     } else {
         $null = Call-Ctl 'shutdown'
         if (-not $server.WaitForExit(5000)) { throw 'Supervisor did not shut down' }

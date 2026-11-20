@@ -1,17 +1,57 @@
 use super::*;
 
 fn dialog_title(ui: &mut egui::Ui, title: &str, subtitle: &str) {
-    ui.label(RichText::new(title).strong().size(22.0));
+    ui.label(RichText::new(title).strong().size(18.0));
     if !subtitle.is_empty() {
-        ui.add(egui::Label::new(RichText::new(subtitle).small().weak()).wrap());
+        ui.add_space(4.0);
+        ui.add(egui::Label::new(RichText::new(subtitle).size(12.5).weak()).wrap());
     }
-    ui.add_space(10.0);
+    ui.add_space(12.0);
 }
 
 fn dialog_actions(ui: &mut egui::Ui) {
-    ui.add_space(4.0);
+    ui.add_space(8.0);
     ui.separator();
-    ui.add_space(6.0);
+    ui.add_space(8.0);
+}
+
+fn dialog_frame(ctx: &egui::Context) -> egui::Frame {
+    let style = ctx.style();
+    egui::Frame::new()
+        .fill(style.visuals.window_fill())
+        .stroke(egui::Stroke::new(
+            1.0,
+            crate::widgets::border_strong(style.visuals.dark_mode),
+        ))
+        .corner_radius(12)
+        .inner_margin(egui::Margin::symmetric(20, 16))
+        .shadow(style.visuals.popup_shadow)
+}
+
+fn show_modal(
+    ctx: &egui::Context,
+    id: &str,
+    max_width: f32,
+    body: impl FnOnce(&mut egui::Ui) -> bool,
+) -> egui::ModalResponse<bool> {
+    egui::Modal::new(egui::Id::new(id))
+        .frame(dialog_frame(ctx))
+        .backdrop_color(Color32::from_black_alpha(115))
+        .show(ctx, |ui| {
+            ui.set_width((ctx.content_rect().width() - 88.0).clamp(300.0, max_width));
+            body(ui)
+        })
+}
+
+fn dialog_max_width(dialog: &Dialog) -> f32 {
+    match dialog {
+        Dialog::Confirm(_) | Dialog::ExitChoice => 500.0,
+        Dialog::PortForward | Dialog::SshCredential | Dialog::SshHost | Dialog::UnsavedExit(_) => {
+            580.0
+        }
+        Dialog::HistoryDiff => 700.0,
+        Dialog::Create | Dialog::PacBatch => 780.0,
+    }
 }
 
 fn danger_button(ui: &mut egui::Ui, label: &str) -> bool {
@@ -93,25 +133,23 @@ impl App {
         let Some(dialog) = self.ui.dialog.take() else {
             return;
         };
-        let response = egui::Modal::new(egui::Id::new("workspace-dialog")).show(ctx, |ui| {
-            let width = if matches!(dialog, Dialog::Create | Dialog::PacBatch) {
-                900.0
-            } else {
-                680.0
-            };
-            ui.set_width((ctx.content_rect().width() - 100.0).clamp(300.0, width));
-            match &dialog {
-                Dialog::Create => self.create_dialog_contents(ui),
-                Dialog::Confirm(action) => self.confirm_dialog_contents(ui, action, ctx),
-                Dialog::HistoryDiff => self.history_diff_dialog_contents(ui),
-                Dialog::ExitChoice => self.exit_choice_dialog_contents(ui),
-                Dialog::UnsavedExit(kind) => self.unsaved_exit_dialog_contents(ui, *kind),
-                Dialog::PacBatch => self.pac_batch_dialog_contents(ui),
-                Dialog::PortForward => self.port_forward_dialog_contents(ui),
-                Dialog::SshCredential => self.ssh_credential_dialog_contents(ui),
-                Dialog::SshHost => self.ssh_host_dialog_contents(ui),
-            }
-        });
+        let response =
+            show_modal(
+                ctx,
+                "workspace-dialog",
+                dialog_max_width(&dialog),
+                |ui| match &dialog {
+                    Dialog::Create => self.create_dialog_contents(ui),
+                    Dialog::Confirm(action) => self.confirm_dialog_contents(ui, action, ctx),
+                    Dialog::HistoryDiff => self.history_diff_dialog_contents(ui),
+                    Dialog::ExitChoice => self.exit_choice_dialog_contents(ui),
+                    Dialog::UnsavedExit(kind) => self.unsaved_exit_dialog_contents(ui, *kind),
+                    Dialog::PacBatch => self.pac_batch_dialog_contents(ui),
+                    Dialog::PortForward => self.port_forward_dialog_contents(ui),
+                    Dialog::SshCredential => self.ssh_credential_dialog_contents(ui),
+                    Dialog::SshHost => self.ssh_host_dialog_contents(ui),
+                },
+            );
         if response.inner && !response.should_close() {
             self.ui.dialog = Some(dialog);
         }
@@ -321,7 +359,7 @@ impl App {
         let mut needs_work = false;
         // Keep the title and action row outside the scrolling body. Long JSON,
         // errors and field advice must never push the confirmation buttons away.
-        let body_height = (ui.ctx().content_rect().height() - 180.0).max(200.0);
+        let body_height = (ui.ctx().content_rect().height() - 210.0).max(160.0);
         egui::ScrollArea::vertical()
             .id_salt("create-body")
             .max_height(body_height)
@@ -747,8 +785,7 @@ impl App {
             return;
         }
         let candidate = self.candidate.clone().unwrap();
-        let response = egui::Modal::new(egui::Id::new("candidate-preview")).show(ctx, |ui| {
-            ui.set_width((ctx.content_rect().width() - 100.0).clamp(300.0, 900.0));
+        let response = show_modal(ctx, "candidate-preview", 780.0, |ui| {
             dialog_title(
                 ui,
                 "预览本次应用",
