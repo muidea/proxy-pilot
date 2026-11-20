@@ -280,6 +280,11 @@ impl App {
                     {
                         self.ui.dialog = Some(Dialog::Confirm(Action::ResolveProxyConflict));
                     }
+                    if self.can_resolve_startup_conflict()
+                        && ui.button("重新接管自启计划任务…").clicked()
+                    {
+                        self.ui.dialog = Some(Dialog::Confirm(Action::ResolveStartupConflict));
+                    }
                 });
                 if let Some(error) = self.status.as_ref().and_then(|s| s.last_error.as_ref()) {
                     egui::CollapsingHeader::new("恢复证据与技术详情").show(ui, |ui| {
@@ -290,11 +295,16 @@ impl App {
             ui.add_space(14.0);
         }
         if let Some(failure) = &self.ui.failure {
+            let startup_conflict =
+                failure.error.code == "STARTUP_CONFLICT" && self.can_resolve_startup_conflict();
             card(ui, |ui| {
                 ui.colored_label(
                     ui.visuals().error_fg_color,
                     error_advice(&failure.error.code),
                 );
+                if startup_conflict && ui.button("重新接管自启计划任务…").clicked() {
+                    self.ui.dialog = Some(Dialog::Confirm(Action::ResolveStartupConflict));
+                }
                 egui::CollapsingHeader::new("错误详情与请求身份").show(ui, |ui| {
                     ui.monospace(failure.error.to_string());
                     if !failure.request.is_empty() {

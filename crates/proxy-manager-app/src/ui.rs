@@ -92,6 +92,7 @@ pub(super) enum Action {
     AdoptDraft(String),
     ClearPacDomains(String),
     ResolveProxyConflict,
+    ResolveStartupConflict,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ExitKind {
@@ -613,6 +614,7 @@ pub(super) fn command_name(command: &Command) -> &'static str {
         Command::StopCore => "停止 Core",
         Command::RestartCore => "重启 Core",
         Command::ResolveProxyConflict => "解除代理冲突",
+        Command::ResolveStartupConflict => "重置自启任务冲突",
         Command::SetProxyMode { .. } => "切换系统代理",
         Command::Shutdown => "退出程序",
         Command::TestRoute { .. } | Command::TestRunningRoute { .. } => "路由静态预测",
@@ -649,6 +651,9 @@ fn error_advice_for(code: &str, is_write: bool) -> &'static str {
         }
         "PROXY_CONFLICT" | "PROXY_OWNERSHIP_CONFLICT" | "PROXY_LEASE_CONFLICT" => {
             "系统代理已被其他程序或系统设置修改。请检查差异后选择“保留当前系统代理并解除冲突”，不会覆盖当前外部设置。"
+        }
+        "STARTUP_CONFLICT" => {
+            "登录自启计划任务已被外部修改或与所有权记录不一致。请查看日志中的任务名称，或选择“重新接管自启计划任务”按当前设置重建并同步。"
         }
         "GENERATION_CONFLICT" | "REVISION_CONFLICT" => {
             "运行版本或已保存配置已变化，请刷新状态并重新检查。"
@@ -743,6 +748,23 @@ impl App {
                         )
                     })
             })
+    }
+
+    pub(super) fn can_resolve_startup_conflict(&self) -> bool {
+        self.ui.connected
+            && !self.busy
+            && self.ui.uncertain.is_none()
+            && !self.shutdown_requested
+            && (self.status.as_ref().is_some_and(|s| {
+                s.recovery_required
+                    && s.last_error
+                        .as_ref()
+                        .is_some_and(|e| e.code == "STARTUP_CONFLICT")
+            }) || self
+                .ui
+                .failure
+                .as_ref()
+                .is_some_and(|f| f.error.code == "STARTUP_CONFLICT"))
     }
 
     pub(super) fn can_save_settings(&self) -> bool {

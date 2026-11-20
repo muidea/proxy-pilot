@@ -781,7 +781,10 @@ impl App {
             let safe_recovery = command.is_ssh_command()
                 || matches!(
                     command,
-                    Command::StopCore | Command::Shutdown | Command::ResolveProxyConflict
+                    Command::StopCore
+                        | Command::Shutdown
+                        | Command::ResolveProxyConflict
+                        | Command::ResolveStartupConflict
                 )
                 || (matches!(command, Command::SaveSettings { .. }) && self.can_save_settings());
             let shutdown_safe = matches!(command, Command::StopCore | Command::Shutdown);
@@ -1331,6 +1334,13 @@ impl App {
                             response.request_id,
                         );
                         self.send(Command::GetStatus);
+                    }
+                    Command::ResolveStartupConflict => {
+                        self.clear_request_failure();
+                        self.message = "已重新接管登录自启计划任务，可继续保存设置。".into();
+                        self.add_event("信息", "已重置登录自启任务冲突", response.request_id);
+                        self.send(Command::GetStatus);
+                        self.send(Command::GetSettings);
                     }
                     Command::StopCore | Command::RestartCore => {
                         self.clear_request_failure();

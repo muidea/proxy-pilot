@@ -4085,3 +4085,57 @@ fn top_bar_places_version_label_in_top_right_corner() {
         }
     }
 }
+
+#[test]
+fn startup_conflict_failure_offers_confirmation_and_sends_resolve_command() {
+    let (tx, requests) = mpsc::sync_channel(8);
+    let (_responses, rx) = mpsc::channel();
+    let mut base = app();
+    let status = base.status.take().unwrap();
+    let mut app = App::with_channels("unused-ui-test".into(), tx, rx);
+    app.ui.connected = true;
+    app.ui.setup_initialized = true;
+    app.ui.onboarding = false;
+    app.status = Some(status);
+    app.ui.failure = Some(crate::app::ui::Failure {
+        error: Error::new("STARTUP_CONFLICT", "Login task ownership/action changed"),
+        request: "req-startup".into(),
+    });
+    assert!(app.can_resolve_startup_conflict());
+
+    let ctx = egui::Context::default();
+    configure(&ctx);
+    let frame = |app: &mut App, events| {
+        ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1100.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ctx| app.render(ctx),
+        )
+    };
+
+    let output = frame(&mut app, vec![]);
+    let resolve_btn = text_bounds(&output, "重新接管自启计划任务…").center();
+    frame(&mut app, pointer_click(resolve_btn));
+    for _ in 0..3 {
+        let _ = frame(&mut app, vec![]);
+    }
+    let modal = frame(&mut app, vec![]);
+    assert!(matches!(
+        app.ui.dialog,
+        Some(Dialog::Confirm(Action::ResolveStartupConflict))
+    ));
+
+    let confirm_btn = text_bounds(&modal, "确认重新接管").center();
+    frame(&mut app, pointer_click(confirm_btn));
+    assert!(
+        requests
+            .try_iter()
+            .any(|r| matches!(r.command, Command::ResolveStartupConflict))
+    );
+}

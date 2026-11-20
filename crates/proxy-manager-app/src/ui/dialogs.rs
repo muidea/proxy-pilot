@@ -124,6 +124,11 @@ impl Action {
                 "本程序不会修改或覆盖当前 Windows 系统代理设置，仅放弃恢复先前保存的旧根快照并重新以当前系统代理作为基准，从而恢复正常操作与自启能力。",
                 "保留当前设置并解除",
             ),
+            Action::ResolveStartupConflict => (
+                "重新接管登录自启计划任务？",
+                "将按当前已保存的启动设置重建或清理本实例对应的 Windows 登录计划任务，并同步更新本地所有权记录；仅影响当前目录对应的 ProxyPilot 计划任务。",
+                "确认重新接管",
+            ),
         }
     }
 }
@@ -737,6 +742,7 @@ impl App {
             Action::Stop => self.send(Command::StopCore),
             Action::Restart => self.send(Command::RestartCore),
             Action::ResolveProxyConflict => self.send(Command::ResolveProxyConflict),
+            Action::ResolveStartupConflict => self.send(Command::ResolveStartupConflict),
             Action::Proxy(mode) => {
                 let http_tag = self.runtime_http_tag();
                 let pac = if mode == ProxyMode::Pac {

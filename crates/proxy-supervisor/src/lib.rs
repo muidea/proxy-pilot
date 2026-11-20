@@ -592,7 +592,10 @@ impl<B: ProxyBackend> Supervisor<B> {
         if !self.blocked
             && !matches!(
                 request.command,
-                Command::StopCore | Command::Shutdown | Command::ResolveProxyConflict
+                Command::StopCore
+                    | Command::Shutdown
+                    | Command::ResolveProxyConflict
+                    | Command::ResolveStartupConflict
             )
         {
             // New identities also require an intact evidence set, including legacy orphan journals.
@@ -602,7 +605,10 @@ impl<B: ProxyBackend> Supervisor<B> {
         if self.blocked
             && !matches!(
                 request.command,
-                Command::StopCore | Command::Shutdown | Command::ResolveProxyConflict
+                Command::StopCore
+                    | Command::Shutdown
+                    | Command::ResolveProxyConflict
+                    | Command::ResolveStartupConflict
             )
             && !allow_settings_during_recovery
         {
@@ -657,6 +663,7 @@ impl<B: ProxyBackend> Supervisor<B> {
                     | Command::RestartCore
                     | Command::StopCore
                     | Command::ResolveProxyConflict
+                    | Command::ResolveStartupConflict
                     | Command::Shutdown
             )
         {
@@ -931,6 +938,15 @@ impl<B: ProxyBackend> Supervisor<B> {
                     self.startup
                         .save(&op.transaction_id, &normalized, &std::env::current_exe()?);
                 if let Err(e) = result {
+                    if e.code == "STARTUP_CONFLICT" {
+                        proxy_runtime::log(
+                            &self.logs,
+                            format!(
+                                "Login task conflict during SaveSettings: {}",
+                                self.startup.conflict_summary()
+                            ),
+                        );
+                    }
                     if self.startup.pending(&op.transaction_id).unwrap_or(true) {
                         self.blocked = true;
                     }
@@ -941,6 +957,9 @@ impl<B: ProxyBackend> Supervisor<B> {
             }
             Command::ResolveProxyConflict => {
                 self.resolve_proxy_conflict(&op.request.request_id).await
+            }
+            Command::ResolveStartupConflict => {
+                self.resolve_startup_conflict(&op.request.request_id)
             }
             _ => Err(Error::new(
                 "INVALID_OPERATION",
@@ -1687,6 +1706,85 @@ impl<B: ProxyBackend> Supervisor<B> {
             "proxy_state": self.proxy.state(),
         }))
     }
+    fn verify_non_startup_recovery_clean(&mut self, current_request_id: &str) -> Result<()> {
+        if optional_json::<String>(&self.store.root.join("runtime/installation.json"))?.is_none() {
+            return Err(Error::new(
+                "INSTALLATION_ID_MISSING",
+                "Restore installation.json to preserve request deduplication",
+            ));
+        }
+        let _ = optional_json::<Settings>(&self.store.root.join("config/manager.json"))?;
+        let _ = optional_json::<Generation>(&self.store.root.join("runtime/active-manifest.json"))?;
+        for entry in fs::read_dir(self.store.root.join("runtime/transactions"))? {
+            let path = entry?.path().join("journal.json");
+            if path.exists() && !read_json::<Journal>(&path)?.settled {
+                return Err(Error::new(
+                    "RECOVERY_REQUIRED",
+                    "Unsettled runtime journal remains; repair before resetting startup task",
+                ));
+            }
+        }
+        for op in self.operations.all()? {
+            if op.request.request_id != current_request_id
+                && !matches!(op.request.command, Command::SaveSettings { .. })
+                && (op.recovery_required || op.response.is_none())
+            {
+                return Err(Error::new(
+                    "RECOVERY_REQUIRED",
+                    "Pending recovery operation remains; resolve it before resetting startup task",
+                ));
+            }
+        }
+        Ok(())
+    }
+    fn resolve_startup_conflict(&mut self, current_request_id: &str) -> Result<Value> {
+        self.verify_non_startup_recovery_clean(current_request_id)?;
+        let disk_settings =
+            optional_json::<Settings>(&self.store.root.join("config/manager.json"))?
+                .unwrap_or_default();
+        self.startup
+            .resolve_conflict(&disk_settings, &std::env::current_exe()?)?;
+        self.settings = optional_json::<Settings>(&self.store.root.join("config/manager.json"))?
+            .unwrap_or_default();
+        for mut op in self.operations.all()? {
+            if op.response.is_some() || !matches!(op.request.command, Command::SaveSettings { .. })
+            {
+                continue;
+            }
+            let result = match self.startup.outcome(&op.transaction_id)? {
+                Some(SettingsOutcome::Committed) => Ok(json!({"saved":true})),
+                Some(SettingsOutcome::Compensated) => Err(Error::new(
+                    "INTERRUPTED_COMPENSATED",
+                    "Executed intent was compensated; no generation committed",
+                )),
+                None => continue,
+            };
+            op.recovery_required = false;
+            op.response = Some(Response {
+                request_id: op.request.request_id.clone(),
+                result,
+            });
+            self.operations.save(&op)?;
+        }
+        if let Some(proxy_err) = self.proxy.recovery_error().cloned() {
+            self.blocked = true;
+            self.last_error = Some(proxy_err);
+        } else {
+            self.blocked = false;
+            self.last_error = None;
+        }
+        proxy_runtime::log(
+            &self.logs,
+            format!(
+                "Startup login task conflict resolved (task_name={}, start_on_logon={})",
+                self.startup.name, self.settings.start_on_logon
+            ),
+        );
+        Ok(json!({
+            "resolved": true,
+            "start_on_logon": self.settings.start_on_logon,
+        }))
+    }
     async fn recover(&mut self) -> Result<()> {
         self.logs.set_context(Some(format!(
             "startup-recovery generation={}",
@@ -1741,6 +1839,15 @@ impl<B: ProxyBackend> Supervisor<B> {
             recovery_error = Some(e);
         }
         if let Err(e) = self.startup.recover() {
+            if e.code == "STARTUP_CONFLICT" {
+                proxy_runtime::log(
+                    &self.logs,
+                    format!(
+                        "Login task conflict during startup recovery: {}",
+                        self.startup.conflict_summary()
+                    ),
+                );
+            }
             recovery_error = Some(e);
         } else {
             self.settings =

@@ -13,12 +13,14 @@ function Normalize([string] $text) {
     if (-not $definition.Principal.Id) { $definition.Principal.Id = 'Author' }
     if (-not $definition.Actions.Context) { $definition.Actions.Context = $definition.Principal.Id }
     foreach ($trigger in $definition.Triggers) {
-        if ($trigger.Type -eq 9 -and $trigger.UserId) {
+        if ($trigger.Type -eq 9 -and $trigger.UserId -and -not $trigger.UserId.StartsWith('S-1-')) {
             $account = New-Object System.Security.Principal.NTAccount($trigger.UserId)
-            if (-not $trigger.UserId.StartsWith('S-1-')) {
-                $trigger.UserId = $account.Translate([System.Security.Principal.SecurityIdentifier]).Value
-            }
+            $trigger.UserId = $account.Translate([System.Security.Principal.SecurityIdentifier]).Value
         }
+    }
+    if ($definition.Principal.UserId -and -not $definition.Principal.UserId.StartsWith('S-1-')) {
+        $account = New-Object System.Security.Principal.NTAccount($definition.Principal.UserId)
+        $definition.Principal.UserId = $account.Translate([System.Security.Principal.SecurityIdentifier]).Value
     }
     $xml = New-Object System.Xml.XmlDocument
     $xml.PreserveWhitespace = $false

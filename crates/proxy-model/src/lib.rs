@@ -422,6 +422,8 @@ pub enum Command {
     RestartCore,
     /// Explicitly acknowledges an external proxy lease conflict without overwriting Windows settings.
     ResolveProxyConflict,
+    /// Explicitly reconciles a login task conflict by aligning the scheduled task with saved settings.
+    ResolveStartupConflict,
     SetProxyMode {
         mode: ProxyMode,
         http_inbound_tag: String,

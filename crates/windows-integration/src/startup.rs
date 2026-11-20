@@ -135,10 +135,15 @@ impl StartupController {
         let before = optional_json::<Settings>(&self.root.join("config/manager.json"))?;
         let task_before = self.backend.read(&self.name)?;
         let owned = optional_json::<Ownership>(&self.ownership())?.and_then(|o| o.expected);
-        if task_before != owned {
+        // Only treat a mismatch as a conflict when a task actually exists in the scheduler;
+        // a missing task (e.g. copied data/, moved directory, or manual deletion) has nothing to preserve.
+        if task_before.is_some() && task_before != owned {
             return Err(Error::new(
                 "STARTUP_CONFLICT",
-                "Login task ownership/action changed; external task preserved",
+                format!(
+                    "Login task '{}' ownership/action changed; external task preserved",
+                    self.name
+                ),
             ));
         }
         let task_target = if settings.start_on_logon {
@@ -201,6 +206,99 @@ impl StartupController {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Returns a safe diagnostic summary of any login task ownership mismatch for logs.
+    pub fn conflict_summary(&self) -> String {
+        let current = self.backend.read(&self.name);
+        let owned = optional_json::<Ownership>(&self.ownership());
+        match (current, owned) {
+            (Ok(task), Ok(owned)) => {
+                let expected = owned.and_then(|o| o.expected);
+                let owner_tag = format!("<Description>{}</Description>", self.owner);
+                let owner_match = task
+                    .as_ref()
+                    .is_some_and(|t| t.xml.contains(&owner_tag) || t.xml == self.owner);
+                let disabled = task
+                    .as_ref()
+                    .is_some_and(|t| t.xml.contains("<Enabled>false</Enabled>"));
+                format!(
+                    "task_name={} task_present={} owned_present={} owner_match={} task_disabled={}",
+                    self.name,
+                    task.is_some(),
+                    expected.is_some(),
+                    owner_match,
+                    disabled
+                )
+            }
+            (task_res, owned_res) => format!(
+                "task_name={} task_read_ok={} owned_read_ok={}",
+                self.name,
+                task_res.is_ok(),
+                owned_res.is_ok()
+            ),
+        }
+    }
+
+    /// Explicitly resolves a login task conflict by reconciling pending settings journals
+    /// and aligning the scheduled task and ownership record with the saved settings.
+    pub fn resolve_conflict(&mut self, settings: &Settings, exe: &Path) -> Result<()> {
+        for entry in fs::read_dir(self.root.join("runtime/transactions"))? {
+            let path = entry?.path().join("settings.json");
+            if !path.exists() {
+                continue;
+            }
+            let mut journal: SettingsJournal = read_json(&path)?;
+            if journal.outcome.is_some() {
+                continue;
+            }
+            let disk_settings = optional_json::<Settings>(&self.root.join("config/manager.json"))?;
+            let committed = Self::matches(&disk_settings, &Some(journal.target.clone()))?;
+            let target = if committed {
+                &journal.task_target
+            } else {
+                if !Self::matches(&disk_settings, &journal.before)? {
+                    return Err(Error::new(
+                        "SETTINGS_CONFLICT",
+                        "External manager settings preserved; repair pending transaction",
+                    ));
+                }
+                &journal.task_before
+            };
+            let current = self.backend.read(&self.name)?;
+            if current != *target {
+                self.backend.replace(&self.name, &current, target)?;
+            }
+            if self.backend.read(&self.name)? != *target {
+                return Err(Error::new("STARTUP_FAILED", "Login task readback failed"));
+            }
+            write_json(
+                &self.ownership(),
+                &Ownership {
+                    expected: target.clone(),
+                },
+            )?;
+            journal.outcome = Some(if committed {
+                SettingsOutcome::Committed
+            } else {
+                SettingsOutcome::Compensated
+            });
+            write_json(&path, &journal)?;
+        }
+        let target = if settings.start_on_logon {
+            Some(self.backend.prepare(&self.owner, exe, &self.root)?)
+        } else {
+            None
+        };
+        let current = self.backend.read(&self.name)?;
+        if current != target {
+            self.backend.replace(&self.name, &current, &target)?;
+        }
+        if self.backend.read(&self.name)? != target {
+            return Err(Error::new("STARTUP_FAILED", "Login task readback failed"));
+        }
+        write_json(&self.ownership(), &Ownership { expected: target })?;
         Ok(())
     }
 }

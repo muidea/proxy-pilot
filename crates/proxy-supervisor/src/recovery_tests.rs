@@ -876,3 +876,55 @@ async fn resolve_proxy_conflict_refuses_when_non_proxy_recovery_or_corrupted_evi
     assert_eq!(err.code, "PROXY_RECOVERY_REQUIRED");
     assert!(s.blocked);
 }
+
+#[tokio::test]
+async fn resolve_startup_conflict_reconciles_task_and_unblocks_supervisor() {
+    let (tmp, mut s, proxy, _c) = setup().await;
+    let startup = FakeStartup::default();
+    s.startup = StartupController::new(
+        Box::new(startup.clone()),
+        &s.store.root,
+        &s.principal,
+        &s.installation,
+    );
+    send(
+        &mut s,
+        Command::SaveSettings {
+            settings: Settings {
+                start_on_logon: true,
+                ..Settings::default()
+            },
+        },
+    )
+    .await
+    .unwrap();
+
+    startup.0.lock().unwrap().0 = Some(windows_integration::startup::StartupTask {
+        xml: "external-edit".into(),
+    });
+    let err = send(
+        &mut s,
+        Command::SaveSettings {
+            settings: Settings::default(),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.code, "STARTUP_CONFLICT");
+
+    send(&mut s, Command::ResolveStartupConflict).await.unwrap();
+    assert!(!s.blocked);
+    assert!(s.last_error.is_none());
+    send(
+        &mut s,
+        Command::SaveSettings {
+            settings: Settings::default(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(!s.settings.start_on_logon);
+    assert!(startup.0.lock().unwrap().0.is_none());
+    drop(s);
+    let _ = (tmp, proxy);
+}

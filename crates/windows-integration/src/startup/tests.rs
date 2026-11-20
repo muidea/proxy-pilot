@@ -284,3 +284,73 @@ fn failed_compensation_preserves_intent_and_is_retried_after_restart() {
     );
     assert!(fake.read(&c.name).unwrap().is_none());
 }
+
+#[test]
+fn missing_scheduler_task_with_stale_ownership_allows_saving_settings() {
+    let tmp = tempfile::tempdir().unwrap();
+    let fake = Fake::default();
+    let mut c = controller(tmp.path(), &fake, "install");
+    let enabled = Settings {
+        start_on_logon: true,
+        ..Settings::default()
+    };
+    c.save("enabled", &enabled, Path::new("manager.exe"))
+        .unwrap();
+    assert!(fake.read(&c.name).unwrap().is_some());
+
+    // Simulate copied data/ to a new path or manual deletion of the scheduled task.
+    fake.0.lock().unwrap().task = None;
+    c.save(
+        "disable-missing",
+        &Settings::default(),
+        Path::new("manager.exe"),
+    )
+    .unwrap();
+    assert!(fake.read(&c.name).unwrap().is_none());
+
+    c.save("re-enabled", &enabled, Path::new("manager.exe"))
+        .unwrap();
+    assert!(fake.read(&c.name).unwrap().is_some());
+    fake.0.lock().unwrap().task = None;
+    c.save("recreate-after-delete", &enabled, Path::new("manager.exe"))
+        .unwrap();
+    assert!(fake.read(&c.name).unwrap().is_some());
+}
+
+#[test]
+fn resolve_conflict_reconciles_external_task_and_pending_journal() {
+    let tmp = tempfile::tempdir().unwrap();
+    let fake = Fake::default();
+    let mut c = controller(tmp.path(), &fake, "install");
+    let enabled = Settings {
+        start_on_logon: true,
+        ..Settings::default()
+    };
+    c.save("enabled", &enabled, Path::new("manager.exe"))
+        .unwrap();
+
+    fake.0.lock().unwrap().task = Some(StartupTask {
+        xml: "external-edit".into(),
+    });
+    assert_eq!(
+        c.save(
+            "disable-external",
+            &Settings::default(),
+            Path::new("manager.exe")
+        )
+        .unwrap_err()
+        .code,
+        "STARTUP_CONFLICT"
+    );
+    assert!(c.conflict_summary().contains("task_present=true"));
+
+    c.resolve_conflict(&enabled, Path::new("manager.exe"))
+        .unwrap();
+    let expected = fake
+        .prepare(&c.owner, Path::new("manager.exe"), tmp.path())
+        .unwrap();
+    assert_eq!(fake.read(&c.name).unwrap(), Some(expected));
+    c.save("disabled", &Settings::default(), Path::new("manager.exe"))
+        .unwrap();
+    assert!(fake.read(&c.name).unwrap().is_none());
+}
