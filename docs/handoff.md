@@ -2,7 +2,7 @@
 
 更新时间：2026-11-20
 
-本文用于把当前工作区交给下一位开发者、评审者或 Windows 验证人员。当前已发布基线为 `efe1fcf`（`v0.1.1-rc.4`）；当前源码版本为 `v0.1.1-rc.40`。不能把已发布的 `v0.1.1-rc.4` 当作当前源码版本。
+本文用于把当前工作区交给下一位开发者、评审者或 Windows 验证人员。当前已发布基线为 `efe1fcf`（`v0.1.1-rc.4`）；当前源码版本为 `v0.1.1-rc.41`。不能把已发布的 `v0.1.1-rc.4` 当作当前源码版本。
 
 ## 当前产品边界
 
@@ -34,7 +34,7 @@ cargo fmt --all -- --check
 git diff --check
 ```
 
-当前基线（`v0.1.1-rc.40`）全工作区 `--locked` 常规回归为 **283 项通过，7 项需显式 `XRAY_TEST_CORE` 环境用例忽略**；其中 `proxy-pilot`（`proxy-manager-app`）单元/无窗口回归 **128 项通过**（1 项需显式 Core 忽略），`proxy-supervisor` 库测试 **49 项通过**（1 项需显式 Core 忽略），集成测试 **31 项通过**，完整覆盖 `geosite.dat`/`geoip.dat` 解析与母域折叠、`AutoRules`/清单模板、PAC 自动随激活配置联动热同步、5,000 条域名与 2,000 条虚拟滚动、SSH 凭证 DPAPI/脱敏存储与 Mock SSH `direct-tcpip` 端到端转发、总览按需启停与默认精简视图、弹出框边框与 `18 px` 标题字号布局、草稿保存后重启 Core 无 `ASSET_REVISION_CONFLICT`、`--background` 二帧隐藏与托盘唤醒、后台 IPC 并发就绪检测、日志级别调节与导出、外部代理冲突解除及恢复期取消开机自启等场景。已交叉编译构建 `dist/proxy-pilot-0.1.1-rc.40-windows-x64.zip` 并完成 CRC 与逐文件一致性校验。
+当前基线（`v0.1.1-rc.41`）全工作区 `--locked` 常规回归为 **284 项通过，7 项需显式 `XRAY_TEST_CORE` 环境用例忽略**；其中 `proxy-pilot`（`proxy-manager-app`）单元/无窗口回归 **129 项通过**（1 项需显式 Core 忽略），`proxy-supervisor` 库测试 **49 项通过**（1 项需显式 Core 忽略），集成测试 **31 项通过**，完整覆盖 `geosite.dat`/`geoip.dat` 解析与母域折叠、`AutoRules`/清单模板、PAC 自动随激活配置联动热同步、5,000 条域名与 2,000 条虚拟滚动、SSH 凭证 DPAPI/脱敏存储与 Mock SSH `direct-tcpip` 端到端转发、总览按需启停与默认精简视图、弹出框边框与 `18 px` 标题字号布局、顶栏版本号右上角对齐、草稿保存后重启 Core 无 `ASSET_REVISION_CONFLICT`、`--background` 二帧隐藏与托盘唤醒、后台 IPC 并发就绪检测、日志级别调节与导出、外部代理冲突解除及恢复期取消开机自启等场景。已交叉编译构建 `dist/proxy-pilot-0.1.1-rc.41-windows-x64.zip` 并完成 CRC 与逐文件一致性校验。
 
 Windows GNU 原生验证使用用户指定的 `C:\v2rayN\bin\Xray\xray.exe`，已通过：
 
@@ -84,8 +84,8 @@ Windows GNU 原生验证使用用户指定的 `C:\v2rayN\bin\Xray\xray.exe`，�
 ## 重要文件入口
 
 - [README.md](../README.md)：用户安装、配置和部署说明。
-- [validation-guide.md](validation-guide.md)：当前验证包实操指南（`v0.1.1-rc.40`）。
-- [releases/v0.1.1-rc.40.md](releases/v0.1.1-rc.40.md)：`rc.40` 变更与测试摘要（另见 `v0.1.1-rc.19.md`–`v0.1.1-rc.39.md`）。
+- [validation-guide.md](validation-guide.md)：当前验证包实操指南（`v0.1.1-rc.41`）。
+- [releases/v0.1.1-rc.41.md](releases/v0.1.1-rc.41.md)：`rc.41` 变更与测试摘要（另见 `v0.1.1-rc.19.md`–`v0.1.1-rc.40.md`）。
 - [phase0-2-backlog.md](phase0-2-backlog.md)：验收编号和剩余能力清单。
 - [phase0-2-remaining-closeout.md](phase0-2-remaining-closeout.md)：本轮收口内容与证据。
 - [phase0-2-design-crosscheck.md](phase0-2-design-crosscheck.md)：按设计文档逐项核对后的剩余项、未登记设计项和证据边界。
@@ -108,7 +108,7 @@ Windows GNU 原生验证使用用户指定的 `C:\v2rayN\bin\Xray\xray.exe`，�
 ## 接手后的建议顺序
 
 1. 保持当前用户模式不变，先运行 Linux 全工作区 `--locked` 测试和双目标 Clippy。
-2. 在干净 Windows 测试账户实机验证 **`v0.1.1-rc.40`**（若从 `rc.38` 升级，注意旧版名为 `xray-manager.exe` 与 `XrayPilot-*` 自启任务，请先完全退出旧版并取消旧自启后再解压新目录并按需拷贝 `data/`）：重点验证 **SSH 凭证账号密码/私钥 DPAPI 持久化、真实 SSH 跳板机指纹探测与 TCP 转发、总览按需独立启停、保留原 Xray `dokodemo-door` 转发、配置自动保存后重启 Core、PAC 自动联动激活配置与热同步、总览默认隐藏「最近活动与版本」、优化后的弹出框边框/字号比例、Windows 冷启动 `--background` 防闪烁托盘唤醒与 `PROXY_LEASE_CONFLICT` 解除**。
+2. 在干净 Windows 测试账户实机验证 **`v0.1.1-rc.41`**（若从 `rc.38` 升级，注意旧版名为 `xray-manager.exe` 与 `XrayPilot-*` 自启任务，请先完全退出旧版并取消旧自启后再解压新目录并按需拷贝 `data/`）：重点验证 **SSH 凭证账号密码/私钥 DPAPI 持久化、真实 SSH 跳板机指纹探测与 TCP 转发、总览按需独立启停、保留原 Xray `dokodemo-door` 转发、配置自动保存后重启 Core、PAC 自动联动激活配置与热同步、总览默认隐藏「最近活动与版本」、顶栏右上角版本显示、优化后的弹出框边框/字号比例、Windows 冷启动 `--background` 防闪烁托盘唤醒与 `PROXY_LEASE_CONFLICT` 解除**。
 3. 单独安排真实 WinINet（V01/V10）、注销/登录（V02）、跨 SID（V06）、磁盘满和断电测试（V04/V05）；测试前保存代理设置及数据目录备份。
-4. 当前代码基线已更新至 `v0.1.1-rc.40`；推送并运行远端 GitHub Actions CI（V09）后，再生成正式发布包和 SHA-256 校验文件。
+4. 当前代码基线已更新至 `v0.1.1-rc.41`；推送并运行远端 GitHub Actions CI（V09）后，再生成正式发布包和 SHA-256 校验文件。
 5. 只有在对应真实环境证据完成后，才更新 V01/V02/V04–V10 状态；不要用单元测试或 GNU 本机构建替代 MSVC、真实系统代理、PAC 客户端和人工交互验收。

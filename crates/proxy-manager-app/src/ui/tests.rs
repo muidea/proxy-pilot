@@ -4018,3 +4018,70 @@ fn modal_dialogs_use_balanced_widths_padding_and_harmonized_title_size() {
         }
     }
 }
+
+#[test]
+fn top_bar_places_version_label_in_top_right_corner() {
+    let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let actual_bounds = |output: &egui::FullOutput, label: &str| {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => {
+                    Some(text.galley.rect.translate(text.pos.to_vec2()))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("Missing rendered label: {label}"))
+    };
+    for appearance in [Appearance::Light, Appearance::Dark] {
+        for width in [760.0, 1020.0, 1100.0] {
+            let mut app = app();
+            let ctx = egui::Context::default();
+            configure(&ctx);
+            appearance.apply(&ctx);
+            let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 760.0));
+            let mut output = None;
+            for frame in 0..4 {
+                output = Some(ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(viewport),
+                        time: Some(frame as f64 * 0.05),
+                        ..Default::default()
+                    },
+                    |ctx| app.render(ctx),
+                ));
+            }
+            let output = output.unwrap();
+            let brand_rect = actual_bounds(&output, "Proxy Pilot");
+            let version_rect = actual_bounds(&output, &version);
+            let settings_rect = actual_bounds(&output, "设置");
+            assert!(
+                viewport.contains_rect(version_rect),
+                "width={width}: {version_rect:?}"
+            );
+            assert!(
+                version_rect.right() > width - 48.0,
+                "expected top-right corner at width={width}: {version_rect:?}"
+            );
+            assert!(
+                (version_rect.center().y - brand_rect.center().y).abs() < 6.0,
+                "expected version on top row at width={width}: brand={brand_rect:?}, version={version_rect:?}"
+            );
+            if width >= 1020.0 {
+                let nav_rects = ["总览", "配置", "PAC", "日志", "诊断", "设置"]
+                    .map(|label| actual_bounds(&output, label));
+                for pair in nav_rects.windows(2) {
+                    assert!(
+                        pair[0].right() < pair[1].left(),
+                        "nav order broken at width={width}: {pair:?}"
+                    );
+                }
+                assert!(
+                    settings_rect.right() < version_rect.left(),
+                    "expected version right of nav at width={width}: settings={settings_rect:?}, version={version_rect:?}"
+                );
+            }
+        }
+    }
+}

@@ -96,37 +96,45 @@ impl App {
                             crate::widgets::BadgeTone::Muted,
                         );
                     }
+                };
+                let render_version = |ui: &mut egui::Ui| {
                     ui.label(
                         RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
                             .small()
                             .weak(),
                     );
                 };
-                let render_nav = |ui: &mut egui::Ui, page_state: &mut Page| {
-                    for (page, title) in [
+                let render_nav = |ui: &mut egui::Ui, page_state: &mut Page, reverse: bool| {
+                    let tabs = [
                         (Page::Overview, "总览"),
                         (Page::Profiles, "配置"),
                         (Page::Pac, "PAC"),
                         (Page::Logs, "日志"),
                         (Page::Diagnostics, "诊断"),
                         (Page::Settings, "设置"),
-                    ] {
+                    ];
+                    let iter: Box<dyn Iterator<Item = &(Page, &str)>> = if reverse {
+                        Box::new(tabs.iter().rev())
+                    } else {
+                        Box::new(tabs.iter())
+                    };
+                    for &(page, title) in iter {
                         if crate::widgets::nav_tab(ui, title, *page_state == page).clicked() {
                             *page_state = page;
                         }
                     }
                 };
-                if ui.available_width() >= 920.0 {
+                if ui.available_width() >= 960.0 {
                     egui::Sides::new().show(ui, render_brand, |ui| {
-                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            render_nav(ui, &mut next_page);
-                        });
+                        render_version(ui);
+                        ui.add_space(4.0);
+                        render_nav(ui, &mut next_page, true);
                     });
                 } else {
+                    egui::Sides::new().show(ui, render_brand, render_version);
+                    ui.add_space(4.0);
                     ui.horizontal_wrapped(|ui| {
-                        render_brand(ui);
-                        ui.add_space(6.0);
-                        render_nav(ui, &mut next_page);
+                        render_nav(ui, &mut next_page, false);
                     });
                 }
                 self.ui.page = next_page;
