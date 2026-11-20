@@ -1,6 +1,11 @@
 # 验证说明
 
-本包为 **v0.1.1-rc.38 Windows x64 本地验证版**，在 `v0.1.1-rc.37` 的基础上，新增 **PAC 设置自动跟随当前激活配置并支持运行中热同步**，以及 **总览界面默认隐藏「最近活动与版本」卡片**（可在「设置 → 外观」按需开启）。构建版本、源码提交和文件指纹见 `VERSION.txt` 与 `SOURCE-MANIFEST.json`；本地验证包可能记录 `source_dirty=true`，不能作为已发布版本。
+本包为 **v0.1.1-rc.39 Windows x64 本地验证版**，在 `v0.1.1-rc.38` 的基础上：
+1. 项目全面更名为 **Proxy Pilot**（`proxy-pilot.exe`、`proxy-supervisor.exe`、`proxyctl.exe` 及 `proxy-pilot-<ver>-windows-x64.zip`）；
+2. 新增 **SSH 凭证管理（账号密码 / 私钥加密存储）与纯 Rust SSH 隧道端口转发**（完整保留原 Xray `dokodemo-door` 端口转发，并在「总览」支持 SSH 转发按需独立启停）；
+3. 修复了编辑配置自动保存（`UpdateProfile`）后执行「重启当前运行版本」或切换系统代理模式时误报 `ASSET_REVISION_CONFLICT` 的问题。
+
+构建版本、源码提交和文件指纹见 `VERSION.txt` 与 `SOURCE-MANIFEST.json`；本地验证包可能记录 `source_dirty=true`，不能作为已发布版本。
 
 文件名统一采用 `proxy-pilot-<版本>-windows-x64.zip`，验证版本使用 `rc.N` 预发布版本号。每轮内容不同的对外交付使用新的版本号。本包由 Linux 交叉构建 Windows GNU 目标，用于功能验证；正式发布前仍需 MSVC CI 和签核。验证包只附带本说明和 `docs/发布说明.md`，设计、评审、交接和历史收口文档保留在源码仓库，不随验证包分发。
 

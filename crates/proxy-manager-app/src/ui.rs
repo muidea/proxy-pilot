@@ -108,6 +108,62 @@ pub(super) enum BackgroundHide {
     HideAfterFirstFrame,
     UncloakAfterHide,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum PortForwardSubTab {
+    #[default]
+    Forwards,
+    SshHosts,
+    SshCredentials,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct SshCredentialForm {
+    pub editing_id: Option<String>,
+    pub name: String,
+    pub username: String,
+    pub auth_kind: proxy_model::SshAuthKind,
+    pub password: String,
+    pub has_existing_password: bool,
+    pub private_key_path: String,
+    pub passphrase: String,
+    pub has_existing_passphrase: bool,
+    pub clear_passphrase: bool,
+    pub show_secret: bool,
+    pub error: Option<String>,
+    pub return_to_host: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct SshHostForm {
+    pub editing_id: Option<String>,
+    pub name: String,
+    pub host: String,
+    pub port: String,
+    pub credential_id: String,
+    pub host_key_fingerprint: String,
+    pub error: Option<String>,
+    pub probe_note: Option<String>,
+    pub probing: bool,
+    pub return_to_pf: bool,
+}
+
+impl Default for SshHostForm {
+    fn default() -> Self {
+        Self {
+            editing_id: None,
+            name: String::new(),
+            host: String::new(),
+            port: "22".into(),
+            credential_id: String::new(),
+            host_key_fingerprint: String::new(),
+            error: None,
+            probe_note: None,
+            probing: false,
+            return_to_pf: false,
+        }
+    }
+}
+
 pub(super) enum Dialog {
     UnsavedExit(ExitKind),
     Confirm(Action),
@@ -117,6 +173,8 @@ pub(super) enum Dialog {
     Create,
     PacBatch,
     PortForward,
+    SshCredential,
+    SshHost,
 }
 #[derive(Clone)]
 pub(super) struct HistoryPreview {
@@ -196,6 +254,11 @@ pub(super) struct UiState {
     pub(super) node_share_feedback: Option<String>,
     pub(super) pf_form: crate::port_forward::PortForwardForm,
     pub(super) pf_error: Option<String>,
+    pub(super) pf_subtab: PortForwardSubTab,
+    pub(super) ssh_state: proxy_model::SshState,
+    pub(super) ssh_loaded: bool,
+    pub(super) ssh_cred_form: SshCredentialForm,
+    pub(super) ssh_host_form: SshHostForm,
     pub(super) inbounds_native: bool,
     pub(super) inline_rename: Option<String>,
     pub(super) guided: crate::guided_config::State,
@@ -301,6 +364,11 @@ impl Default for UiState {
             node_share_feedback: None,
             pf_form: Default::default(),
             pf_error: None,
+            pf_subtab: Default::default(),
+            ssh_state: Default::default(),
+            ssh_loaded: false,
+            ssh_cred_form: Default::default(),
+            ssh_host_form: Default::default(),
             inbounds_native: false,
             inline_rename: None,
             guided: Default::default(),
@@ -551,6 +619,16 @@ pub(super) fn command_name(command: &Command) -> &'static str {
         Command::TestPac { .. } => "PAC 执行测试",
         Command::TestLatency { .. } => "TCP 延迟探测",
         Command::GetOperation { .. } | Command::GetOperationDetails { .. } => "查询操作结果",
+        Command::GetSshState => "读取 SSH 隧道状态",
+        Command::ProbeSshHostKey { .. } => "探测 SSH 服务器指纹",
+        Command::SaveSshCredential { .. } => "保存 SSH 凭证",
+        Command::DeleteSshCredential { .. } => "删除 SSH 凭证",
+        Command::SaveSshHost { .. } => "保存 SSH 跳板机",
+        Command::DeleteSshHost { .. } => "删除 SSH 跳板机",
+        Command::SaveSshForward { .. } => "保存 SSH 端口转发",
+        Command::DeleteSshForward { .. } => "删除 SSH 端口转发",
+        Command::StartSshForward { .. } => "启动 SSH 端口转发",
+        Command::StopSshForward { .. } => "停止 SSH 端口转发",
         _ => "读取后台状态",
     }
 }

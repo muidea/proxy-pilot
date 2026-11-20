@@ -69,6 +69,121 @@ pub enum ProxyMode {
     Pac,
 }
 
+pub const DEFAULT_SSH_PORT: u16 = 22;
+fn default_ssh_port() -> u16 {
+    DEFAULT_SSH_PORT
+}
+
+/// Authentication method for an SSH credential.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SshAuthKind {
+    #[default]
+    Password,
+    PrivateKey,
+}
+
+/// Write-only SSH credential payload submitted from the UI. Secrets are encrypted at rest and
+/// never echoed back in `SshCredentialSummary`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SshCredentialInput {
+    #[serde(default)]
+    pub id: String,
+    pub name: String,
+    pub username: String,
+    #[serde(default)]
+    pub auth_kind: SshAuthKind,
+    /// On create with Password auth, non-empty. On edit, `None` preserves the saved password.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub private_key_path: PathBuf,
+    /// On edit, `None` preserves the saved passphrase; `Some("")` clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passphrase: Option<String>,
+}
+
+/// Redacted SSH credential summary safe to expose over IPC and render in the UI.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SshCredentialSummary {
+    pub id: String,
+    pub name: String,
+    pub username: String,
+    #[serde(default)]
+    pub auth_kind: SshAuthKind,
+    #[serde(default)]
+    pub has_password: bool,
+    #[serde(default)]
+    pub private_key_path: PathBuf,
+    #[serde(default)]
+    pub has_passphrase: bool,
+}
+
+/// Reusable SSH server definition referencing a stored `SshCredential`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SshHost {
+    #[serde(default)]
+    pub id: String,
+    pub name: String,
+    pub host: String,
+    #[serde(default = "default_ssh_port")]
+    pub port: u16,
+    pub credential_id: String,
+    /// Expected server host-key fingerprint (`SHA256:...`). Required before connecting.
+    #[serde(default)]
+    pub host_key_fingerprint: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SshHostKeyProbe {
+    pub host: String,
+    pub port: u16,
+    pub fingerprint: String,
+    pub algorithm: String,
+}
+
+/// Standalone local TCP forward executed directly over SSH `direct-tcpip` by the supervisor.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SshForward {
+    #[serde(default)]
+    pub id: String,
+    pub name: String,
+    pub listen: String,
+    pub port: u16,
+    pub target_host: String,
+    pub target_port: u16,
+    pub ssh_host_id: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SshForwardState {
+    #[default]
+    Stopped,
+    Connecting,
+    Running,
+    Error,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SshForwardRuntime {
+    pub forward_id: String,
+    #[serde(default)]
+    pub state: SshForwardState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SshState {
+    #[serde(default)]
+    pub credentials: Vec<SshCredentialSummary>,
+    #[serde(default)]
+    pub hosts: Vec<SshHost>,
+    #[serde(default)]
+    pub forwards: Vec<SshForward>,
+    #[serde(default)]
+    pub runtime: Vec<SshForwardRuntime>,
+}
+
 pub const DEFAULT_PAC_PORT: u16 = 18080;
 fn default_pac_port() -> u16 {
     DEFAULT_PAC_PORT
@@ -346,6 +461,35 @@ pub enum Command {
         generation_id: String,
         context: RouteContext,
     },
+    GetSshState,
+    ProbeSshHostKey {
+        host: String,
+        port: u16,
+    },
+    SaveSshCredential {
+        credential: SshCredentialInput,
+    },
+    DeleteSshCredential {
+        id: String,
+    },
+    SaveSshHost {
+        host: SshHost,
+    },
+    DeleteSshHost {
+        id: String,
+    },
+    SaveSshForward {
+        forward: SshForward,
+    },
+    DeleteSshForward {
+        id: String,
+    },
+    StartSshForward {
+        id: String,
+    },
+    StopSshForward {
+        id: String,
+    },
     Shutdown,
 }
 impl Command {
@@ -366,6 +510,24 @@ impl Command {
                 | Self::TestRunningRoute { .. }
                 | Self::TestPac { .. }
                 | Self::TestLatency { .. }
+                | Self::GetSshState
+                | Self::ProbeSshHostKey { .. }
+        )
+    }
+
+    pub fn is_ssh_command(&self) -> bool {
+        matches!(
+            self,
+            Self::GetSshState
+                | Self::ProbeSshHostKey { .. }
+                | Self::SaveSshCredential { .. }
+                | Self::DeleteSshCredential { .. }
+                | Self::SaveSshHost { .. }
+                | Self::DeleteSshHost { .. }
+                | Self::SaveSshForward { .. }
+                | Self::DeleteSshForward { .. }
+                | Self::StartSshForward { .. }
+                | Self::StopSshForward { .. }
         )
     }
 }

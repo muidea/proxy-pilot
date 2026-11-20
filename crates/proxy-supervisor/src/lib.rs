@@ -4,6 +4,8 @@ pub mod maintenance;
 mod operations;
 mod pac_server;
 mod restart_budget;
+mod ssh_store;
+mod ssh_tunnel;
 mod views;
 #[cfg(test)]
 use effects::EffectFault;
@@ -77,6 +79,8 @@ pub struct Supervisor<B: ProxyBackend> {
     installation: String,
     restart_budget: restart_budget::RestartBudget,
     pac_servers: Vec<PacServer>,
+    ssh_store: ssh_store::SshStore,
+    ssh_tunnels: ssh_tunnel::SshTunnelManager,
     #[cfg(test)]
     fail_settlement: bool,
     listener_ready: bool,
@@ -179,6 +183,7 @@ impl<B: ProxyBackend> Supervisor<B> {
         let installation = installation_result.unwrap_or_else(|_| "recovery-only".into());
         let settings = settings_result.unwrap_or_default().unwrap_or_default();
         let generation = generation_result.unwrap_or_default();
+        let ssh_store = ssh_store::SshStore::load(&store.root)?;
         let operations = OperationStore::new(&store.root);
         let principal = proxy_config::security::principal()?;
         let startup =
@@ -205,6 +210,8 @@ impl<B: ProxyBackend> Supervisor<B> {
             installation,
             restart_budget: restart_budget::RestartBudget::default(),
             pac_servers: Vec::new(),
+            ssh_store,
+            ssh_tunnels: ssh_tunnel::SshTunnelManager::new(),
             listener_ready: false,
             #[cfg(test)]
             fail_settlement: false,
@@ -561,6 +568,9 @@ impl<B: ProxyBackend> Supervisor<B> {
             }
             _ => {}
         }
+        if let Some(ssh_res) = self.dispatch_ssh(&request.command).await {
+            return ssh_res;
+        }
         // Deduplication deliberately precedes generation/revision checks, including after restart.
         let lookup = self.operations.lookup(&caller, &request);
         let existing = self.operation_read(lookup)?;
@@ -877,16 +887,10 @@ impl<B: ProxyBackend> Supervisor<B> {
                 self.invalidate_retry();
                 if let Some(g) = self.generation.clone() {
                     let value = self
-                        .apply(
-                            op,
-                            g.candidate,
-                            ProxyMode::Direct,
-                            g.http_inbound_tag,
-                            false,
-                            None,
-                        )
+                        .stop_generation(op, g.candidate, g.http_inbound_tag)
                         .await?;
                     if matches!(op.request.command, Command::Shutdown) {
+                        self.ssh_tunnels.stop_all().await;
                         self.shutdown = true;
                     }
                     Ok(value)
@@ -899,6 +903,7 @@ impl<B: ProxyBackend> Supervisor<B> {
                         self.prune_pac_servers(&[]).await;
                     }
                     if matches!(op.request.command, Command::Shutdown) {
+                        self.ssh_tunnels.stop_all().await;
                         self.shutdown = true;
                     }
                     Ok(json!({"stopped":true}))
@@ -917,7 +922,7 @@ impl<B: ProxyBackend> Supervisor<B> {
                     _ => (old.proxy_mode, old.http_inbound_tag.clone(), None),
                 };
                 self.invalidate_retry();
-                self.apply(op, old.candidate, mode, tag, true, pac).await
+                self.apply(op, old.candidate, mode, tag, false, pac).await
             }
             Command::SaveSettings { settings } => {
                 let mut normalized = settings.clone();
@@ -1062,6 +1067,105 @@ impl<B: ProxyBackend> Supervisor<B> {
             summary: None,
         })
     }
+    fn ssh_state(&self) -> SshState {
+        let forwards = self.ssh_store.forwards();
+        SshState {
+            credentials: self.ssh_store.summaries(),
+            hosts: self.ssh_store.hosts().to_vec(),
+            forwards: forwards.to_vec(),
+            runtime: self.ssh_tunnels.runtime_snapshot(forwards),
+        }
+    }
+
+    async fn dispatch_ssh(&mut self, command: &Command) -> Option<Result<Value>> {
+        let res: Result<Value> = match command {
+            Command::GetSshState => serde_json::to_value(self.ssh_state()).map_err(Into::into),
+            Command::ProbeSshHostKey { host, port } => {
+                match ssh_tunnel::probe_host_key(host, *port).await {
+                    Ok(probe) => serde_json::to_value(probe).map_err(Into::into),
+                    Err(err) => Err(err),
+                }
+            }
+            Command::SaveSshCredential { credential } => {
+                match self.ssh_store.save_credential(credential.clone()) {
+                    Ok(saved) => {
+                        proxy_runtime::log(
+                            &self.logs,
+                            format!(
+                                "已保存 SSH 凭证「{}」（账号：{}）",
+                                saved.name, saved.username
+                            ),
+                        );
+                        serde_json::to_value(self.ssh_state()).map_err(Into::into)
+                    }
+                    Err(err) => Err(err),
+                }
+            }
+            Command::DeleteSshCredential { id } => match self.ssh_store.delete_credential(id) {
+                Ok(()) => serde_json::to_value(self.ssh_state()).map_err(Into::into),
+                Err(err) => Err(err),
+            },
+            Command::SaveSshHost { host } => {
+                if !host.id.trim().is_empty() {
+                    let running_ids: Vec<String> = self
+                        .ssh_store
+                        .forwards()
+                        .iter()
+                        .filter(|f| f.ssh_host_id == host.id && self.ssh_tunnels.is_running(&f.id))
+                        .map(|f| f.id.clone())
+                        .collect();
+                    for fwd_id in running_ids {
+                        self.ssh_tunnels.stop_forward(&fwd_id).await;
+                    }
+                }
+                match self.ssh_store.save_host(host.clone()) {
+                    Ok(_) => serde_json::to_value(self.ssh_state()).map_err(Into::into),
+                    Err(err) => Err(err),
+                }
+            }
+            Command::DeleteSshHost { id } => match self.ssh_store.delete_host(id) {
+                Ok(()) => serde_json::to_value(self.ssh_state()).map_err(Into::into),
+                Err(err) => Err(err),
+            },
+            Command::SaveSshForward { forward } => {
+                if !forward.id.trim().is_empty() && self.ssh_tunnels.is_running(&forward.id) {
+                    self.ssh_tunnels.stop_forward(&forward.id).await;
+                }
+                match self.ssh_store.save_forward(forward.clone()) {
+                    Ok(_) => serde_json::to_value(self.ssh_state()).map_err(Into::into),
+                    Err(err) => Err(err),
+                }
+            }
+            Command::DeleteSshForward { id } => {
+                self.ssh_tunnels.stop_forward(id).await;
+                match self.ssh_store.delete_forward(id) {
+                    Ok(()) => serde_json::to_value(self.ssh_state()).map_err(Into::into),
+                    Err(err) => Err(err),
+                }
+            }
+            Command::StartSshForward { id } => match self.ssh_store.resolve_for_forward(id) {
+                Ok((fwd, host, cred)) => {
+                    match self
+                        .ssh_tunnels
+                        .start_forward(&fwd, &host, cred, &self.logs)
+                        .await
+                    {
+                        Ok(()) => serde_json::to_value(self.ssh_state()).map_err(Into::into),
+                        Err(err) => Err(err),
+                    }
+                }
+                Err(err) => Err(err),
+            },
+            Command::StopSshForward { id } => {
+                self.ssh_tunnels.stop_forward(id).await;
+                proxy_runtime::log(&self.logs, format!("已停止 SSH 端口转发（id={id}）"));
+                serde_json::to_value(self.ssh_state()).map_err(Into::into)
+            }
+            _ => return None,
+        };
+        Some(res)
+    }
+
     fn pac_publication_summary(draft: &PacDraft, stats: &proxy_pac::PacCompileStats) -> String {
         let total =
             stats.domain_count + stats.full_count + stats.subdomain_count + stats.keyword_count;
@@ -1152,14 +1256,15 @@ impl<B: ProxyBackend> Supervisor<B> {
         candidate: Candidate,
         mode: ProxyMode,
         tag: String,
-        running: bool,
+        promote_profile: bool,
         pac: Option<PacDraft>,
     ) -> Result<Value> {
-        if !running {
-            return self.stop_generation(op, candidate, tag).await;
-        }
         self.verify_candidate(&candidate)?;
-        let old_profile = self.store.profile(&candidate.profile_id)?;
+        let old_profile = if promote_profile {
+            Some(self.store.profile(&candidate.profile_id)?)
+        } else {
+            self.store.profile(&candidate.profile_id).ok()
+        };
         self.logs.set_context(Some(format!(
             "profile={} rev={} tx={}",
             candidate.profile_id,
@@ -1170,8 +1275,10 @@ impl<B: ProxyBackend> Supervisor<B> {
             .generation
             .as_ref()
             .is_some_and(|g| g.candidate.id == candidate.id);
-        if old_profile.revision != candidate.base_revision
-            && !(reuse && old_profile.revision == candidate.revision)
+        if promote_profile
+            && let Some(profile) = old_profile.as_ref()
+            && profile.revision != candidate.base_revision
+            && !(reuse && profile.revision == candidate.revision)
         {
             return Err(Error::new(
                 "ASSET_REVISION_CONFLICT",
@@ -1179,9 +1286,7 @@ impl<B: ProxyBackend> Supervisor<B> {
             ));
         }
         let resolved = self.resolve_candidate(&candidate);
-        if running {
-            proxy_runtime::validate_with_logs(&resolved, &self.logs).await?;
-        }
+        proxy_runtime::validate_with_logs(&resolved, &self.logs).await?;
         let config = parse_config(&fs::read(&resolved.config_path)?)?;
         let endpoint = if matches!(mode, ProxyMode::Global | ProxyMode::Pac) {
             Some(proxy_runtime::http_endpoint(&config, &tag)?)
@@ -1249,15 +1354,18 @@ impl<B: ProxyBackend> Supervisor<B> {
             candidate,
             proxy_mode: mode,
             http_inbound_tag: tag,
-            running,
+            running: true,
             pac: pac_publication,
         };
+        let (before_hash, before_json) = old_profile
+            .map(|p| (p.revision, p.json))
+            .unwrap_or_default();
         let mut journal = Journal {
             generation: generation.clone(),
             previous: self.generation.clone(),
             previous_instance: self.running_instance()?,
-            before_hash: old_profile.revision,
-            before_json: old_profile.json,
+            before_hash,
+            before_json,
             windows_before: self.proxy.snapshot()?,
             lease_before: self.proxy.lease.clone(),
             promoted: false,
@@ -1269,13 +1377,8 @@ impl<B: ProxyBackend> Supervisor<B> {
             return Err(e);
         }
         let result: Result<()> = async {
-            if !running {
-                self.proxy.release()?;
-            }
             self.stop_process().await?;
-            if running {
-                self.start(&generation).await?;
-            }
+            self.start(&generation).await?;
             if let Some(pac) = &generation.pac {
                 self.ensure_pac_served(pac).await?;
             }
@@ -1284,18 +1387,20 @@ impl<B: ProxyBackend> Supervisor<B> {
             } else {
                 self.proxy.release()?;
             }
-            self.store
-                .check_revision(&generation.candidate.profile_id, &journal.before_hash)?;
-            // Persist promotion intent before replacing the formal native asset.
-            journal.promoted = true;
-            write_json(&journal_path, &journal)?;
-            atomic_write(
-                &self.store.profile_path(&generation.candidate.profile_id)?,
-                &fs::read(resolve_path(
-                    &self.store.root,
-                    &generation.candidate.config_path,
-                ))?,
-            )?;
+            if promote_profile {
+                self.store
+                    .check_revision(&generation.candidate.profile_id, &journal.before_hash)?;
+                // Persist promotion intent before replacing the formal native asset.
+                journal.promoted = true;
+                write_json(&journal_path, &journal)?;
+                atomic_write(
+                    &self.store.profile_path(&generation.candidate.profile_id)?,
+                    &fs::read(resolve_path(
+                        &self.store.root,
+                        &generation.candidate.config_path,
+                    ))?,
+                )?;
+            }
             self.publish(&generation)?;
             Ok(())
         }
@@ -1315,9 +1420,7 @@ impl<B: ProxyBackend> Supervisor<B> {
         };
         if committed.as_ref().is_some_and(|g| g.id == generation.id) {
             self.generation = Some(generation.clone());
-            if running {
-                self.auto_connect_notice = None;
-            }
+            self.auto_connect_notice = None;
             if let Err(e) = self.proxy.finalize() {
                 self.blocked = true;
                 self.last_error = Some(e);

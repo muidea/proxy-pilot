@@ -1,5 +1,6 @@
 //! Guided port-forwarding (`dokodemo-door`) model, JSON sync, and validation helpers.
 use crate::workspace::{PausedPortForward, Workspace};
+use proxy_model::{SshForward, SshHost};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashSet};
 use std::net::IpAddr;
@@ -40,6 +41,7 @@ pub struct PortForwardEntry {
 pub struct PortForwardForm {
     pub editing_tag: Option<String>,
     pub editing_paused_index: Option<usize>,
+    pub editing_ssh_id: Option<String>,
     pub name: String,
     pub listen: String,
     pub custom_listen: bool,
@@ -47,27 +49,45 @@ pub struct PortForwardForm {
     pub network: String,
     pub target_host: String,
     pub target_port: String,
+    pub outbound_is_ssh: bool,
     pub outbound_tag: String,
+    pub ssh_host_id: String,
 }
 
 impl PortForwardForm {
+    #[cfg(test)]
     pub fn from_new(config: &Value, paused: &[PausedPortForward]) -> Self {
+        Self::from_new_with_ssh(config, paused, &[])
+    }
+
+    pub fn from_new_with_ssh(
+        config: &Value,
+        paused: &[PausedPortForward],
+        ssh_forwards: &[SshForward],
+    ) -> Self {
         let default_outbound = config
             .pointer("/outbounds/0/tag")
             .and_then(Value::as_str)
             .unwrap_or("direct")
             .to_owned();
+        let mut port = next_free_port(config, paused);
+        while ssh_forwards.iter().any(|f| f.port == port) && port < u16::MAX {
+            port += 1;
+        }
         Self {
             editing_tag: None,
             editing_paused_index: None,
+            editing_ssh_id: None,
             name: String::new(),
             listen: LISTEN_LOCAL.into(),
             custom_listen: false,
-            local_port: next_free_port(config, paused).to_string(),
+            local_port: port.to_string(),
             network: "tcp".into(),
             target_host: String::new(),
             target_port: String::new(),
+            outbound_is_ssh: false,
             outbound_tag: default_outbound,
+            ssh_host_id: String::new(),
         }
     }
 
@@ -77,6 +97,7 @@ impl PortForwardForm {
         Self {
             editing_tag: entry.enabled.then(|| entry.tag.clone()),
             editing_paused_index: entry.paused_index,
+            editing_ssh_id: None,
             name: entry.name.clone(),
             listen: entry.listen.clone(),
             custom_listen,
@@ -88,7 +109,28 @@ impl PortForwardForm {
             } else {
                 String::new()
             },
+            outbound_is_ssh: false,
             outbound_tag: entry.outbound_tag.clone(),
+            ssh_host_id: String::new(),
+        }
+    }
+
+    pub fn from_ssh_forward(fwd: &SshForward) -> Self {
+        let custom_listen = fwd.listen.trim() != LISTEN_LOCAL && fwd.listen.trim() != LISTEN_LAN;
+        Self {
+            editing_tag: None,
+            editing_paused_index: None,
+            editing_ssh_id: Some(fwd.id.clone()),
+            name: fwd.name.clone(),
+            listen: fwd.listen.clone(),
+            custom_listen,
+            local_port: fwd.port.to_string(),
+            network: "tcp".into(),
+            target_host: fwd.target_host.clone(),
+            target_port: fwd.target_port.to_string(),
+            outbound_is_ssh: true,
+            outbound_tag: String::new(),
+            ssh_host_id: fwd.ssh_host_id.clone(),
         }
     }
 }
@@ -427,6 +469,15 @@ fn form_to_inbound(tag: &str, form: &PortForwardForm, base: Option<&Value>) -> V
 }
 
 pub fn check_form_error(config: &Value, form: &PortForwardForm) -> Option<String> {
+    check_form_error_with_ssh(config, form, &[], &[])
+}
+
+pub fn check_form_error_with_ssh(
+    config: &Value,
+    form: &PortForwardForm,
+    ssh_hosts: &[SshHost],
+    ssh_forwards: &[SshForward],
+) -> Option<String> {
     let listen = form.listen.trim();
     if listen.parse::<IpAddr>().is_err() {
         return Some("监听 IP 格式无效（例如 127.0.0.1 或 0.0.0.0）。".into());
@@ -453,16 +504,28 @@ pub fn check_form_error(config: &Value, form: &PortForwardForm) -> Option<String
     {
         return Some("目标端口应为 1–65535 的整数。".into());
     }
-    let valid_outbound = config
-        .get("outbounds")
-        .and_then(Value::as_array)
-        .is_some_and(|outbounds| {
-            outbounds
-                .iter()
-                .any(|o| o.get("tag").and_then(Value::as_str) == Some(form.outbound_tag.as_str()))
-        });
-    if !valid_outbound {
-        return Some("请选择有效的转发出口节点。".into());
+    if form.outbound_is_ssh {
+        if form.name.trim().is_empty() {
+            return Some("请填写 SSH 端口转发名称。".into());
+        }
+        if normalize_network(Some(&form.network)) != "tcp" {
+            return Some("SSH 隧道仅支持 TCP 端口转发，请切换为 TCP。".into());
+        }
+        if !ssh_hosts.iter().any(|h| h.id == form.ssh_host_id) {
+            return Some("请选择或新建一个 SSH 跳板机。".into());
+        }
+    } else {
+        let valid_outbound = config
+            .get("outbounds")
+            .and_then(Value::as_array)
+            .is_some_and(|outbounds| {
+                outbounds.iter().any(|o| {
+                    o.get("tag").and_then(Value::as_str) == Some(form.outbound_tag.as_str())
+                })
+            });
+        if !valid_outbound {
+            return Some("请选择有效的转发出口节点。".into());
+        }
     }
     let mut simulated = config
         .get("inbounds")
@@ -481,7 +544,7 @@ pub fn check_form_error(config: &Value, form: &PortForwardForm) -> Option<String
         "listen": listen,
         "port": local_port,
         "protocol": "dokodemo-door",
-        "settings": {"network": normalize_network(Some(&form.network))}
+        "settings": {"network": if form.outbound_is_ssh { "tcp".to_owned() } else { normalize_network(Some(&form.network)) }}
     });
     let candidate_idx = simulated.len();
     simulated.push(candidate_inbound);
@@ -491,7 +554,39 @@ pub fn check_form_error(config: &Value, form: &PortForwardForm) -> Option<String
     {
         return Some(msg);
     }
+    if let Some(other) = ssh_forwards.iter().find(|f| {
+        form.editing_ssh_id.as_deref() != Some(f.id.as_str())
+            && f.port == local_port
+            && listens_overlap(&f.listen, listen)
+    }) {
+        return Some(format!(
+            "端口 {local_port} 与 SSH 端口转发「{}」冲突。",
+            other.name
+        ));
+    }
     None
+}
+
+fn listens_overlap(a: &str, b: &str) -> bool {
+    let Ok(ip_a) = a.trim().parse::<IpAddr>() else {
+        return a.trim() == b.trim();
+    };
+    let Ok(ip_b) = b.trim().parse::<IpAddr>() else {
+        return a.trim() == b.trim();
+    };
+    ip_a == ip_b || ip_a.is_unspecified() || ip_b.is_unspecified()
+}
+
+pub fn ssh_forward_from_form(form: &PortForwardForm) -> SshForward {
+    SshForward {
+        id: form.editing_ssh_id.clone().unwrap_or_default(),
+        name: form.name.trim().to_owned(),
+        listen: form.listen.trim().to_owned(),
+        port: form.local_port.trim().parse::<u16>().unwrap_or(0),
+        target_host: form.target_host.trim().to_owned(),
+        target_port: form.target_port.trim().parse::<u16>().unwrap_or(0),
+        ssh_host_id: form.ssh_host_id.clone(),
+    }
 }
 
 fn ensure_top_managed_rule(
@@ -700,6 +795,7 @@ pub fn set_entry_enabled(
         target_host: paused_item.target_host.clone(),
         target_port: paused_item.target_port.to_string(),
         outbound_tag: paused_item.outbound_tag.clone(),
+        ..Default::default()
     };
     if let Some(err) = check_form_error(config, &form) {
         return Err(err);

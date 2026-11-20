@@ -547,12 +547,12 @@ impl App {
                 if !running {
                     ui.label(
                         RichText::new(
-                            "Core 当前未运行。点击「启动上次应用版本」后自动恢复端口转发监听。",
+                            "Core 当前未运行。点击「启动上次应用版本」后自动恢复 Xray 端口转发监听。",
                         )
                         .weak(),
                     );
                 } else if active_forwards.is_empty() {
-                    ui.label(RichText::new("当前运行配置暂无已启用的端口转发。").weak());
+                    ui.label(RichText::new("当前运行配置暂无已启用的 Xray 端口转发。").weak());
                 } else {
                     for (i, entry) in active_forwards.iter().enumerate() {
                         if i > 0 {
@@ -579,11 +579,86 @@ impl App {
                         );
                     }
                 }
+                let ssh_forwards = app.ui.ssh_state.forwards.clone();
+                if !ssh_forwards.is_empty() {
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.label(
+                        RichText::new("SSH 隧道按需转发（独立于 Core）")
+                            .strong()
+                            .small(),
+                    );
+                    let ssh_hosts = app.ui.ssh_state.hosts.clone();
+                    let ssh_runtime = app.ui.ssh_state.runtime.clone();
+                    let ssh_ctl = app.ui.connected && !app.busy && app.ui.uncertain.is_none();
+                    for fwd in &ssh_forwards {
+                        ui.push_id(("ov-ssh-fwd", &fwd.id), |ui| {
+                            let rt = ssh_runtime.iter().find(|r| r.forward_id == fwd.id);
+                            let state = rt.map(|r| r.state).unwrap_or(SshForwardState::Stopped);
+                            let host_name = ssh_hosts
+                                .iter()
+                                .find(|h| h.id == fwd.ssh_host_id)
+                                .map(|h| h.name.as_str())
+                                .unwrap_or("未知跳板机");
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(
+                                    RichText::new(format!("{} (TCP · SSH)", fwd.name)).strong(),
+                                );
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{}:{} -> {}:{} ({host_name})",
+                                        fwd.listen, fwd.port, fwd.target_host, fwd.target_port
+                                    ))
+                                    .monospace()
+                                    .small(),
+                                );
+                                match state {
+                                    SshForwardState::Running => crate::widgets::badge(
+                                        ui,
+                                        "运行中",
+                                        crate::widgets::BadgeTone::Success,
+                                    ),
+                                    SshForwardState::Connecting => crate::widgets::badge(
+                                        ui,
+                                        "连接中",
+                                        crate::widgets::BadgeTone::Accent,
+                                    ),
+                                    SshForwardState::Error => crate::widgets::badge(
+                                        ui,
+                                        "失败",
+                                        crate::widgets::BadgeTone::Danger,
+                                    ),
+                                    SshForwardState::Stopped => crate::widgets::badge(
+                                        ui,
+                                        "已停止",
+                                        crate::widgets::BadgeTone::Muted,
+                                    ),
+                                }
+                                if state == SshForwardState::Running {
+                                    if ui
+                                        .add_enabled(ssh_ctl, egui::Button::new("停止").small())
+                                        .clicked()
+                                    {
+                                        app.send(Command::StopSshForward { id: fwd.id.clone() });
+                                    }
+                                } else if ui
+                                    .add_enabled(ssh_ctl, egui::Button::new("启动").small())
+                                    .clicked()
+                                {
+                                    app.send(Command::StartSshForward { id: fwd.id.clone() });
+                                }
+                            });
+                            if let Some(err) = rt.and_then(|r| r.last_error.as_deref()) {
+                                ui.colored_label(ui.visuals().error_fg_color, err);
+                            }
+                        });
+                    }
+                }
                 ui.add_space(6.0);
                 crate::widgets::banner_box(
                     ui,
                     crate::widgets::BadgeTone::Accent,
-                    "说明：即使将系统代理切回「直连」，只要 Core 仍在运行，端口转发监听就保持可用。",
+                    "说明：即使将系统代理切回「直连」，只要 Core 仍在运行，Xray 端口转发保持可用；SSH 隧道转发则可随时独立按需启停。",
                 );
             });
         };

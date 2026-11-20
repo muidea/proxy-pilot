@@ -3770,3 +3770,147 @@ fn overview_hides_recent_activity_and_version_by_default_and_toggles_via_setting
     let hidden_again = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
     assert!(!has_text(&hidden_again, "最近活动与版本"));
 }
+
+#[test]
+fn ssh_credentials_hosts_forwards_and_overview_on_demand_start_stop() {
+    let mut app = app();
+    let (tx, requests) = mpsc::sync_channel(MAX_PENDING);
+    app.tx = tx;
+    app.pending.clear();
+    app.status.as_mut().unwrap().core_state = "Stopped".into();
+    app.status.as_mut().unwrap().generation = None;
+    app.ui.runtime = None;
+    app.ui.ssh_loaded = true;
+    app.ui.ssh_state = SshState {
+        credentials: vec![SshCredentialSummary {
+            id: "cred-1".into(),
+            name: "运维账号".into(),
+            username: "ops".into(),
+            auth_kind: SshAuthKind::Password,
+            has_password: true,
+            private_key_path: PathBuf::new(),
+            has_passphrase: false,
+        }],
+        hosts: vec![SshHost {
+            id: "host-1".into(),
+            name: "跳板机 A".into(),
+            host: "10.0.0.2".into(),
+            port: 22,
+            credential_id: "cred-1".into(),
+            host_key_fingerprint: "SHA256:abcdef".into(),
+        }],
+        forwards: vec![SshForward {
+            id: "fwd-ssh-1".into(),
+            name: "测试数据库".into(),
+            listen: "127.0.0.1".into(),
+            port: 15432,
+            target_host: "10.0.1.8".into(),
+            target_port: 5432,
+            ssh_host_id: "host-1".into(),
+        }],
+        runtime: vec![SshForwardRuntime {
+            forward_id: "fwd-ssh-1".into(),
+            state: SshForwardState::Stopped,
+            last_error: None,
+        }],
+    };
+
+    let ctx = egui::Context::default();
+    configure(&ctx);
+
+    // 1. Overview shows SSH forward with Start button even when Core is stopped.
+    app.ui.page = Page::Overview;
+    let ov1 = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    assert!(overlapping_visible_text(&ov1).is_empty());
+    let _ = text_bounds(&ov1, "测试数据库 (TCP · SSH)");
+    let _ = text_bounds(&ov1, "已停止");
+    guided_click(&mut app, &ctx, "启动", 1100.0, 900.0);
+    assert!(matches!(
+        requests.try_recv().unwrap().command,
+        Command::StartSshForward { ref id } if id == "fwd-ssh-1"
+    ));
+
+    // Simulate runtime transitioning to Running and pressing Stop on Overview.
+    app.busy = false;
+    app.pending.clear();
+    app.ui.ssh_state.runtime = vec![SshForwardRuntime {
+        forward_id: "fwd-ssh-1".into(),
+        state: SshForwardState::Running,
+        last_error: None,
+    }];
+    let ov2 = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    assert!(overlapping_visible_text(&ov2).is_empty());
+    let _ = text_bounds(&ov2, "运行中");
+    guided_click(&mut app, &ctx, "停止", 1100.0, 900.0);
+    assert!(matches!(
+        requests.try_recv().unwrap().command,
+        Command::StopSshForward { ref id } if id == "fwd-ssh-1"
+    ));
+    app.busy = false;
+    app.pending.clear();
+
+    // 2. Profiles -> PortForward shows unified forwards, SSH hosts, and SSH credentials subtabs.
+    app.ui.page = Page::Profiles;
+    app.ui.profile_tab = ProfileTab::PortForward;
+    app.ui.pf_subtab = PortForwardSubTab::Forwards;
+    let pf_out = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    assert!(overlapping_visible_text(&pf_out).is_empty());
+    let _ = text_bounds(&pf_out, "SSH 隧道");
+
+    app.ui.pf_subtab = PortForwardSubTab::SshHosts;
+    let host_out = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    assert!(overlapping_visible_text(&host_out).is_empty());
+    let _ = text_bounds(&host_out, "跳板机 A");
+    let _ = text_bounds(&host_out, "指纹已固定");
+
+    app.ui.pf_subtab = PortForwardSubTab::SshCredentials;
+    let cred_out = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    assert!(overlapping_visible_text(&cred_out).is_empty());
+    let _ = text_bounds(&cred_out, "运维账号");
+    let _ = text_bounds(&cred_out, "账号: ops");
+
+    // 3. Selecting SSH outbound in PortForward dialog rejects UDP and accepts TCP cleanly.
+    let val: serde_json::Value = serde_json::from_str(&app.editor).unwrap();
+    let mut form = crate::port_forward::PortForwardForm::from_new_with_ssh(
+        &val,
+        &[],
+        &app.ui.ssh_state.forwards,
+    );
+    form.name = "Redis".into();
+    form.local_port = "16379".into();
+    form.target_host = "10.0.1.9".into();
+    form.target_port = "6379".into();
+    form.outbound_is_ssh = true;
+    form.ssh_host_id = "host-1".into();
+    form.network = "udp".into();
+    assert!(
+        crate::port_forward::check_form_error_with_ssh(
+            &val,
+            &form,
+            &app.ui.ssh_state.hosts,
+            &app.ui.ssh_state.forwards,
+        )
+        .is_some()
+    );
+    form.network = "tcp".into();
+    assert!(
+        crate::port_forward::check_form_error_with_ssh(
+            &val,
+            &form,
+            &app.ui.ssh_state.hosts,
+            &app.ui.ssh_state.forwards,
+        )
+        .is_none()
+    );
+    // Port conflicting with existing SSH forward is caught.
+    form.local_port = "15432".into();
+    assert!(
+        crate::port_forward::check_form_error_with_ssh(
+            &val,
+            &form,
+            &app.ui.ssh_state.hosts,
+            &app.ui.ssh_state.forwards,
+        )
+        .is_some()
+    );
+}

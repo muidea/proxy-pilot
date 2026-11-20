@@ -14,7 +14,9 @@ windows-integration.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+base64 = "0.22"
 flate2 = "1"
+russh = { version = "0.65", default-features = false, features = ["flate2", "ring", "rsa"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true

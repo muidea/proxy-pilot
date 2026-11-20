@@ -108,6 +108,8 @@ impl App {
                 Dialog::UnsavedExit(kind) => self.unsaved_exit_dialog_contents(ui, *kind),
                 Dialog::PacBatch => self.pac_batch_dialog_contents(ui),
                 Dialog::PortForward => self.port_forward_dialog_contents(ui),
+                Dialog::SshCredential => self.ssh_credential_dialog_contents(ui),
+                Dialog::SshHost => self.ssh_host_dialog_contents(ui),
             }
         });
         if response.inner && !response.should_close() {
@@ -1070,13 +1072,19 @@ impl App {
             .cloned()
             .unwrap_or_default();
         let outbounds = crate::port_forward::available_outbounds(&value, &node_names);
-        if self.ui.pf_form.outbound_tag.is_empty()
+        let ssh_hosts = self.ui.ssh_state.hosts.clone();
+        if !self.ui.pf_form.outbound_is_ssh
+            && self.ui.pf_form.outbound_tag.is_empty()
             && let Some((first, _)) = outbounds.first()
         {
             self.ui.pf_form.outbound_tag = first.clone();
         }
+        if self.ui.pf_form.outbound_is_ssh {
+            self.ui.pf_form.network = "tcp".into();
+        }
 
         let body_height = (ui.ctx().content_rect().height() - 250.0).max(160.0);
+        let mut open_new_ssh_host = false;
         egui::ScrollArea::vertical()
             .id_salt("port-forward-dialog-body")
             .max_height(body_height)
@@ -1176,18 +1184,28 @@ impl App {
 
                 ui.add_space(6.0);
                 ui.label("传输协议");
+                let allow_udp = !self.ui.pf_form.outbound_is_ssh;
                 ui.horizontal_wrapped(|ui| {
                     for (net, label) in [
                         ("tcp", "TCP"),
                         ("udp", "UDP"),
                         ("tcp,udp", "TCP + UDP"),
                     ] {
-                        if crate::widgets::seg_button(ui, label, self.ui.pf_form.network == net, true)
-                            .clicked()
+                        let allowed = net == "tcp" || allow_udp;
+                        if crate::widgets::seg_button(
+                            ui,
+                            label,
+                            self.ui.pf_form.network == net,
+                            allowed,
+                        )
+                        .clicked()
                         {
                             self.ui.pf_form.network = net.into();
                             self.ui.pf_error = None;
                         }
+                    }
+                    if self.ui.pf_form.outbound_is_ssh {
+                        ui.label(RichText::new("SSH 隧道仅支持 TCP").small().weak());
                     }
                 });
 
@@ -1227,40 +1245,79 @@ impl App {
 
                 ui.add_space(6.0);
                 ui.label("转发出口（出站）");
-                let selected_outbound_label = outbounds
-                    .iter()
-                    .find(|(tag, _)| *tag == self.ui.pf_form.outbound_tag)
-                    .map(|(_, label)| label.clone())
-                    .unwrap_or_else(|| self.ui.pf_form.outbound_tag.clone());
-                egui::ComboBox::from_id_salt("pf-outbound-select")
-                    .width(ui.available_width().min(420.0))
-                    .selected_text(selected_outbound_label)
-                    .show_ui(ui, |ui| {
-                        for (tag, label) in &outbounds {
-                            if ui
-                                .selectable_value(
-                                    &mut self.ui.pf_form.outbound_tag,
-                                    tag.clone(),
-                                    label,
-                                )
-                                .clicked()
-                            {
-                                self.ui.pf_error = None;
+                let selected_outbound_label = if self.ui.pf_form.outbound_is_ssh {
+                    ssh_hosts
+                        .iter()
+                        .find(|h| h.id == self.ui.pf_form.ssh_host_id)
+                        .map(|h| format!("SSH 隧道 · {} ({}:{})", h.name, h.host, h.port))
+                        .unwrap_or_else(|| "请选择 SSH 跳板机".into())
+                } else {
+                    outbounds
+                        .iter()
+                        .find(|(tag, _)| *tag == self.ui.pf_form.outbound_tag)
+                        .map(|(_, label)| format!("Xray · {label}"))
+                        .unwrap_or_else(|| self.ui.pf_form.outbound_tag.clone())
+                };
+                let mut open_host_click = false;
+                ui.horizontal_wrapped(|ui| {
+                    egui::ComboBox::from_id_salt("pf-outbound-select")
+                        .width((ui.available_width() - 140.0).clamp(220.0, 420.0))
+                        .selected_text(selected_outbound_label)
+                        .show_ui(ui, |ui| {
+                            for (tag, label) in &outbounds {
+                                let is_sel = !self.ui.pf_form.outbound_is_ssh
+                                    && self.ui.pf_form.outbound_tag == *tag;
+                                if ui.selectable_label(is_sel, format!("Xray · {label}")).clicked() {
+                                    self.ui.pf_form.outbound_is_ssh = false;
+                                    self.ui.pf_form.outbound_tag = tag.clone();
+                                    self.ui.pf_error = None;
+                                }
                             }
-                        }
-                    });
+                            if !ssh_hosts.is_empty() {
+                                ui.separator();
+                            }
+                            for host in &ssh_hosts {
+                                let is_sel = self.ui.pf_form.outbound_is_ssh
+                                    && self.ui.pf_form.ssh_host_id == host.id;
+                                let label = format!(
+                                    "SSH 隧道 · {} ({}:{})",
+                                    host.name, host.host, host.port
+                                );
+                                if ui.selectable_label(is_sel, label).clicked() {
+                                    self.ui.pf_form.outbound_is_ssh = true;
+                                    self.ui.pf_form.ssh_host_id = host.id.clone();
+                                    self.ui.pf_form.network = "tcp".into();
+                                    self.ui.pf_error = None;
+                                }
+                            }
+                        });
+                    if ui.small_button("+ 新建 SSH 跳板机").clicked() {
+                        open_host_click = true;
+                    }
+                });
+                if open_host_click {
+                    open_new_ssh_host = true;
+                }
 
-                let outbound_is_direct = value
-                    .get("outbounds")
-                    .and_then(serde_json::Value::as_array)
-                    .is_some_and(|arr| {
-                        arr.iter().any(|o| {
-                            o.get("tag").and_then(|t| t.as_str())
-                                == Some(self.ui.pf_form.outbound_tag.as_str())
-                                && o.get("protocol").and_then(|p| p.as_str()) == Some("freedom")
-                        })
-                    });
-                if !outbound_is_direct
+                let outbound_is_direct = !self.ui.pf_form.outbound_is_ssh
+                    && value
+                        .get("outbounds")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|arr| {
+                            arr.iter().any(|o| {
+                                o.get("tag").and_then(|t| t.as_str())
+                                    == Some(self.ui.pf_form.outbound_tag.as_str())
+                                    && o.get("protocol").and_then(|p| p.as_str()) == Some("freedom")
+                            })
+                        });
+                if self.ui.pf_form.outbound_is_ssh {
+                    ui.add_space(4.0);
+                    crate::widgets::banner_box(
+                        ui,
+                        crate::widgets::BadgeTone::Accent,
+                        "SSH 隧道由后台直接建立并转发 TCP 流量，不写入 Xray JSON；可在「总览」按需单独启停。",
+                    );
+                } else if !outbound_is_direct
                     && crate::port_forward::is_private_or_loopback_host(&self.ui.pf_form.target_host)
                 {
                     ui.add_space(4.0);
@@ -1271,48 +1328,473 @@ impl App {
                     );
                 }
 
-                if let Some(err) = self
-                    .ui
-                    .pf_error
-                    .clone()
-                    .or_else(|| crate::port_forward::check_form_error(&value, &self.ui.pf_form))
-                {
+                if let Some(err) = self.ui.pf_error.clone().or_else(|| {
+                    crate::port_forward::check_form_error_with_ssh(
+                        &value,
+                        &self.ui.pf_form,
+                        &self.ui.ssh_state.hosts,
+                        &self.ui.ssh_state.forwards,
+                    )
+                }) {
                     ui.add_space(4.0);
                     crate::widgets::banner_box(ui, crate::widgets::BadgeTone::Danger, &err);
                 }
             });
 
+        if open_new_ssh_host {
+            let default_cred = self
+                .ui
+                .ssh_state
+                .credentials
+                .first()
+                .map(|c| c.id.clone())
+                .unwrap_or_default();
+            self.ui.ssh_host_form = ui::SshHostForm {
+                credential_id: default_cred,
+                return_to_pf: true,
+                ..Default::default()
+            };
+            self.ui.dialog = Some(Dialog::SshHost);
+            return true;
+        }
+
         dialog_actions(ui);
         let mut keep_open = true;
-        let can_save = crate::port_forward::check_form_error(&value, &self.ui.pf_form).is_none();
+        let can_save = crate::port_forward::check_form_error_with_ssh(
+            &value,
+            &self.ui.pf_form,
+            &self.ui.ssh_state.hosts,
+            &self.ui.ssh_state.forwards,
+        )
+        .is_none();
         let enter_save = can_save && ui.input(|i| i.key_pressed(egui::Key::Enter));
         ui.horizontal_wrapped(|ui| {
             if ui.button("取消").clicked() {
                 self.ui.pf_error = None;
                 keep_open = false;
             }
-            if primary(ui, "保存草稿", can_save) || enter_save {
+            let save_label = if self.ui.pf_form.outbound_is_ssh {
+                "保存 SSH 转发"
+            } else {
+                "保存草稿"
+            };
+            if primary(ui, save_label, can_save) || enter_save {
                 let form = self.ui.pf_form.clone();
-                match crate::port_forward::save_entry(
-                    &mut value,
-                    &mut self.ui.workspace,
-                    &self.profile_id,
-                    &form,
-                ) {
-                    Ok(tag) => {
-                        self.save_workspace();
-                        if form.editing_paused_index.is_none() {
-                            self.editor = serde_json::to_string_pretty(&value).unwrap();
-                            self.draft_edited();
+                if form.outbound_is_ssh {
+                    if form.editing_tag.is_some() || form.editing_paused_index.is_some() {
+                        let entries = crate::port_forward::extract_entries(
+                            &value,
+                            &self.ui.workspace,
+                            &self.profile_id,
+                        );
+                        if let Some(old) = entries.iter().find(|e| {
+                            (form.editing_tag.is_some()
+                                && form.editing_tag.as_deref() == Some(e.tag.as_str()))
+                                || (form.editing_paused_index.is_some()
+                                    && form.editing_paused_index == e.paused_index)
+                        }) {
+                            crate::port_forward::remove_entry(
+                                &mut value,
+                                &mut self.ui.workspace,
+                                &self.profile_id,
+                                old,
+                            );
+                            self.save_workspace();
+                            if old.enabled {
+                                self.editor = serde_json::to_string_pretty(&value).unwrap();
+                                self.draft_edited();
+                            }
                         }
-                        self.ui.pf_error = None;
-                        self.message = format!("已保存端口转发：{tag}");
-                        keep_open = false;
                     }
-                    Err(err) => {
-                        self.ui.pf_error = Some(err);
+                    let forward = crate::port_forward::ssh_forward_from_form(&form);
+                    self.send(Command::SaveSshForward { forward });
+                    self.ui.pf_error = None;
+                    keep_open = false;
+                } else {
+                    match crate::port_forward::save_entry(
+                        &mut value,
+                        &mut self.ui.workspace,
+                        &self.profile_id,
+                        &form,
+                    ) {
+                        Ok(tag) => {
+                            self.save_workspace();
+                            if form.editing_paused_index.is_none() {
+                                self.editor = serde_json::to_string_pretty(&value).unwrap();
+                                self.draft_edited();
+                            }
+                            if let Some(old_ssh_id) = form.editing_ssh_id {
+                                self.send(Command::DeleteSshForward { id: old_ssh_id });
+                            }
+                            self.ui.pf_error = None;
+                            self.message = format!("已保存端口转发：{tag}");
+                            keep_open = false;
+                        }
+                        Err(err) => {
+                            self.ui.pf_error = Some(err);
+                        }
                     }
                 }
+            }
+        });
+        keep_open
+    }
+
+    fn ssh_credential_dialog_contents(&mut self, ui: &mut egui::Ui) -> bool {
+        let editing = self.ui.ssh_cred_form.editing_id.is_some();
+        dialog_title(
+            ui,
+            if editing {
+                "编辑 SSH 凭证"
+            } else {
+                "新建 SSH 凭证"
+            },
+            "账号与密码/口令保存在受保护的数据目录（Windows 使用当前用户 DPAPI 加密），不会在界面或日志中回显。",
+        );
+        egui::ScrollArea::vertical()
+            .id_salt("ssh-credential-dialog-body")
+            .max_height((ui.ctx().content_rect().height() - 250.0).max(160.0))
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.label("凭证名称");
+                crate::widgets::singleline_select_all(
+                    ui,
+                    &mut self.ui.ssh_cred_form.name,
+                    ui.available_width(),
+                    "例如：公司运维账号",
+                );
+                ui.add_space(6.0);
+                ui.label("SSH 账号（用户名）");
+                crate::widgets::singleline_select_all(
+                    ui,
+                    &mut self.ui.ssh_cred_form.username,
+                    ui.available_width(),
+                    "例如：ops / root / ubuntu",
+                );
+                ui.add_space(6.0);
+                ui.label("认证方式");
+                ui.horizontal_wrapped(|ui| {
+                    for (kind, label) in [
+                        (SshAuthKind::Password, "账号密码"),
+                        (SshAuthKind::PrivateKey, "私钥文件"),
+                    ] {
+                        if crate::widgets::seg_button(
+                            ui,
+                            label,
+                            self.ui.ssh_cred_form.auth_kind == kind,
+                            true,
+                        )
+                        .clicked()
+                        {
+                            self.ui.ssh_cred_form.auth_kind = kind;
+                            self.ui.ssh_cred_form.error = None;
+                        }
+                    }
+                });
+                ui.add_space(6.0);
+                match self.ui.ssh_cred_form.auth_kind {
+                    SshAuthKind::Password => {
+                        ui.label(if editing && self.ui.ssh_cred_form.has_existing_password {
+                            "登录密码（留空则保留当前已加密保存的密码）"
+                        } else {
+                            "登录密码"
+                        });
+                        ui.add_sized(
+                            [ui.available_width(), crate::widgets::CONTROL_HEIGHT],
+                            egui::TextEdit::singleline(&mut self.ui.ssh_cred_form.password)
+                                .password(!self.ui.ssh_cred_form.show_secret)
+                                .hint_text(
+                                    if editing && self.ui.ssh_cred_form.has_existing_password {
+                                        "已保存（留空不变）"
+                                    } else {
+                                        "输入 SSH 密码"
+                                    },
+                                ),
+                        );
+                        ui.checkbox(&mut self.ui.ssh_cred_form.show_secret, "临时显示输入字符");
+                    }
+                    SshAuthKind::PrivateKey => {
+                        ui.label("私钥文件路径（OpenSSH / PEM 格式，支持相对 data 目录路径）");
+                        ui.horizontal_wrapped(|ui| {
+                            let path_w = (ui.available_width() - 96.0).max(160.0);
+                            crate::widgets::singleline_select_all(
+                                ui,
+                                &mut self.ui.ssh_cred_form.private_key_path,
+                                path_w,
+                                "例如：keys/id_ed25519",
+                            );
+                            #[cfg(windows)]
+                            if ui.button("选择文件…").clicked()
+                                && let Some(path) = rfd::FileDialog::new().pick_file()
+                            {
+                                self.ui.ssh_cred_form.private_key_path =
+                                    proxy_model::to_portable_string(
+                                        &self.root,
+                                        &path.to_string_lossy(),
+                                    );
+                            }
+                        });
+                        ui.add_space(6.0);
+                        ui.label(
+                            if editing && self.ui.ssh_cred_form.has_existing_passphrase {
+                                "私钥口令 Passphrase（可选；留空保留原口令）"
+                            } else {
+                                "私钥口令 Passphrase（无加密可留空）"
+                            },
+                        );
+                        ui.add_sized(
+                            [ui.available_width(), crate::widgets::CONTROL_HEIGHT],
+                            egui::TextEdit::singleline(&mut self.ui.ssh_cred_form.passphrase)
+                                .password(!self.ui.ssh_cred_form.show_secret)
+                                .hint_text("可选"),
+                        );
+                        ui.horizontal_wrapped(|ui| {
+                            ui.checkbox(&mut self.ui.ssh_cred_form.show_secret, "临时显示口令");
+                            if editing && self.ui.ssh_cred_form.has_existing_passphrase {
+                                ui.checkbox(
+                                    &mut self.ui.ssh_cred_form.clear_passphrase,
+                                    "清除已保存口令",
+                                );
+                            }
+                        });
+                    }
+                }
+                if let Some(err) = &self.ui.ssh_cred_form.error {
+                    ui.add_space(4.0);
+                    crate::widgets::banner_box(ui, crate::widgets::BadgeTone::Danger, err);
+                }
+            });
+
+        dialog_actions(ui);
+        let f = &self.ui.ssh_cred_form;
+        let valid = !f.name.trim().is_empty()
+            && !f.username.trim().is_empty()
+            && match f.auth_kind {
+                SshAuthKind::Password => {
+                    !f.password.is_empty() || (editing && f.has_existing_password)
+                }
+                SshAuthKind::PrivateKey => !f.private_key_path.trim().is_empty(),
+            };
+        let mut keep_open = true;
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("取消").clicked() {
+                if self.ui.ssh_cred_form.return_to_host {
+                    self.ui.ssh_cred_form.return_to_host = false;
+                    self.ui.dialog = Some(Dialog::SshHost);
+                    return;
+                }
+                keep_open = false;
+            }
+            if primary(ui, "保存凭证", valid && !self.busy) {
+                let form = &self.ui.ssh_cred_form;
+                let password = match form.auth_kind {
+                    SshAuthKind::Password => {
+                        if form.password.is_empty() {
+                            None
+                        } else {
+                            Some(form.password.clone())
+                        }
+                    }
+                    SshAuthKind::PrivateKey => None,
+                };
+                let passphrase = if form.auth_kind == SshAuthKind::PrivateKey {
+                    if form.clear_passphrase {
+                        Some(String::new())
+                    } else if form.passphrase.is_empty() {
+                        None
+                    } else {
+                        Some(form.passphrase.clone())
+                    }
+                } else {
+                    None
+                };
+                self.send(Command::SaveSshCredential {
+                    credential: SshCredentialInput {
+                        id: form.editing_id.clone().unwrap_or_default(),
+                        name: form.name.trim().to_owned(),
+                        username: form.username.trim().to_owned(),
+                        auth_kind: form.auth_kind,
+                        password,
+                        private_key_path: form.private_key_path.trim().into(),
+                        passphrase,
+                    },
+                });
+                self.ui.ssh_cred_form.password.clear();
+                self.ui.ssh_cred_form.passphrase.clear();
+                keep_open = false;
+            }
+        });
+        keep_open
+    }
+
+    fn ssh_host_dialog_contents(&mut self, ui: &mut egui::Ui) -> bool {
+        let editing = self.ui.ssh_host_form.editing_id.is_some();
+        dialog_title(
+            ui,
+            if editing {
+                "编辑 SSH 跳板机"
+            } else {
+                "新建 SSH 跳板机"
+            },
+            "配置跳板机地址与关联凭证，并核对服务器 SHA256 Host Key 指纹以防止中间人攻击。",
+        );
+        let credentials = self.ui.ssh_state.credentials.clone();
+        if self.ui.ssh_host_form.credential_id.is_empty()
+            && let Some(first) = credentials.first()
+        {
+            self.ui.ssh_host_form.credential_id = first.id.clone();
+        }
+        let mut open_new_cred = false;
+        egui::ScrollArea::vertical()
+            .id_salt("ssh-host-dialog-body")
+            .max_height((ui.ctx().content_rect().height() - 250.0).max(160.0))
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.label("跳板机名称");
+                crate::widgets::singleline_select_all(
+                    ui,
+                    &mut self.ui.ssh_host_form.name,
+                    ui.available_width(),
+                    "例如：生产跳板机",
+                );
+                ui.add_space(6.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("服务器地址");
+                    let host_w = (ui.available_width() - 210.0).max(160.0);
+                    crate::widgets::singleline_select_all(
+                        ui,
+                        &mut self.ui.ssh_host_form.host,
+                        host_w,
+                        "bastion.example.com",
+                    );
+                    ui.label("SSH 端口");
+                    crate::widgets::singleline_select_all(
+                        ui,
+                        &mut self.ui.ssh_host_form.port,
+                        84.0,
+                        "22",
+                    );
+                });
+                ui.add_space(6.0);
+                ui.label("登录凭证");
+                let selected_cred_label = credentials
+                    .iter()
+                    .find(|c| c.id == self.ui.ssh_host_form.credential_id)
+                    .map(|c| format!("{} (账号：{})", c.name, c.username))
+                    .unwrap_or_else(|| "尚未创建 SSH 凭证".into());
+                ui.horizontal_wrapped(|ui| {
+                    egui::ComboBox::from_id_salt("ssh-host-cred-select")
+                        .width((ui.available_width() - 125.0).clamp(200.0, 420.0))
+                        .selected_text(selected_cred_label)
+                        .show_ui(ui, |ui| {
+                            for cred in &credentials {
+                                ui.selectable_value(
+                                    &mut self.ui.ssh_host_form.credential_id,
+                                    cred.id.clone(),
+                                    format!("{} (账号：{})", cred.name, cred.username),
+                                );
+                            }
+                        });
+                    if ui.small_button("+ 新建凭证").clicked() {
+                        open_new_cred = true;
+                    }
+                });
+                ui.add_space(6.0);
+                ui.label("服务器 Host Key 指纹（SHA256，首次连接前请探测并核对）");
+                ui.horizontal_wrapped(|ui| {
+                    let fp_w = (ui.available_width() - 135.0).max(180.0);
+                    crate::widgets::singleline_select_all(
+                        ui,
+                        &mut self.ui.ssh_host_form.host_key_fingerprint,
+                        fp_w,
+                        "SHA256:...",
+                    );
+                    let port_ok = self
+                        .ui
+                        .ssh_host_form
+                        .port
+                        .trim()
+                        .parse::<u16>()
+                        .ok()
+                        .filter(|p| *p > 0);
+                    let can_probe = !self.ui.ssh_host_form.host.trim().is_empty()
+                        && port_ok.is_some()
+                        && !self.ui.ssh_host_form.probing;
+                    let btn_label = if self.ui.ssh_host_form.probing {
+                        "探测中…"
+                    } else {
+                        "探测服务器指纹"
+                    };
+                    if ui
+                        .add_enabled(can_probe, egui::Button::new(btn_label))
+                        .clicked()
+                    {
+                        self.ui.ssh_host_form.probing = true;
+                        self.ui.ssh_host_form.error = None;
+                        self.ui.ssh_host_form.probe_note = None;
+                        self.send(Command::ProbeSshHostKey {
+                            host: self.ui.ssh_host_form.host.trim().to_owned(),
+                            port: port_ok.unwrap(),
+                        });
+                    }
+                });
+                if let Some(note) = &self.ui.ssh_host_form.probe_note {
+                    ui.add_space(4.0);
+                    crate::widgets::banner_box(ui, crate::widgets::BadgeTone::Success, note);
+                }
+                if let Some(err) = &self.ui.ssh_host_form.error {
+                    ui.add_space(4.0);
+                    crate::widgets::banner_box(ui, crate::widgets::BadgeTone::Danger, err);
+                }
+            });
+
+        if open_new_cred {
+            self.ui.ssh_cred_form = ui::SshCredentialForm {
+                return_to_host: true,
+                ..Default::default()
+            };
+            self.ui.dialog = Some(Dialog::SshCredential);
+            return true;
+        }
+
+        dialog_actions(ui);
+        let port_num = self
+            .ui
+            .ssh_host_form
+            .port
+            .trim()
+            .parse::<u16>()
+            .ok()
+            .filter(|p| *p > 0);
+        let valid = !self.ui.ssh_host_form.name.trim().is_empty()
+            && !self.ui.ssh_host_form.host.trim().is_empty()
+            && port_num.is_some()
+            && credentials
+                .iter()
+                .any(|c| c.id == self.ui.ssh_host_form.credential_id);
+        let mut keep_open = true;
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("取消").clicked() {
+                if self.ui.ssh_host_form.return_to_pf {
+                    self.ui.ssh_host_form.return_to_pf = false;
+                    self.ui.dialog = Some(Dialog::PortForward);
+                    return;
+                }
+                keep_open = false;
+            }
+            if primary(ui, "保存跳板机", valid && !self.busy) {
+                let form = &self.ui.ssh_host_form;
+                self.send(Command::SaveSshHost {
+                    host: SshHost {
+                        id: form.editing_id.clone().unwrap_or_default(),
+                        name: form.name.trim().to_owned(),
+                        host: form.host.trim().to_owned(),
+                        port: port_num.unwrap_or(proxy_model::DEFAULT_SSH_PORT),
+                        credential_id: form.credential_id.clone(),
+                        host_key_fingerprint: form.host_key_fingerprint.trim().to_owned(),
+                    },
+                });
+                keep_open = false;
             }
         });
         keep_open

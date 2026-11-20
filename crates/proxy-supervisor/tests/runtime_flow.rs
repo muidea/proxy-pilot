@@ -739,3 +739,66 @@ async fn moving_data_directory_preserves_settings_candidate_pac_and_resources() 
     send(&mut s, Command::RestartCore).await.unwrap();
     send(&mut s, Command::StopCore).await.unwrap();
 }
+
+#[tokio::test]
+async fn restart_core_and_set_proxy_mode_succeed_after_profile_draft_auto_save() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("data");
+    let core = fixture(tmp.path());
+    let proxy = FakeProxy(Arc::new(Mutex::new(ProxySnapshot::default())));
+    let mut s = Supervisor::with_backend(&root, proxy).await.unwrap();
+    send(
+        &mut s,
+        Command::CreateProfile {
+            profile_id: "default".into(),
+            json: "{}".into(),
+        },
+    )
+    .await
+    .unwrap();
+
+    let v1 = serde_json::json!({
+        "inbounds": [{"tag": "http-in", "listen": "127.0.0.1", "port": 18090, "protocol": "http"}],
+        "outbounds": [{"tag": "direct", "protocol": "freedom"}]
+    });
+    let cand1 = candidate(&mut s, &core, &serde_json::to_string(&v1).unwrap()).await;
+    send(&mut s, apply(&cand1, ProxyMode::Direct))
+        .await
+        .unwrap();
+
+    // Auto-save a newer draft revision to disk without applying it.
+    let applied_profile = s.store.profile("default").unwrap();
+    let v2 = serde_json::json!({
+        "inbounds": [{"tag": "http-in", "listen": "127.0.0.1", "port": 18091, "protocol": "http"}],
+        "outbounds": [{"tag": "direct", "protocol": "freedom"}]
+    });
+    let v2_str = serde_json::to_string_pretty(&v2).unwrap();
+    send(
+        &mut s,
+        Command::UpdateProfile {
+            profile_id: "default".into(),
+            expected_revision: applied_profile.revision,
+            json: v2_str.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    let updated_rev = s.store.profile("default").unwrap().revision;
+
+    // Restarting Core and changing proxy mode on the frozen committed candidate must succeed
+    // without ASSET_REVISION_CONFLICT and must preserve the saved draft on disk.
+    send(&mut s, Command::RestartCore).await.unwrap();
+    send(
+        &mut s,
+        Command::SetProxyMode {
+            mode: ProxyMode::Global,
+            http_inbound_tag: "http-in".into(),
+            pac: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(s.store.profile("default").unwrap().revision, updated_rev);
+    assert_eq!(s.generation.as_ref().unwrap().proxy_mode, ProxyMode::Global);
+    send(&mut s, Command::StopCore).await.unwrap();
+}
