@@ -516,7 +516,7 @@ impl App {
                         })
                         .strong(),
                     );
-                    if ui.small_button("管理端口转发").clicked() {
+                    if ui.button("管理端口转发").clicked() {
                         app.ui.page = Page::Profiles;
                         app.ui.profile_tab = ProfileTab::PortForward;
                     }
@@ -546,7 +546,7 @@ impl App {
                             app.ui.dialog = Some(Dialog::Confirm(Action::Proxy(mode)));
                         }
                     }
-                    if ui.small_button("打开路由诊断").clicked() {
+                    if ui.button("打开路由诊断").clicked() {
                         app.ui.page = Page::Diagnostics;
                     }
                 });
@@ -556,7 +556,7 @@ impl App {
             card(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new("运行中端口转发清单").strong().size(16.0));
-                    if ui.small_button("前往管理").clicked() {
+                    if ui.button("前往管理").clicked() {
                         app.ui.page = Page::Profiles;
                         app.ui.profile_tab = ProfileTab::PortForward;
                     }
@@ -653,14 +653,12 @@ impl App {
                                     ),
                                 }
                                 if state == SshForwardState::Running {
-                                    if ui
-                                        .add_enabled(ssh_ctl, egui::Button::new("停止").small())
-                                        .clicked()
+                                    if ui.add_enabled(ssh_ctl, egui::Button::new("停止")).clicked()
                                     {
                                         app.send(Command::StopSshForward { id: fwd.id.clone() });
                                     }
                                 } else if ui
-                                    .add_enabled(ssh_ctl, egui::Button::new("启动").small())
+                                    .add_enabled(ssh_ctl, egui::Button::new("启动"))
                                     .clicked()
                                 {
                                     app.send(Command::StartSshForward { id: fwd.id.clone() });
@@ -695,10 +693,10 @@ impl App {
             card(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new("最近活动与版本").strong().size(16.0));
-                    if ui.small_button("查看日志").clicked() {
+                    if ui.button("查看日志").clicked() {
                         self.ui.page = Page::Logs;
                     }
-                    if ui.small_button("隐藏").clicked() {
+                    if ui.button("隐藏").clicked() {
                         self.ui.workspace.overview_show_activity = false;
                         self.save_workspace();
                     }

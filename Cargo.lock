@@ -3853,7 +3853,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "proxy-config"
-version = "0.1.1-rc.43"
+version = "0.1.1-rc.44"
 dependencies = [
  "base64",
  "fs2",
@@ -3868,7 +3868,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-manager-app"
-version = "0.1.1-rc.43"
+version = "0.1.1-rc.44"
 dependencies = [
  "eframe",
  "proxy-config",
@@ -3889,7 +3889,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-model"
-version = "0.1.1-rc.43"
+version = "0.1.1-rc.44"
 dependencies = [
  "serde",
  "serde_json",
@@ -3899,7 +3899,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-pac"
-version = "0.1.1-rc.43"
+version = "0.1.1-rc.44"
 dependencies = [
  "boa_engine",
  "proxy-config",
@@ -3912,7 +3912,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-runtime"
-version = "0.1.1-rc.43"
+version = "0.1.1-rc.44"
 dependencies = [
  "base64",
  "proxy-model",
@@ -3925,7 +3925,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-supervisor"
-version = "0.1.1-rc.43"
+version = "0.1.1-rc.44"
 dependencies = [
  "base64",
  "flate2",
@@ -5726,7 +5726,7 @@ dependencies = [
 
 [[package]]
 name = "windows-integration"
-version = "0.1.1-rc.43"
+version = "0.1.1-rc.44"
 dependencies = [
  "proxy-config",
  "proxy-model",

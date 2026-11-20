@@ -719,7 +719,7 @@ impl App {
                                             .small()
                                             .weak(),
                                         );
-                                        if ui.small_button("前往端口转发").clicked() {
+                                        if ui.button("前往端口转发").clicked() {
                                             self.ui.profile_tab = ProfileTab::PortForward;
                                         }
                                     });
@@ -1293,7 +1293,7 @@ impl App {
                         ui.add_space(6.0);
                         if state == SshForwardState::Running {
                             if ui
-                                .add_enabled(ssh_ctl_enabled, egui::Button::new("停止").small())
+                                .add_enabled(ssh_ctl_enabled, egui::Button::new("停止"))
                                 .clicked()
                             {
                                 self.send(Command::StopSshForward { id: fwd.id.clone() });
@@ -1301,7 +1301,7 @@ impl App {
                         } else if ui
                             .add_enabled(
                                 ssh_ctl_enabled && !missing_host,
-                                egui::Button::new("启动").small(),
+                                egui::Button::new("启动"),
                             )
                             .clicked()
                         {
@@ -1313,12 +1313,12 @@ impl App {
                             fwd.listen.as_str()
                         };
                         let copy_addr = format!("{copy_ip}:{}", fwd.port);
-                        if ui.small_button("复制监听地址").clicked() {
+                        if ui.button("复制监听地址").clicked() {
                             ui.ctx().copy_text(copy_addr.clone());
                             self.message = format!("已复制监听地址：{copy_addr}");
                         }
                         if ui
-                            .add_enabled(ssh_ctl_enabled, egui::Button::new("编辑").small())
+                            .add_enabled(ssh_ctl_enabled, egui::Button::new("编辑"))
                             .clicked()
                         {
                             self.ui.pf_form =
@@ -1327,7 +1327,7 @@ impl App {
                             self.ui.dialog = Some(Dialog::PortForward);
                         }
                         if ui
-                            .add_enabled(ssh_ctl_enabled, egui::Button::new("删除").small())
+                            .add_enabled(ssh_ctl_enabled, egui::Button::new("删除"))
                             .clicked()
                         {
                             self.send(Command::DeleteSshForward { id: fwd.id.clone() });
@@ -1491,12 +1491,12 @@ impl App {
                             entry.listen.as_str()
                         };
                         let copy_addr = format!("{copy_ip}:{}", entry.port);
-                        if ui.small_button("复制监听地址").clicked() {
+                        if ui.button("复制监听地址").clicked() {
                             ui.ctx().copy_text(copy_addr.clone());
                             self.message = format!("已复制监听地址：{copy_addr}");
                         }
                         if ui
-                            .add_enabled(enabled, egui::Button::new("编辑").small())
+                            .add_enabled(enabled, egui::Button::new("编辑"))
                             .clicked()
                         {
                             self.ui.pf_form =
@@ -1505,7 +1505,7 @@ impl App {
                             self.ui.dialog = Some(Dialog::PortForward);
                         }
                         if ui
-                            .add_enabled(enabled, egui::Button::new("删除").small())
+                            .add_enabled(enabled, egui::Button::new("删除"))
                             .clicked()
                         {
                             crate::port_forward::remove_entry(
@@ -1646,7 +1646,7 @@ impl App {
                                 .small()
                                 .weak(),
                         );
-                        if ui.small_button("前往新建凭证").clicked() {
+                        if ui.button("前往新建凭证").clicked() {
                             self.ui.pf_subtab = PortForwardSubTab::SshCredentials;
                         }
                     });
@@ -1692,10 +1692,7 @@ impl App {
                                 crate::widgets::BadgeTone::Muted,
                             );
                         }
-                        if ui
-                            .add_enabled(ctl_ok, egui::Button::new("编辑").small())
-                            .clicked()
-                        {
+                        if ui.add_enabled(ctl_ok, egui::Button::new("编辑")).clicked() {
                             self.ui.ssh_host_form = ui::SshHostForm {
                                 editing_id: Some(host.id.clone()),
                                 name: host.name.clone(),
@@ -1708,10 +1705,7 @@ impl App {
                             self.ui.dialog = Some(Dialog::SshHost);
                         }
                         if ui
-                            .add_enabled(
-                                ctl_ok && ref_count == 0,
-                                egui::Button::new("删除").small(),
-                            )
+                            .add_enabled(ctl_ok && ref_count == 0, egui::Button::new("删除"))
                             .on_hover_text(if ref_count > 0 {
                                 "请先删除或修改引用此跳板机的转发规则"
                             } else {
@@ -1829,10 +1823,7 @@ impl App {
                                 crate::widgets::BadgeTone::Muted,
                             );
                         }
-                        if ui
-                            .add_enabled(ctl_ok, egui::Button::new("编辑").small())
-                            .clicked()
-                        {
+                        if ui.add_enabled(ctl_ok, egui::Button::new("编辑")).clicked() {
                             self.ui.ssh_cred_form = ui::SshCredentialForm {
                                 editing_id: Some(cred.id.clone()),
                                 name: cred.name.clone(),
@@ -1849,10 +1840,7 @@ impl App {
                             self.ui.dialog = Some(Dialog::SshCredential);
                         }
                         if ui
-                            .add_enabled(
-                                ctl_ok && ref_count == 0,
-                                egui::Button::new("删除").small(),
-                            )
+                            .add_enabled(ctl_ok && ref_count == 0, egui::Button::new("删除"))
                             .on_hover_text(if ref_count > 0 {
                                 "请先修改或删除引用此凭证的跳板机"
                             } else {
@@ -1895,7 +1883,7 @@ impl App {
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("系统代理 / 本地代理入口").strong());
             if ui
-                .add_enabled(enabled, egui::Button::new("+ 添加 HTTP 入口").small())
+                .add_enabled(enabled, egui::Button::new("+ 添加 HTTP 入口"))
                 .clicked()
             {
                 let paused = self
@@ -1925,7 +1913,7 @@ impl App {
                 }
             }
             if ui
-                .add_enabled(enabled, egui::Button::new("+ 添加 SOCKS 入口").small())
+                .add_enabled(enabled, egui::Button::new("+ 添加 SOCKS 入口"))
                 .clicked()
             {
                 let paused = self
@@ -2024,7 +2012,7 @@ impl App {
                                         crate::widgets::BadgeTone::Accent,
                                     );
                                     ui.monospace(format!("{listen}:{port} → {t_host}:{t_port}"));
-                                    if ui.small_button("前往端口转发").clicked() {
+                                    if ui.button("前往端口转发").clicked() {
                                         jump_port_forward = true;
                                     }
                                 });
@@ -2094,10 +2082,7 @@ impl App {
                                     inbound["port"] = serde_json::json!(port_num);
                                     changed = true;
                                 }
-                                if ui
-                                    .add_enabled(enabled, egui::Button::new("删除").small())
-                                    .clicked()
-                                {
+                                if ui.add_enabled(enabled, egui::Button::new("删除")).clicked() {
                                     remove_idx = Some(index);
                                 }
                             });

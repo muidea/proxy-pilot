@@ -1,8 +1,8 @@
 # 验证说明
 
-本包为 **v0.1.1-rc.43 Windows x64 本地验证版**，在 `v0.1.1-rc.42` 的基础上：
-1. 修复迁移 `data/` 目录、升级旧版（如 `rc.38`）或手动删除计划任务后保存设置误报 `STARTUP_CONFLICT: Login task ownership/action changed; external task preserved` 的死锁，并新增 `STARTUP_CONFLICT` 日志诊断摘要与界面/CLI（`proxyctl resolve-startup-conflict`）一键重新接管入口；
-2. 保留 `PacServer` 阻塞连接与大脚本修复、顶栏右上角版本显示、优化后的弹出框边框/分级框度与 `18 px` 标题字号层级、`Proxy Pilot` 全面命名、**SSH 凭证管理（账号密码 / 私钥加密存储）与纯 Rust SSH 隧道端口转发**（完整保留原 Xray `dokodemo-door` 端口转发，并在「总览」支持 SSH 转发按需独立启停）以及重启 Core 不误报 `ASSET_REVISION_CONFLICT` 修复。
+本包为 **v0.1.1-rc.44 Windows x64 本地验证版**，在 `v0.1.1-rc.43` 的基础上：
+1. 统一总览页（「管理端口转发」「打开路由诊断」「前往管理」「启动/停止」「查看日志/隐藏」）与配置/引导表单/PAC/诊断/对话框中所有操作按钮的视觉风格与 `36 px` 标准控件高度，消除原 `small_button`/`.small()` 零垂直内边距造成的高度错位与拥挤感（高密度虚拟滚动行与日志行「移除」「复制」统一采用带边框 `compact_button`）；
+2. 保留 `STARTUP_CONFLICT` 迁移容错与界面/CLI 重新接管、`PacServer` 阻塞连接与大脚本修复、顶栏右上角版本显示、优化后的弹出框边框/分级框度与 `18 px` 标题字号层级、`Proxy Pilot` 全面命名、**SSH 凭证管理与纯 Rust SSH 隧道端口转发**以及重启 Core 不误报 `ASSET_REVISION_CONFLICT` 修复。
 
 构建版本、源码提交和文件指纹见 `VERSION.txt` 与 `SOURCE-MANIFEST.json`；本地验证包可能记录 `source_dirty=true`，不能作为已发布版本。
 

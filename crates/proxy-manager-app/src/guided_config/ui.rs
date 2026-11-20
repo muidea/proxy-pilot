@@ -863,11 +863,11 @@ pub fn edit_nodes(
                             }
                             ui.add_space(4.0);
                             ui.label(RichText::new(&addr_summary).small().monospace().weak());
-                            if index != 0 && ui.small_button("设为默认").clicked() {
+                            if index != 0 && ui.button("设为默认").clicked() {
                                 promote_default = Some(index);
                             }
                             if ui
-                                .small_button(if is_expanded { "收起参数" } else { "编辑参数" })
+                                .button(if is_expanded { "收起参数" } else { "编辑参数" })
                                 .clicked()
                             {
                                 if is_expanded {
@@ -879,7 +879,7 @@ pub fn edit_nodes(
                             if ui
                                 .add_enabled(
                                     index != 0 && paused_pf == 0,
-                                    egui::Button::new("删除节点").small(),
+                                    egui::Button::new("删除节点"),
                                 )
                                 .clicked()
                             {
@@ -910,7 +910,7 @@ pub fn edit_nodes(
                                 }
                             }
                             out.changed |= node_form(ui, node, local_focus.as_deref());
-                            if ui.small_button("查看原生字段").clicked() {
+                            if ui.button("查看原生字段").clicked() {
                                 out.raw = true;
                             }
                         }
@@ -1262,10 +1262,10 @@ pub fn edit_routes(
                                     &format!("端口转发自动置顶 · {pf_title}"),
                                     crate::widgets::BadgeTone::Accent,
                                 );
-                                if ui.small_button("前往端口转发").clicked() {
+                                if ui.button("前往端口转发").clicked() {
                                     out.port_forward = true;
                                 }
-                                if ui.small_button("编辑原生规则").clicked() {
+                                if ui.button("编辑原生规则").clicked() {
                                     out.raw = true;
                                 }
                             });
@@ -1322,13 +1322,13 @@ pub fn edit_routes(
                                 });
                         }
                         ui.add_space(4.0);
-                        if ui.add_enabled(index > 0, egui::Button::new("上移").small()).clicked() {
+                        if ui.add_enabled(index > 0, egui::Button::new("上移")).clicked() {
                             action = Some((index, 0));
                         }
-                        if ui.small_button("下移").clicked() {
+                        if ui.button("下移").clicked() {
                             action = Some((index, 1));
                         }
-                        if ui.small_button("删除规则").clicked() {
+                        if ui.button("删除规则").clicked() {
                             action = Some((index, 2));
                         }
                     });
@@ -1414,7 +1414,7 @@ pub fn edit_routes(
                                     "geosite:category-ads-all",
                                     "geosite:google",
                                 ] {
-                                    if ui.small_button(format!("+ {preset}")).clicked() {
+                                    if ui.button(format!("+ {preset}")).clicked() {
                                         let already = rule
                                             .pointer("/domain")
                                             .and_then(Value::as_array)

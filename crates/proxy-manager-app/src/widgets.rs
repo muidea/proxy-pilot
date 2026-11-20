@@ -270,6 +270,22 @@ pub fn seg_button(ui: &mut egui::Ui, label: &str, active: bool, enabled: bool) -
     )
 }
 
+/// Compact bordered button for dense list rows where 36 px controls would clip or inflate rows.
+pub fn compact_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    let text = egui::RichText::new(label).small();
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding = egui::vec2(8.0, 3.0);
+        ui.add(
+            egui::Button::new(text)
+                .fill(ui.visuals().window_fill())
+                .stroke(egui::Stroke::new(1.0, border_strong_color(ui)))
+                .corner_radius(6)
+                .min_size(egui::vec2(0.0, 24.0)),
+        )
+    })
+    .inner
+}
+
 pub fn subcard<R>(
     ui: &mut egui::Ui,
     border_tone: Option<BadgeTone>,

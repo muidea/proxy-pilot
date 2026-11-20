@@ -2,7 +2,7 @@
 
 Proxy Pilot 是 Windows 上的轻量网络代理与隧道管理工具（基于 Xray Core 原生配置管理，并内置独立的 SSH 凭证与 SSH 本地端口转发能力）。你可以导入原生 JSON 或分享链接、检查并一键应用配置、按配置独立记住代理与 PAC 策略、在总览界面按需启停 SSH 隧道，并通过托盘管理系统代理。
 
-最新已发布 GitHub Release 基线仍为早期 **0.1.1-rc.4 验证版（Pre-release）**；仓库当前源码基线为 **v0.1.1-rc.43（尚未公开发布）**，本地验证包版本与指纹以包内 `VERSION.txt` / `SOURCE-MANIFEST.json` 为准。当前源码支持启动状态恢复、按配置独立代理模式与 PAC 热同步、GeoSite/GeoIP 分流预设、离线分享链接导入、Xray `dokodemo-door` 端口转发与独立 SSH 凭证/SSH 隧道转发（Windows DPAPI 加密保存）、Core 日志级别调整与导出、WinHTTP 只读诊断、Dynamic 依赖及编辑撤销。TUN、Windows 服务部署及自动更新尚未提供，完整验收边界见 [已知限制](#已知限制)。
+最新已发布 GitHub Release 基线仍为早期 **0.1.1-rc.4 验证版（Pre-release）**；仓库当前源码基线为 **v0.1.1-rc.44（尚未公开发布）**，本地验证包版本与指纹以包内 `VERSION.txt` / `SOURCE-MANIFEST.json` 为准。当前源码支持启动状态恢复、按配置独立代理模式与 PAC 热同步、GeoSite/GeoIP 分流预设、离线分享链接导入、Xray `dokodemo-door` 端口转发与独立 SSH 凭证/SSH 隧道转发（Windows DPAPI 加密保存）、Core 日志级别调整与导出、WinHTTP 只读诊断、Dynamic 依赖及编辑撤销。TUN、Windows 服务部署及自动更新尚未提供，完整验收边界见 [已知限制](#已知限制)。
 
 ## 界面版本说明
 

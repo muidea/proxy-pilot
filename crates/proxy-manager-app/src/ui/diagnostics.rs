@@ -462,7 +462,7 @@ impl App {
                             if !runtime_inbounds_route.is_empty() {
                                 ui.horizontal_wrapped(|ui| {
                                     for item in &runtime_inbounds_route {
-                                        if ui.small_button(&item.tag).clicked() {
+                                        if ui.button(&item.tag).clicked() {
                                             apply_shortcut(self, item);
                                         }
                                     }
@@ -966,8 +966,7 @@ impl App {
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::TOP),
                                     |ui| {
-                                        if ui
-                                            .small_button("复制")
+                                        if crate::widgets::compact_button(ui, "复制")
                                             .on_hover_text("复制此条日志")
                                             .clicked()
                                         {

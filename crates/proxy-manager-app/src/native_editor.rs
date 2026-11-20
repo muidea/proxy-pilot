@@ -143,7 +143,7 @@ fn node(
                 ui.push_id(key, |ui| {
                     ui.horizontal_top(|ui| {
                         if ui
-                            .add_enabled(inputs.is_empty(), egui::Button::new("−").small())
+                            .add_enabled(inputs.is_empty(), egui::Button::new("−"))
                             .on_hover_text("删除此字段")
                             .clicked()
                         {

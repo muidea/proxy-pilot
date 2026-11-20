@@ -1334,7 +1334,7 @@ impl App {
                                 }
                             }
                         });
-                    if ui.small_button("+ 新建 SSH 跳板机").clicked() {
+                    if ui.button("+ 新建 SSH 跳板机").clicked() {
                         open_host_click = true;
                     }
                 });
@@ -1738,7 +1738,7 @@ impl App {
                                 );
                             }
                         });
-                    if ui.small_button("+ 新建凭证").clicked() {
+                    if ui.button("+ 新建凭证").clicked() {
                         open_new_cred = true;
                     }
                 });

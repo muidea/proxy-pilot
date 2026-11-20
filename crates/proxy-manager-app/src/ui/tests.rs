@@ -4139,3 +4139,38 @@ fn startup_conflict_failure_offers_confirmation_and_sends_resolve_command() {
             .any(|r| matches!(r.command, Command::ResolveStartupConflict))
     );
 }
+
+#[test]
+fn overview_action_buttons_match_standard_control_height() {
+    let mut app = app();
+    app.ui.page = Page::Overview;
+    app.ui.workspace.overview_show_activity = true;
+    let ctx = egui::Context::default();
+    configure(&ctx);
+    let output = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    assert!(overlapping_visible_text(&output).is_empty());
+
+    let expected = [
+        "管理端口转发",
+        "打开路由诊断",
+        "前往管理",
+        "直连",
+        "PAC",
+        "全局",
+        "查看日志",
+        "隐藏",
+    ];
+    for label in expected {
+        let rect = enclosing_rect(&output, label, CONTROL_HEIGHT);
+        assert!(
+            (rect.height() - CONTROL_HEIGHT).abs() < 1.0,
+            "overview button {label} height mismatch: {rect:?}"
+        );
+    }
+    let diag = enclosing_rect(&output, "打开路由诊断", CONTROL_HEIGHT);
+    let global = enclosing_rect(&output, "全局", CONTROL_HEIGHT);
+    assert!(
+        (diag.center().y - global.center().y).abs() < 1.0,
+        "打开路由诊断 should align with segmented mode buttons: diag={diag:?}, global={global:?}"
+    );
+}

@@ -766,7 +766,7 @@ impl App {
                 210.0,
                 "按域名搜索",
             );
-            if !self.ui.pac_domain_filter.is_empty() && ui.small_button("清除").clicked() {
+            if !self.ui.pac_domain_filter.is_empty() && ui.button("清除").clicked() {
                 self.ui.pac_domain_filter.clear();
             }
             for (kind, label) in [
@@ -893,7 +893,8 @@ impl App {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            if ui.small_button("移除").clicked() {
+                                            if crate::widgets::compact_button(ui, "移除").clicked()
+                                            {
                                                 remove_index = Some(*orig_index);
                                             }
                                             ui.label(
@@ -992,7 +993,7 @@ impl App {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(RichText::new("PAC URL").small().weak());
                         ui.monospace(&pac.url);
-                        if ui.small_button("复制 URL").clicked() {
+                        if ui.button("复制 URL").clicked() {
                             ui.ctx().copy_text(pac.url.clone());
                             self.message = "已复制正在生效的 PAC URL。".into();
                         }
