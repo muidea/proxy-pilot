@@ -40,6 +40,7 @@ impl PacServer {
                 format!("Cannot bind PAC service on 127.0.0.1:{port}: {e}"),
             )
         })?;
+        let bound_port = listener.local_addr()?.port();
         listener.set_nonblocking(true)?;
         let revisions = Arc::new(Mutex::new(BTreeMap::new()));
         let stop = Arc::new(AtomicBool::new(false));
@@ -47,12 +48,21 @@ impl PacServer {
         let thread_stop = stop.clone();
         let thread_logs = logs.clone();
         let thread = std::thread::Builder::new()
-            .name(format!("pac-http-{port}"))
+            .name(format!("pac-http-{bound_port}"))
             .spawn(move || {
                 let active = Arc::new(AtomicUsize::new(0));
                 while !thread_stop.load(Ordering::Relaxed) {
                     match listener.accept() {
                         Ok((stream, _)) => {
+                            // On Windows, accepted sockets inherit the listener's non-blocking
+                            // mode, which would make blocking read/write_all fail with WouldBlock.
+                            if let Err(error) = stream.set_nonblocking(false) {
+                                proxy_runtime::log(
+                                    &thread_logs,
+                                    format!("PAC stream blocking setup failed: {error}"),
+                                );
+                                continue;
+                            }
                             if active.fetch_add(1, Ordering::Relaxed) >= MAX_CONNECTIONS {
                                 active.fetch_sub(1, Ordering::Relaxed);
                                 continue;
@@ -61,7 +71,12 @@ impl PacServer {
                             let logs = thread_logs.clone();
                             let active = active.clone();
                             std::thread::spawn(move || {
-                                let _ = serve(stream, revisions, logs);
+                                if let Err(error) = serve(stream, revisions, logs.clone()) {
+                                    proxy_runtime::log(
+                                        &logs,
+                                        format!("PAC connection serve error: {error}"),
+                                    );
+                                }
                                 active.fetch_sub(1, Ordering::Relaxed);
                             });
                         }
@@ -82,11 +97,16 @@ impl PacServer {
             })
             .map_err(|e| Error::new("PAC_SERVICE_UNAVAILABLE", e.to_string()))?;
         Ok(Self {
-            port,
+            port: bound_port,
             revisions,
             stop,
             thread: Some(thread),
         })
+    }
+    pub fn is_alive(&self) -> bool {
+        self.thread
+            .as_ref()
+            .is_some_and(|thread| !thread.is_finished())
     }
     pub fn port(&self) -> u16 {
         self.port
@@ -105,11 +125,15 @@ impl PacServer {
             "GET /pac/{revision}/proxy.pac HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
             self.port
         );
-        stream.write_all(request.as_bytes()).await?;
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .map_err(|e| Error::new("PAC_SERVICE_UNAVAILABLE", e.to_string()))?;
         let mut response = Vec::new();
         timeout(IO_TIMEOUT, stream.read_to_end(&mut response))
             .await
-            .map_err(|_| Error::new("PAC_SERVICE_UNAVAILABLE", "PAC probe timed out"))??;
+            .map_err(|_| Error::new("PAC_SERVICE_UNAVAILABLE", "PAC probe timed out"))?
+            .map_err(|e| Error::new("PAC_SERVICE_UNAVAILABLE", e.to_string()))?;
         let split = response
             .windows(4)
             .position(|w| w == b"\r\n\r\n")
@@ -222,4 +246,42 @@ fn serve(
     }
     stream.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn delayed_client_request_and_large_pac_body_succeed() {
+        let logs = proxy_runtime::logs();
+        let server = PacServer::start(0, logs).unwrap();
+        let revision = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        // Large enough (> 256 KiB) to exercise multi-chunk socket writes alongside delayed request bytes.
+        let body = format!(
+            "function FindProxyForURL(url, host) {{ /* {} */ return \"DIRECT\"; }}",
+            "a".repeat(300 * 1024)
+        )
+        .into_bytes();
+        server.publish(revision, body.clone());
+
+        let mut stream = AsyncTcpStream::connect(("127.0.0.1", server.port()))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let request = format!(
+            "GET /pac/{revision}/proxy.pac HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+            server.port()
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        timeout(IO_TIMEOUT, stream.read_to_end(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        let split = response.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        assert_eq!(&response[split + 4..], body.as_slice());
+        server.probe(revision, &body).await.unwrap();
+        server.stop();
+    }
 }

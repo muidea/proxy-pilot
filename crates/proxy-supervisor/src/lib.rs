@@ -1198,6 +1198,7 @@ impl<B: ProxyBackend> Supervisor<B> {
         }
     }
     fn ensure_pac_server(&mut self, port: u16) -> Result<&mut PacServer> {
+        self.pac_servers.retain(|server| server.is_alive());
         if let Some(index) = self.pac_servers.iter().position(|s| s.port() == port) {
             return Ok(&mut self.pac_servers[index]);
         }
