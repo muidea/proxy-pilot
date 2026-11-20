@@ -40,6 +40,9 @@ pub struct Workspace {
     /// Per-profile PAC editor draft. Never applied until an explicit run transaction.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pac: BTreeMap<String, xray_model::PacDraft>,
+    /// Per-profile draft proxy mode. Never applied until an explicit run transaction.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub proxy_modes: BTreeMap<String, xray_model::ProxyMode>,
     /// Last observed Core running state, used to restore it after a normal exit.
     #[serde(default)]
     pub last_core_running: bool,
@@ -52,6 +55,9 @@ pub struct Workspace {
     /// Last reminder choice for the single tray exit action.
     #[serde(default)]
     pub exit_default: ExitDefault,
+    /// Whether the Overview page displays the "最近活动与版本" card (hidden by default).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub overview_show_activity: bool,
 }
 impl Workspace {
     pub fn load(root: &Path) -> Result<Self> {
@@ -147,6 +153,9 @@ mod tests {
             port: xray_model::DEFAULT_PAC_PORT,
         };
         workspace.pac.insert("work".into(), pac_draft.clone());
+        workspace
+            .proxy_modes
+            .insert("work".into(), xray_model::ProxyMode::Pac);
         workspace.save(root.path()).unwrap();
         let draft = Draft {
             number_inputs: Default::default(),
@@ -172,6 +181,10 @@ mod tests {
         );
         assert!(Workspace::load(root.path()).unwrap().last_core_running);
         assert_eq!(Workspace::load(root.path()).unwrap().pac["work"], pac_draft);
+        assert_eq!(
+            Workspace::load(root.path()).unwrap().proxy_modes["work"],
+            xray_model::ProxyMode::Pac
+        );
         assert!(Draft::load(root.path(), "../work").is_err());
         Draft::remove(root.path(), "work").unwrap();
         assert!(Draft::load(root.path(), "work").unwrap().is_none());

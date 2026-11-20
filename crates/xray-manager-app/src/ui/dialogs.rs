@@ -671,11 +671,7 @@ impl App {
                 self.stash_draft();
             }
             Action::ClearPacDomains(profile) => {
-                if self.selected_profile != profile || self.profile_id != profile {
-                    self.message = "编辑对象已变化，请重新确认清空域名。".into();
-                    return;
-                }
-                self.clear_all_pac_domains();
+                self.clear_all_pac_domains_for(&profile);
             }
             Action::Delete { profile, revision } => self.send(Command::DeleteProfile {
                 profile_id: profile,
@@ -701,11 +697,24 @@ impl App {
             Action::Stop => self.send(Command::StopCore),
             Action::Restart => self.send(Command::RestartCore),
             Action::ResolveProxyConflict => self.send(Command::ResolveProxyConflict),
-            Action::Proxy(mode) => self.send(Command::SetProxyMode {
-                mode,
-                http_inbound_tag: self.runtime_http_tag(),
-                pac: (mode == ProxyMode::Pac).then(|| self.running_pac_draft()),
-            }),
+            Action::Proxy(mode) => {
+                let http_tag = self.runtime_http_tag();
+                let pac = if mode == ProxyMode::Pac {
+                    let (active_profile, active_json) = self.active_pac_target();
+                    Some(self.compiled_pac_draft_for(
+                        &active_profile,
+                        &active_json,
+                        Some(&http_tag),
+                    ))
+                } else {
+                    None
+                };
+                self.send(Command::SetProxyMode {
+                    mode,
+                    http_inbound_tag: http_tag,
+                    pac,
+                });
+            }
         }
     }
     pub(in crate::app) fn runtime_http_tag(&self) -> String {
@@ -765,12 +774,23 @@ impl App {
                     self.write_blocker().is_none() && self.candidate_matches(),
                 );
                 if apply {
+                    let pac = if self.mode == ProxyMode::Pac {
+                        let editor = self.editor.clone();
+                        let preferred = self.http_tag.clone();
+                        Some(self.compiled_pac_draft_for(
+                            &candidate.profile_id,
+                            &editor,
+                            Some(&preferred),
+                        ))
+                    } else {
+                        None
+                    };
                     self.send(Command::ApplyProfile {
                         candidate_id: candidate.id,
                         candidate_digest: candidate.digest,
                         proxy_mode: self.mode,
                         http_inbound_tag: self.http_tag.clone(),
-                        pac: (self.mode == ProxyMode::Pac).then(|| self.pac_draft()),
+                        pac,
                     });
                 }
                 cancel || apply
@@ -969,8 +989,10 @@ impl App {
                     );
                     ui.radio_value(&mut self.ui.pac_batch_replace, true, "替换当前全部清单");
                     if ui.button("填入当前清单").clicked() {
-                        self.ui.pac_batch_input =
-                            xray_pac::format_domain_list(&self.pac_draft().domains);
+                        let (target_profile, _) = self.active_pac_target();
+                        self.ui.pac_batch_input = xray_pac::format_domain_list(
+                            &self.pac_draft_for(&target_profile).domains,
+                        );
                         self.ui.pac_batch_report = None;
                     }
                 });
@@ -1076,21 +1098,28 @@ impl App {
                         self.ui.pf_form.listen.trim() == crate::port_forward::LISTEN_LOCAL;
                     let is_lan =
                         self.ui.pf_form.listen.trim() == crate::port_forward::LISTEN_LAN;
-                    if ui
-                        .selectable_label(is_local, "仅本机 (127.0.0.1)")
+                    let is_custom = self.ui.pf_form.custom_listen || (!is_local && !is_lan);
+                    if crate::widgets::seg_button(ui, "仅本机 (127.0.0.1)", is_local && !is_custom, true)
                         .clicked()
                     {
                         self.ui.pf_form.listen = crate::port_forward::LISTEN_LOCAL.into();
+                        self.ui.pf_form.custom_listen = false;
                         self.ui.pf_error = None;
                     }
-                    if ui
-                        .selectable_label(is_lan, "局域网可访问 (0.0.0.0)")
-                        .clicked()
+                    if crate::widgets::seg_button(
+                        ui,
+                        "局域网可访问 (0.0.0.0)",
+                        is_lan && !is_custom,
+                        true,
+                    )
+                    .clicked()
                     {
                         self.ui.pf_form.listen = crate::port_forward::LISTEN_LAN.into();
+                        self.ui.pf_form.custom_listen = false;
                         self.ui.pf_error = None;
                     }
-                    if ui.selectable_label(!is_local && !is_lan, "自定义 IP").clicked() {
+                    if crate::widgets::seg_button(ui, "自定义 IP", is_custom, true).clicked() {
+                        self.ui.pf_form.custom_listen = true;
                         focus_custom_listen = true;
                     }
                 });
@@ -1111,6 +1140,9 @@ impl App {
                         );
                     }
                     if listen_resp.changed() {
+                        let trimmed = self.ui.pf_form.listen.trim();
+                        self.ui.pf_form.custom_listen = trimmed != crate::port_forward::LISTEN_LOCAL
+                            && trimmed != crate::port_forward::LISTEN_LAN;
                         self.ui.pf_error = None;
                     }
                     ui.label("本机端口");
@@ -1134,9 +1166,11 @@ impl App {
                         .parse::<std::net::IpAddr>()
                         .is_ok()
                 {
-                    ui.colored_label(
-                        ui.visuals().warn_fg_color,
-                        "注意：dokodemo-door 无密码认证保护，绑定非回环地址后局域网设备均可直连此端口。",
+                    ui.add_space(4.0);
+                    crate::widgets::banner_box(
+                        ui,
+                        crate::widgets::BadgeTone::Warn,
+                        "dokodemo-door 无认证保护：绑定非回环地址后，局域网内任意设备可直接连接此端口转发。",
                     );
                 }
 
@@ -1148,8 +1182,7 @@ impl App {
                         ("udp", "UDP"),
                         ("tcp,udp", "TCP + UDP"),
                     ] {
-                        if ui
-                            .selectable_label(self.ui.pf_form.network == net, label)
+                        if crate::widgets::seg_button(ui, label, self.ui.pf_form.network == net, true)
                             .clicked()
                         {
                             self.ui.pf_form.network = net.into();
@@ -1230,12 +1263,11 @@ impl App {
                 if !outbound_is_direct
                     && crate::port_forward::is_private_or_loopback_host(&self.ui.pf_form.target_host)
                 {
-                    ui.label(
-                        RichText::new(
-                            "提示：目标为内网/回环地址且出口走代理节点；请确认远端 Xray 服务端未通过 geoip:private 拦截。",
-                        )
-                        .small()
-                        .weak(),
+                    ui.add_space(4.0);
+                    crate::widgets::banner_box(
+                        ui,
+                        crate::widgets::BadgeTone::Accent,
+                        "目标为内网/回环地址且出口走代理节点：请确认远端 Xray 服务端未拦截 geoip:private。",
                     );
                 }
 
@@ -1246,19 +1278,20 @@ impl App {
                     .or_else(|| crate::port_forward::check_form_error(&value, &self.ui.pf_form))
                 {
                     ui.add_space(4.0);
-                    ui.colored_label(ui.visuals().error_fg_color, err);
+                    crate::widgets::banner_box(ui, crate::widgets::BadgeTone::Danger, &err);
                 }
             });
 
         dialog_actions(ui);
         let mut keep_open = true;
         let can_save = crate::port_forward::check_form_error(&value, &self.ui.pf_form).is_none();
+        let enter_save = can_save && ui.input(|i| i.key_pressed(egui::Key::Enter));
         ui.horizontal_wrapped(|ui| {
             if ui.button("取消").clicked() {
                 self.ui.pf_error = None;
                 keep_open = false;
             }
-            if primary(ui, "保存草稿", can_save) {
+            if primary(ui, "保存草稿", can_save) || enter_save {
                 let form = self.ui.pf_form.clone();
                 match crate::port_forward::save_entry(
                     &mut value,

@@ -19,71 +19,117 @@ impl App {
                 2
             };
         }
-        let compact = ctx.content_rect().width() < 900.0;
-        egui::SidePanel::left("navigation")
-            .exact_width(if compact { 84.0 } else { 190.0 })
-            .resizable(false)
+        let running_pf_count = if self.is_running() {
+            self.status
+                .as_ref()
+                .and_then(|s| s.generation.as_ref())
+                .and_then(|g| {
+                    self.ui
+                        .runtime
+                        .as_ref()
+                        .filter(|r| r.generation_id == g.id)
+                        .and_then(|r| serde_json::from_str::<serde_json::Value>(&r.json).ok())
+                })
+                .map(|v| crate::port_forward::dokodemo_tags(&v).len())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let running_profile_name = self
+            .status
+            .as_ref()
+            .and_then(|s| s.generation.as_ref())
+            .map(|g| self.ui.workspace.name(&g.candidate.profile_id).to_owned())
+            .unwrap_or_default();
+        let top_bar_fill = if ctx.style().visuals.dark_mode {
+            Color32::from_rgb(30, 40, 55)
+        } else {
+            Color32::from_rgb(248, 250, 253)
+        };
+        let top_bar_stroke = if ctx.style().visuals.dark_mode {
+            Color32::from_rgb(43, 55, 73)
+        } else {
+            Color32::from_rgb(223, 229, 239)
+        };
+        egui::TopBottomPanel::top("window-bar")
             .frame(
                 egui::Frame::new()
-                    .fill(ctx.style().visuals.window_fill())
-                    .inner_margin(14),
+                    .fill(top_bar_fill)
+                    .stroke(egui::Stroke::new(1.0, top_bar_stroke))
+                    .inner_margin(egui::Margin::symmetric(18, 10)),
             )
             .show(ctx, |ui| {
-                ui.add_space(14.0);
-                ui.label(
-                    RichText::new(if compact { "XP" } else { "Xray Pilot" })
-                        .strong()
-                        .size(21.0)
-                        .color(accent(ui)),
-                );
-                ui.add_space(27.0);
-                for (page, title, short) in [
-                    (Page::Overview, "总览", "总览"),
-                    (Page::Profiles, "配置", "配置"),
-                    (Page::Pac, "PAC", "PAC"),
-                    (Page::Diagnostics, "诊断", "诊断"),
-                    (Page::Logs, "日志", "日志"),
-                    (Page::Settings, "设置", "设置"),
-                ] {
-                    if ui
-                        .add_sized(
-                            [ui.available_width(), 42.0],
-                            egui::Button::new(if compact { short } else { title })
-                                .selected(self.ui.page == page),
-                        )
-                        .clicked()
-                    {
-                        self.ui.page = page;
-                    }
-                }
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    if !compact {
-                        ui.label(
-                            RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
-                                .small()
-                                .weak(),
+                let mut next_page = self.ui.page;
+                let connected = self.ui.connected;
+                let running = self.is_running();
+                let mode_short = self
+                    .status
+                    .as_ref()
+                    .and_then(|s| s.generation.as_ref())
+                    .map(|g| match g.proxy_mode {
+                        ProxyMode::Direct => "直连",
+                        ProxyMode::Global => "全局",
+                        ProxyMode::Pac => "PAC",
+                    })
+                    .unwrap_or("直连");
+                let render_brand = |ui: &mut egui::Ui| {
+                    crate::widgets::status_dot(ui, connected && running);
+                    ui.label(RichText::new("Xray Pilot").strong().size(16.0));
+                    if !connected {
+                        crate::widgets::badge(ui, "后台未连接", crate::widgets::BadgeTone::Warn);
+                    } else if running {
+                        let prof_part = if running_profile_name.is_empty() {
+                            format!("{mode_short}模式")
+                        } else {
+                            format!("{running_profile_name} ({mode_short})")
+                        };
+                        let status_text = if running_pf_count > 0 {
+                            format!("Core 运行中 · {prof_part} · {running_pf_count} 条转发监听")
+                        } else {
+                            format!("Core 运行中 · {prof_part}")
+                        };
+                        crate::widgets::badge(ui, &status_text, crate::widgets::BadgeTone::Success);
+                    } else {
+                        crate::widgets::badge(
+                            ui,
+                            "Core 已停止 · 未接管代理与转发端口",
+                            crate::widgets::BadgeTone::Muted,
                         );
                     }
-                });
-            });
-        egui::TopBottomPanel::top("toolbar")
-            .frame(
-                egui::Frame::new()
-                    .fill(ctx.style().visuals.window_fill())
-                    .inner_margin(egui::Margin::symmetric(22, 12)),
-            )
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("工作空间  /  ").weak());
-                    ui.label(match self.ui.page {
-                        Page::Overview => "总览",
-                        Page::Profiles => "配置",
-                        Page::Pac => "PAC",
-                        Page::Diagnostics => "诊断",
-                        Page::Logs => "日志",
-                        Page::Settings => "设置",
+                    ui.label(
+                        RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                            .small()
+                            .weak(),
+                    );
+                };
+                let render_nav = |ui: &mut egui::Ui, page_state: &mut Page| {
+                    for (page, title) in [
+                        (Page::Overview, "总览"),
+                        (Page::Profiles, "配置"),
+                        (Page::Pac, "PAC"),
+                        (Page::Logs, "日志"),
+                        (Page::Diagnostics, "诊断"),
+                        (Page::Settings, "设置"),
+                    ] {
+                        if crate::widgets::nav_tab(ui, title, *page_state == page).clicked() {
+                            *page_state = page;
+                        }
+                    }
+                };
+                if ui.available_width() >= 920.0 {
+                    egui::Sides::new().show(ui, render_brand, |ui| {
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            render_nav(ui, &mut next_page);
+                        });
                     });
-                });
+                } else {
+                    ui.horizontal_wrapped(|ui| {
+                        render_brand(ui);
+                        ui.add_space(6.0);
+                        render_nav(ui, &mut next_page);
+                    });
+                }
+                self.ui.page = next_page;
             });
         let has_message = !self.message.trim().is_empty()
             && !matches!(self.message.as_str(), "后台已连接。" | "正在连接后台…");
@@ -266,102 +312,81 @@ impl App {
         }
     }
     pub(in crate::app) fn overview(&mut self, ui: &mut egui::Ui) {
-        heading(ui, "总览", "关注运行状态，把常用操作留在手边。");
         let running = self.is_running();
         let enabled = self.write_blocker().is_none();
         let generation = self.status.as_ref().and_then(|s| s.generation.clone());
-        card(ui, |ui| {
-            ui.label(RichText::new("XRAY CORE").small().weak());
-            ui.label(
-                RichText::new(if !self.ui.connected {
-                    "状态待确认"
-                } else if running {
-                    "Core 运行中"
-                } else if self
-                    .status
-                    .as_ref()
-                    .is_some_and(|s| s.core_state == "Degraded")
-                {
-                    "Core 正在等待恢复"
-                } else {
-                    "Core 已停止"
-                })
-                .size(29.0)
-                .strong(),
-            );
-            if let Some(g) = &generation {
+        ui.horizontal_wrapped(|ui| {
+            ui.vertical(|ui| {
+                ui.heading("总览");
                 ui.label(
-                    RichText::new(format!(
-                        "{} · {}{}",
-                        self.ui.workspace.name(&g.candidate.profile_id),
-                        g.candidate.core.version,
-                        if self.ui.connected {
-                            ""
-                        } else {
-                            " · 最后已知状态"
-                        }
-                    ))
-                    .weak(),
+                    RichText::new("直观查看 Core、系统代理归属、生效 PAC 与端口转发独立运行状态。")
+                        .weak(),
                 );
-            } else {
-                ui.label("选择一份配置，检查后开始运行。");
-            }
-            if let Some(notice) = self
-                .status
-                .as_ref()
-                .and_then(|status| status.auto_connect_notice.as_deref())
-            {
-                ui.colored_label(ui.visuals().warn_fg_color, notice);
-            }
-            ui.add_space(10.0);
-            ui.horizontal_wrapped(|ui| {
-                if running {
-                    if ui
-                        .add_enabled(
-                            self.ui.connected && !self.busy && self.ui.uncertain.is_none(),
-                            egui::Button::new("停止 Core"),
-                        )
-                        .clicked()
-                    {
-                        self.ui.dialog = Some(Dialog::Confirm(Action::Stop));
-                    }
-                    if ui
-                        .add_enabled(enabled, egui::Button::new("重启当前运行版本"))
-                        .clicked()
-                    {
-                        self.ui.dialog = Some(Dialog::Confirm(Action::Restart));
-                    }
-                } else {
-                    if primary(ui, "选择配置并启动", enabled) {
-                        self.ui.page = Page::Profiles;
-                    }
-                    if generation.is_some()
-                        && ui
-                            .add_enabled(enabled, egui::Button::new("启动上次应用版本"))
-                            .clicked()
-                    {
-                        self.ui.dialog = Some(Dialog::Confirm(Action::Restart));
-                    }
+            });
+            ui.add_space(12.0);
+            if running {
+                if ui
+                    .add_enabled(
+                        self.ui.connected && !self.busy && self.ui.uncertain.is_none(),
+                        egui::Button::new("停止 Core"),
+                    )
+                    .clicked()
+                {
+                    self.ui.dialog = Some(Dialog::Confirm(Action::Stop));
                 }
-                if ui.button("管理配置").clicked() {
+                if ui
+                    .add_enabled(enabled, egui::Button::new("重启当前运行版本"))
+                    .clicked()
+                {
+                    self.ui.dialog = Some(Dialog::Confirm(Action::Restart));
+                }
+            } else if generation.is_some() {
+                if primary(ui, "启动上次应用版本", enabled) {
+                    self.ui.dialog = Some(Dialog::Confirm(Action::Restart));
+                }
+                if ui.button("选择配置并启动").clicked() {
                     self.ui.page = Page::Profiles;
                 }
-            });
+            } else if primary(ui, "选择配置并启动", enabled) {
+                self.ui.page = Page::Profiles;
+            }
+            if ui.button("管理配置").clicked() {
+                self.ui.page = Page::Profiles;
+            }
         });
-        ui.add_space(16.0);
+        if let Some(notice) = self
+            .status
+            .as_ref()
+            .and_then(|status| status.auto_connect_notice.as_deref())
+        {
+            ui.add_space(8.0);
+            crate::widgets::banner_box(ui, crate::widgets::BadgeTone::Warn, notice);
+        }
+        ui.add_space(12.0);
         let runtime = self
             .ui
             .runtime
             .as_ref()
             .filter(|r| generation.as_ref().is_some_and(|g| g.id == r.generation_id));
-        let pf_count = if running {
-            runtime
-                .and_then(|r| serde_json::from_str::<serde_json::Value>(&r.json).ok())
-                .map(|v| crate::port_forward::dokodemo_tags(&v).len())
-                .unwrap_or(0)
+        let active_forwards: Vec<crate::port_forward::PortForwardEntry> = if running {
+            generation
+                .as_ref()
+                .zip(runtime.and_then(|r| serde_json::from_str::<serde_json::Value>(&r.json).ok()))
+                .map(|(g, v)| {
+                    crate::port_forward::extract_entries(
+                        &v,
+                        &self.ui.workspace,
+                        &g.candidate.profile_id,
+                    )
+                    .into_iter()
+                    .filter(|e| e.enabled)
+                    .collect()
+                })
+                .unwrap_or_default()
         } else {
-            0
+            Vec::new()
         };
+        let pf_count = active_forwards.len();
         let endpoint = runtime
             .and_then(|r| serde_json::from_str::<serde_json::Value>(&r.json).ok())
             .and_then(|v| {
@@ -386,141 +411,239 @@ impl App {
             .map(|g| self.ui.workspace.name(&g.candidate.profile_id).to_string())
             .unwrap_or_else(|| "无运行配置".into());
         let proxy = self.proxy_label();
-        ui.columns(3, |columns| {
-            for (col, (title, value, note)) in columns.iter_mut().zip([
-                (
-                    "当前运行配置",
-                    if running {
+        let owned = self
+            .status
+            .as_ref()
+            .is_some_and(|s| s.proxy_state == "Owned");
+        let committed = self
+            .status
+            .as_ref()
+            .and_then(|s| s.generation.as_ref())
+            .map(|g| g.proxy_mode);
+        let wide = ui.available_width() >= 760.0;
+        let render_connection_card = |app: &mut App, ui: &mut egui::Ui| {
+            card(ui, |ui| {
+                ui.label(RichText::new("连接与系统代理状态").strong().size(16.0));
+                ui.add_space(4.0);
+                let (core_label, core_tone) = if !app.ui.connected {
+                    ("状态待确认", crate::widgets::BadgeTone::Warn)
+                } else if running {
+                    ("Core 运行中", crate::widgets::BadgeTone::Success)
+                } else if app
+                    .status
+                    .as_ref()
+                    .is_some_and(|s| s.core_state == "Degraded")
+                {
+                    ("Core 正在等待恢复", crate::widgets::BadgeTone::Warn)
+                } else {
+                    ("Core 已停止", crate::widgets::BadgeTone::Muted)
+                };
+                let (core_fg, _, _) = crate::widgets::tone_palette(ui, core_tone);
+                crate::widgets::kv_row(
+                    ui,
+                    "Core 进程",
+                    RichText::new(core_label).strong().color(core_fg),
+                );
+                ui.separator();
+                crate::widgets::kv_row(
+                    ui,
+                    "运行中配置",
+                    RichText::new(if running {
                         name.as_str()
                     } else {
                         "无运行配置"
-                    },
-                    "草稿编辑不会改变运行版本",
-                ),
-                (
+                    })
+                    .strong(),
+                );
+                ui.separator();
+                let mode_desc = match (running, owned, committed) {
+                    (true, true, Some(ProxyMode::Pac)) => "PAC 自动代理（由本程序接管）",
+                    (true, true, Some(ProxyMode::Global)) => "全局代理（由本程序接管）",
+                    _ => proxy.as_str(),
+                };
+                crate::widgets::kv_row(ui, "系统代理方式", RichText::new(mode_desc).strong());
+                ui.separator();
+                crate::widgets::kv_row(
+                    ui,
                     "本机 HTTP 入口",
-                    endpoint.as_str(),
-                    if running {
-                        "真实网络未检测"
+                    RichText::new(if running {
+                        endpoint.as_str()
                     } else {
                         "Core 当前未运行"
-                    },
-                ),
-                ("系统代理", proxy.as_str(), "未接管不代表其他代理已关闭"),
-            ]) {
-                card(col, |ui| {
-                    ui.set_min_height(100.0);
-                    ui.label(RichText::new(title).small().weak());
-                    ui.add(egui::Label::new(RichText::new(value).strong().size(17.0)).truncate())
-                        .on_hover_text(value);
-                    ui.label(RichText::new(note).small().weak());
-                });
-            }
-        });
-        ui.add_space(16.0);
-        card(ui, |ui| {
-            ui.label(RichText::new("连接方式").strong().size(18.0));
-            ui.label(
-                RichText::new("仅影响系统代理；Core 仍按原生 JSON 的路由和出站转发。")
-                    .small()
-                    .weak(),
-            );
-            let owned = self
-                .status
-                .as_ref()
-                .is_some_and(|s| s.proxy_state == "Owned");
-            ui.horizontal_wrapped(|ui| {
-                let committed = self
-                    .status
-                    .as_ref()
-                    .and_then(|s| s.generation.as_ref())
-                    .map(|g| g.proxy_mode);
-                for mode in [ProxyMode::Direct, ProxyMode::Global, ProxyMode::Pac] {
-                    let selected = if owned {
-                        committed == Some(mode)
-                    } else {
-                        mode == ProxyMode::Direct
+                    })
+                    .monospace(),
+                );
+                if owned && let Some((pac_mode, pac_summary)) = app.active_pac_strategy() {
+                    ui.separator();
+                    let desc = match pac_summary {
+                        Some(summary) => {
+                            format!("{}（{summary}）", Self::pac_mode_label(pac_mode))
+                        }
+                        None => Self::pac_mode_label(pac_mode).into(),
                     };
-                    if ui
-                        .add_enabled(
-                            enabled && (mode == ProxyMode::Direct || running),
-                            egui::Button::new(mode_name(mode)).selected(selected),
-                        )
-                        .clicked()
-                        && !selected
-                    {
-                        self.ui.dialog = Some(Dialog::Confirm(Action::Proxy(mode)));
-                    }
+                    crate::widgets::kv_row(ui, "生效 PAC 策略", RichText::new(desc).strong());
                 }
-            });
-            ui.label(
-                RichText::new("解除接管时恢复接管前的设置，其他程序的代理仍可能有效。")
-                    .small()
-                    .weak(),
-            );
-            if owned && let Some((pac_mode, pac_summary)) = self.active_pac_strategy() {
-                let desc = match pac_summary {
-                    Some(summary) => format!("{}（{summary}）", Self::pac_mode_label(pac_mode)),
-                    None => Self::pac_mode_label(pac_mode).into(),
-                };
-                line(ui, "生效 PAC 策略", &desc);
-            }
-            if pf_count > 0 {
+                ui.separator();
                 ui.horizontal_wrapped(|ui| {
-                    line(
-                        ui,
-                        "端口转发",
-                        &format!("{pf_count} 条独立监听生效中（不依赖系统代理模式）"),
+                    ui.label(RichText::new("端口转发").small().weak());
+                    ui.label(
+                        RichText::new(if running {
+                            if pf_count > 0 {
+                                format!("{pf_count} 条独立监听生效中")
+                            } else {
+                                "0 条监听".into()
+                            }
+                        } else {
+                            "已随 Core 停止".into()
+                        })
+                        .strong(),
                     );
                     if ui.small_button("管理端口转发").clicked() {
-                        self.ui.page = Page::Profiles;
-                        self.ui.profile_tab = ProfileTab::PortForward;
+                        app.ui.page = Page::Profiles;
+                        app.ui.profile_tab = ProfileTab::PortForward;
                     }
                 });
-            }
-            line(ui, "网络连通性", "未检测");
-            line(ui, "实际出口", "未验证");
-            if ui.button("打开路由诊断").clicked() {
-                self.ui.page = Page::Diagnostics;
-            }
-        });
-        ui.add_space(16.0);
-        card(ui, |ui| {
-            ui.label(RichText::new("最近活动").strong().size(18.0));
-            if self.ui.events.is_empty() {
-                ui.label(RichText::new("暂无操作记录").weak());
-            }
-            for event in self.ui.events.iter().take(4) {
-                ui.label(&event.message);
-                ui.label(
-                    RichText::new(format!("{} 秒前", event.at.elapsed().as_secs()))
-                        .small()
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("快捷切换运行代理模式：").small().weak());
+                    for (mode, label) in [
+                        (ProxyMode::Direct, "直连"),
+                        (ProxyMode::Pac, "PAC"),
+                        (ProxyMode::Global, "全局"),
+                    ] {
+                        let selected = if owned {
+                            committed == Some(mode)
+                        } else {
+                            mode == ProxyMode::Direct
+                        };
+                        if crate::widgets::seg_button(
+                            ui,
+                            label,
+                            selected,
+                            enabled && (mode == ProxyMode::Direct || running),
+                        )
+                        .clicked()
+                            && !selected
+                        {
+                            app.ui.dialog = Some(Dialog::Confirm(Action::Proxy(mode)));
+                        }
+                    }
+                    if ui.small_button("打开路由诊断").clicked() {
+                        app.ui.page = Page::Diagnostics;
+                    }
+                });
+            });
+        };
+        let render_forwards_card = |app: &mut App, ui: &mut egui::Ui| {
+            card(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("运行中端口转发清单").strong().size(16.0));
+                    if ui.small_button("前往管理").clicked() {
+                        app.ui.page = Page::Profiles;
+                        app.ui.profile_tab = ProfileTab::PortForward;
+                    }
+                });
+                ui.add_space(4.0);
+                if !running {
+                    ui.label(
+                        RichText::new(
+                            "Core 当前未运行。点击「启动上次应用版本」后自动恢复端口转发监听。",
+                        )
                         .weak(),
-                );
-            }
-            ui.separator();
-            line(
-                ui,
-                "运行中的 Core",
-                if running {
-                    generation
-                        .as_ref()
-                        .map(|g| g.candidate.core.version.as_str())
-                        .unwrap_or("未知")
+                    );
+                } else if active_forwards.is_empty() {
+                    ui.label(RichText::new("当前运行配置暂无已启用的端口转发。").weak());
                 } else {
-                    "未运行"
-                },
-            );
-            let next_core = if self.core_path.is_empty() {
-                "尚未选择".into()
-            } else {
-                display_path_text(&self.core_path)
-            };
-            line(ui, "下次检查使用", &next_core);
-            if ui.button("查看日志").clicked() {
-                self.ui.page = Page::Logs;
-            }
-        });
+                    for (i, entry) in active_forwards.iter().enumerate() {
+                        if i > 0 {
+                            ui.separator();
+                        }
+                        let display = if entry.name.is_empty() {
+                            entry.tag.as_str()
+                        } else {
+                            entry.name.as_str()
+                        };
+                        let net = crate::port_forward::network_label(&entry.network);
+                        crate::widgets::kv_row(
+                            ui,
+                            &format!("{display} ({net})"),
+                            RichText::new(format!(
+                                "{}:{} -> {}:{} ({})",
+                                entry.listen,
+                                entry.port,
+                                entry.target_host,
+                                entry.target_port,
+                                entry.outbound_tag
+                            ))
+                            .monospace(),
+                        );
+                    }
+                }
+                ui.add_space(6.0);
+                crate::widgets::banner_box(
+                    ui,
+                    crate::widgets::BadgeTone::Accent,
+                    "说明：即使将系统代理切回「直连」，只要 Core 仍在运行，端口转发监听就保持可用。",
+                );
+            });
+        };
+        if wide {
+            ui.columns(2, |columns| {
+                render_connection_card(self, &mut columns[0]);
+                render_forwards_card(self, &mut columns[1]);
+            });
+        } else {
+            render_connection_card(self, ui);
+            ui.add_space(12.0);
+            render_forwards_card(self, ui);
+        }
+        if self.ui.workspace.overview_show_activity {
+            ui.add_space(14.0);
+            card(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("最近活动与版本").strong().size(16.0));
+                    if ui.small_button("查看日志").clicked() {
+                        self.ui.page = Page::Logs;
+                    }
+                    if ui.small_button("隐藏").clicked() {
+                        self.ui.workspace.overview_show_activity = false;
+                        self.save_workspace();
+                    }
+                });
+                if self.ui.events.is_empty() {
+                    ui.label(RichText::new("暂无操作记录").weak());
+                }
+                for event in self.ui.events.iter().take(4) {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(&event.message);
+                        ui.label(
+                            RichText::new(format!("{} 秒前", event.at.elapsed().as_secs()))
+                                .small()
+                                .weak(),
+                        );
+                    });
+                }
+                ui.separator();
+                line(
+                    ui,
+                    "运行中的 Core",
+                    if running {
+                        generation
+                            .as_ref()
+                            .map(|g| g.candidate.core.version.as_str())
+                            .unwrap_or("未知")
+                    } else {
+                        "未运行"
+                    },
+                );
+                let next_core = if self.core_path.is_empty() {
+                    "尚未选择".into()
+                } else {
+                    display_path_text(&self.core_path)
+                };
+                line(ui, "下次检查使用", &next_core);
+            });
+        }
     }
     pub(in crate::app) fn proxy_label(&self) -> String {
         if !self.ui.connected {

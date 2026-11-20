@@ -42,6 +42,7 @@ pub struct PortForwardForm {
     pub editing_paused_index: Option<usize>,
     pub name: String,
     pub listen: String,
+    pub custom_listen: bool,
     pub local_port: String,
     pub network: String,
     pub target_host: String,
@@ -61,6 +62,7 @@ impl PortForwardForm {
             editing_paused_index: None,
             name: String::new(),
             listen: LISTEN_LOCAL.into(),
+            custom_listen: false,
             local_port: next_free_port(config, paused).to_string(),
             network: "tcp".into(),
             target_host: String::new(),
@@ -70,11 +72,14 @@ impl PortForwardForm {
     }
 
     pub fn from_entry(entry: &PortForwardEntry) -> Self {
+        let custom_listen =
+            entry.listen.trim() != LISTEN_LOCAL && entry.listen.trim() != LISTEN_LAN;
         Self {
             editing_tag: entry.enabled.then(|| entry.tag.clone()),
             editing_paused_index: entry.paused_index,
             name: entry.name.clone(),
             listen: entry.listen.clone(),
+            custom_listen,
             local_port: entry.port.to_string(),
             network: entry.network.clone(),
             target_host: entry.target_host.clone(),
@@ -689,6 +694,7 @@ pub fn set_entry_enabled(
         editing_paused_index: None,
         name: paused_item.name.clone(),
         listen: paused_item.listen.clone(),
+        custom_listen: false,
         local_port: paused_item.port.to_string(),
         network: paused_item.network.clone(),
         target_host: paused_item.target_host.clone(),
@@ -776,6 +782,27 @@ pub fn remove_entry(
             workspace.paused_port_forwards.remove(profile_id);
         }
     }
+}
+
+/// Counts `(active, paused)` port-forward references keyed by `outboundTag`.
+pub fn outbound_ref_counts(
+    config: &Value,
+    workspace: &Workspace,
+    profile_id: &str,
+) -> BTreeMap<String, (usize, usize)> {
+    let mut counts: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    for entry in extract_entries(config, workspace, profile_id) {
+        if entry.outbound_tag.is_empty() {
+            continue;
+        }
+        let slot = counts.entry(entry.outbound_tag).or_default();
+        if entry.enabled {
+            slot.0 += 1;
+        } else {
+            slot.1 += 1;
+        }
+    }
+    counts
 }
 
 #[cfg(test)]

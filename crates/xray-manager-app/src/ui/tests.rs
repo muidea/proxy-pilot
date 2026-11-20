@@ -521,7 +521,7 @@ fn toolbars_and_profile_cards_align_at_all_supported_widths() {
             let output = settle(&mut app);
             let actions =
                 ["新建", "导入", "刷新"].map(|s| enclosing_rect(&output, s, CONTROL_HEIGHT));
-            if width == 1100.0 {
+            if width >= 980.0 {
                 for rect in actions {
                     assert!((rect.left() - actions[0].left()).abs() < 1.0);
                     assert!((rect.width() - actions[0].width()).abs() < 1.0);
@@ -560,6 +560,16 @@ fn toolbars_and_profile_cards_align_at_all_supported_widths() {
             ] {
                 app.ui.page = page;
                 let output = settle(&mut app);
+                if width >= 980.0 && page == Page::Overview {
+                    let nav = ["总览", "配置", "PAC", "日志", "诊断", "设置"]
+                        .map(|s| text_bounds(&output, s));
+                    for pair in nav.windows(2) {
+                        assert!(
+                            pair[0].right() < pair[1].left(),
+                            "nav order mismatch: {nav:?}"
+                        );
+                    }
+                }
                 capture_layout(
                     &ctx,
                     output,
@@ -2365,6 +2375,10 @@ fn tray_exit_opens_one_confirmation_with_remembered_default() {
 #[test]
 fn empty_pac_page_does_not_show_a_json_parse_error() {
     let mut app = app();
+    app.status = None;
+    app.ui.runtime = None;
+    app.ui.profile_cache.clear();
+    app.ui.drafts.clear();
     app.profile_id.clear();
     app.selected_profile.clear();
     app.editor.clear();
@@ -3453,4 +3467,306 @@ fn exposed_port_forward_requires_preview_confirmation() {
     };
     app.accept_candidate_with_mode(candidate, true);
     assert!(app.ui.preview_open);
+}
+
+#[test]
+fn port_forward_cross_page_parity_overview_nodes_json_and_diagnostics() {
+    let mut app = app();
+    let mut value: serde_json::Value = serde_json::from_str(&app.editor).unwrap();
+    let mut form = crate::port_forward::PortForwardForm::from_new(&value, &[]);
+    form.name = "内网数据库".into();
+    form.local_port = "13306".into();
+    form.target_host = "10.0.0.5".into();
+    form.target_port = "3306".into();
+    form.outbound_tag = "direct".into();
+    crate::port_forward::save_entry(&mut value, &mut app.ui.workspace, &app.profile_id, &form)
+        .unwrap();
+    app.editor = serde_json::to_string_pretty(&value).unwrap();
+    app.ui.runtime = Some(RuntimeConfig {
+        generation_id: "generation-1".into(),
+        json: app.editor.clone(),
+    });
+
+    let ctx = egui::Context::default();
+    configure(&ctx);
+
+    let has_text = |out: &egui::FullOutput, needle: &str| {
+        out.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text().contains(needle))
+        })
+    };
+
+    // Overview lists active port forwards independently of Direct proxy mode.
+    app.ui.page = Page::Overview;
+    let overview_out = guided_frame(&mut app, &ctx, vec![], 1100.0, 1200.0);
+    assert!(overlapping_visible_text(&overview_out).is_empty());
+    let _ = text_bounds(&overview_out, "运行中端口转发清单");
+    let _ = text_bounds(&overview_out, "内网数据库 (TCP)");
+
+    // Profile list, PortForward tab badge, and Outbounds node card reference badge align cleanly.
+    app.ui.page = Page::Profiles;
+    app.ui.profile_tab = ProfileTab::Outbounds;
+    let nodes_out = guided_frame(&mut app, &ctx, vec![], 1100.0, 860.0);
+    assert!(overlapping_visible_text(&nodes_out).is_empty());
+    let _ = text_bounds(&nodes_out, "端口转发 (1)");
+    assert!(has_text(&nodes_out, "被 1 条端口转发引用"));
+    assert!(has_text(&nodes_out, "1 条转发"));
+
+    // Diagnostics shows per-inbound probe detail and quick inboundTag fills forward target.
+    app.ui.page = Page::Diagnostics;
+    let diag_out = guided_frame(&mut app, &ctx, vec![], 1100.0, 1200.0);
+    assert!(overlapping_visible_text(&diag_out).is_empty());
+    let _ = text_bounds(&diag_out, "TCP 监听就绪");
+    guided_click(&mut app, &ctx, "pf-1", 1100.0, 1200.0);
+    assert_eq!(app.route_inbound, "pf-1");
+    assert_eq!(app.route_host, "10.0.0.5");
+    assert_eq!(app.ui.route_port, "3306");
+    assert_eq!(app.route_network, "tcp");
+
+    // Pausing moves item to workspace paused list shown inside Advanced -> Json.
+    let entries = crate::port_forward::extract_entries(&value, &app.ui.workspace, &app.profile_id);
+    crate::port_forward::set_entry_enabled(
+        &mut value,
+        &mut app.ui.workspace,
+        &app.profile_id,
+        &entries[0],
+        false,
+    )
+    .unwrap();
+    app.editor = serde_json::to_string_pretty(&value).unwrap();
+    app.ui.page = Page::Profiles;
+    app.ui.profile_tab = ProfileTab::Advanced;
+    app.ui.advanced_tab = AdvancedTab::Json;
+    let json_out = guided_frame(&mut app, &ctx, vec![], 1100.0, 860.0);
+    assert!(overlapping_visible_text(&json_out).is_empty());
+    let _ = text_bounds(
+        &json_out,
+        "工作区停用端口转发暂存（1 条 · 不写入 Core JSON）",
+    );
+}
+
+#[test]
+fn switching_profiles_preserves_per_profile_proxy_mode_and_pac_strategy() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app();
+    app.root = dir.path().to_path_buf();
+    app.ui.persistence = true;
+    app.ui.connected = false;
+    app.profiles = vec![
+        ProfileSummary {
+            id: "work".into(),
+            revision: "rev-work".into(),
+        },
+        ProfileSummary {
+            id: "home".into(),
+            revision: "rev-home".into(),
+        },
+    ];
+    let home_json = default_config();
+    app.ui.profile_cache.insert(
+        "work".into(),
+        Profile {
+            id: "work".into(),
+            json: app.editor.clone(),
+            revision: "rev-work".into(),
+        },
+    );
+    app.ui.profile_cache.insert(
+        "home".into(),
+        Profile {
+            id: "home".into(),
+            json: home_json.clone(),
+            revision: "rev-home".into(),
+        },
+    );
+
+    let work_pac = xray_model::PacDraft {
+        mode: xray_model::PacMode::ProxyList,
+        geosites: vec!["google".into()],
+        domains: vec!["work-only.example".into()],
+        script: String::new(),
+        port: xray_model::DEFAULT_PAC_PORT,
+    };
+    app.save_pac_draft(work_pac.clone());
+    app.mode = ProxyMode::Pac;
+    app.save_profile_proxy_mode("work", ProxyMode::Pac);
+
+    // Switching to another profile loads that profile's independent ProxyMode & PacDraft.
+    app.switch_profile("home".into());
+    assert_eq!(app.profile_id, "home");
+    assert_eq!(app.mode, ProxyMode::Direct);
+    assert_eq!(app.pac_draft().mode, xray_model::PacMode::AutoRules);
+    assert!(app.pac_draft().domains.is_empty());
+
+    // Editing home profile's proxy mode & PAC strategy never overwrites work.
+    app.mode = ProxyMode::Global;
+    app.save_profile_proxy_mode("home", ProxyMode::Global);
+    let home_pac = xray_model::PacDraft {
+        mode: xray_model::PacMode::DirectList,
+        geosites: vec!["cn".into()],
+        domains: vec!["home.lan".into()],
+        script: String::new(),
+        port: xray_model::DEFAULT_PAC_PORT,
+    };
+    app.save_pac_draft(home_pac.clone());
+
+    // Switching back to work restores work's remembered PAC mode and strategy.
+    app.switch_profile("work".into());
+    assert_eq!(app.profile_id, "work");
+    assert_eq!(app.mode, ProxyMode::Pac);
+    assert_eq!(app.pac_draft(), work_pac);
+
+    // Persisted workspace retains both profiles' independent strategies.
+    let reloaded = crate::workspace::Workspace::load(dir.path()).unwrap();
+    assert_eq!(reloaded.proxy_modes.get("work"), Some(&ProxyMode::Pac));
+    assert_eq!(reloaded.proxy_modes.get("home"), Some(&ProxyMode::Global));
+    assert_eq!(reloaded.pac.get("work"), Some(&work_pac));
+    assert_eq!(reloaded.pac.get("home"), Some(&home_pac));
+}
+
+#[test]
+fn pac_page_follows_active_profile_and_auto_compiles_on_apply() {
+    let mut app = app();
+    let (tx, requests) = mpsc::sync_channel(MAX_PENDING);
+    app.tx = tx;
+    app.pending.clear();
+
+    // 1. Applying a config in ProxyMode::Pac from Profiles auto-compiles its fresh PAC script
+    //    even if the user never visited the PAC page first.
+    app.mode = ProxyMode::Pac;
+    app.status
+        .as_mut()
+        .unwrap()
+        .generation
+        .as_mut()
+        .unwrap()
+        .proxy_mode = ProxyMode::Pac;
+    let candidate = Candidate {
+        id: "cand-sync".into(),
+        digest: "digest-sync".into(),
+        profile_id: "work".into(),
+        base_revision: app.revision.clone(),
+        revision: hash(app.editor.as_bytes()),
+        config_path: "config.json".into(),
+        core: CoreIdentity {
+            path: "core".into(),
+            sha256: "sha".into(),
+            version: "Xray test".into(),
+        },
+        resources: Resources {
+            id: "res".into(),
+            root: "resources".into(),
+            files: vec![],
+            complete: true,
+            notes: vec![],
+            dynamic: vec![],
+        },
+    };
+    app.accept_candidate_with_mode(candidate, true);
+    let req = requests.try_recv().unwrap();
+    let Command::ApplyProfile {
+        pac: Some(applied_pac),
+        ..
+    } = req.command
+    else {
+        panic!("expected ApplyProfile with compiled PAC");
+    };
+    assert!(!applied_pac.script.is_empty());
+    app.busy = false;
+    app.pending.clear();
+    let applied_rev = hash(applied_pac.script.as_bytes());
+    let status = app.status.as_mut().unwrap();
+    status.proxy_state = "Owned".into();
+    status.pac_state = "Serving".into();
+    let g = status.generation.as_mut().unwrap();
+    g.proxy_mode = ProxyMode::Pac;
+    g.pac = Some(PacPublication {
+        revision: applied_rev.clone(),
+        sha256: applied_rev,
+        url: "http://127.0.0.1:18080/pac/synced/proxy.pac".into(),
+        port: 18080,
+        path: PathBuf::from("runtime/pac/synced/proxy.pac"),
+        mode: Some(xray_model::PacMode::AutoRules),
+        summary: Some("自动生成".into()),
+    });
+
+    // 2. Browsing another unapplied profile in Profiles keeps PAC page linked with the active profile
+    //    without triggering a spurious mismatch warning.
+    app.profile_id = "other".into();
+    app.selected_profile = "other".into();
+    app.editor = r#"{"inbounds":[{"tag":"http-other","listen":"127.0.0.1","port":19999,"protocol":"http"}],"outbounds":[{"tag":"direct","protocol":"freedom"}]}"#.into();
+    app.ui
+        .workspace
+        .names
+        .insert("other".into(), "备用配置".into());
+
+    let ctx = egui::Context::default();
+    configure(&ctx);
+    app.ui.page = Page::Pac;
+    let out = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    assert!(overlapping_visible_text(&out).is_empty());
+    let _ = text_bounds(&out, "与当前激活配置及本页策略一致，无需重新应用。");
+    let _ = text_bounds(&out, "已自动跟随当前激活配置");
+
+    // 3. Modifying PAC settings while PAC is running immediately hot-syncs via SetProxyMode(Pac).
+    guided_click(
+        &mut app,
+        &ctx,
+        "按当前路由规则自动生成（推荐）",
+        1100.0,
+        900.0,
+    );
+    let opened = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    let choice = text_bounds(&opened, "仅代理选中 GeoSite 与域名，其余直连").center();
+    guided_frame(&mut app, &ctx, pointer_click(choice), 1100.0, 900.0);
+    let synced_req = requests.try_recv().unwrap();
+    assert!(matches!(
+        synced_req.command,
+        Command::SetProxyMode {
+            mode: ProxyMode::Pac,
+            pac: Some(_),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn overview_hides_recent_activity_and_version_by_default_and_toggles_via_settings() {
+    let mut app = app();
+    let ctx = egui::Context::default();
+    configure(&ctx);
+    let has_text = |out: &egui::FullOutput, needle: &str| {
+        out.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text().contains(needle))
+        })
+    };
+
+    assert!(!app.ui.workspace.overview_show_activity);
+    app.ui.page = Page::Overview;
+    let default_out = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    assert!(overlapping_visible_text(&default_out).is_empty());
+    assert!(!has_text(&default_out, "最近活动与版本"));
+    assert!(!has_text(&default_out, "下次检查使用"));
+
+    app.ui.page = Page::Settings;
+    app.ui.settings_tab = SettingsTab::Appearance;
+    guided_click(
+        &mut app,
+        &ctx,
+        "在总览页显示「最近活动与版本」",
+        1100.0,
+        900.0,
+    );
+    assert!(app.ui.workspace.overview_show_activity);
+
+    app.ui.page = Page::Overview;
+    let shown_out = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    assert!(overlapping_visible_text(&shown_out).is_empty());
+    let _ = text_bounds(&shown_out, "最近活动与版本");
+    let _ = text_bounds(&shown_out, "下次检查使用");
+
+    guided_click(&mut app, &ctx, "隐藏", 1100.0, 900.0);
+    assert!(!app.ui.workspace.overview_show_activity);
+    let hidden_again = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    assert!(!has_text(&hidden_again, "最近活动与版本"));
 }

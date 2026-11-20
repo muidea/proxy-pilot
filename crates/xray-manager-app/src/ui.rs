@@ -41,8 +41,8 @@ pub(super) enum Page {
     Overview,
     Profiles,
     Pac,
-    Diagnostics,
     Logs,
+    Diagnostics,
     Settings,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -196,6 +196,7 @@ pub(super) struct UiState {
     pub(super) node_share_feedback: Option<String>,
     pub(super) pf_form: crate::port_forward::PortForwardForm,
     pub(super) pf_error: Option<String>,
+    pub(super) inbounds_native: bool,
     pub(super) inline_rename: Option<String>,
     pub(super) guided: crate::guided_config::State,
     import_error: Option<String>,
@@ -300,6 +301,7 @@ impl Default for UiState {
             node_share_feedback: None,
             pf_form: Default::default(),
             pf_error: None,
+            inbounds_native: false,
             inline_rename: None,
             guided: Default::default(),
             import_error: None,
@@ -402,49 +404,68 @@ pub(super) fn configure(ctx: &egui::Context) {
             .insert(egui::TextStyle::Small, egui::FontId::proportional(12.0));
         let dark = style.visuals.dark_mode;
         style.visuals.widgets.noninteractive.fg_stroke.color = if dark {
-            Color32::from_rgb(220, 227, 234)
+            Color32::from_rgb(231, 237, 246)
         } else {
-            Color32::from_rgb(35, 45, 55)
+            Color32::from_rgb(23, 32, 46)
         };
         style.visuals.weak_text_color = Some(if dark {
-            Color32::from_rgb(157, 169, 181)
+            Color32::from_rgb(154, 167, 186)
         } else {
-            Color32::from_rgb(93, 105, 117)
+            Color32::from_rgb(91, 102, 120)
         });
         style.visuals.panel_fill = if dark {
-            Color32::from_rgb(17, 22, 30)
+            Color32::from_rgb(15, 21, 30)
         } else {
-            Color32::from_rgb(244, 246, 248)
+            Color32::from_rgb(241, 244, 249)
         };
         style.visuals.window_fill = if dark {
-            Color32::from_rgb(25, 31, 41)
+            Color32::from_rgb(24, 32, 44)
         } else {
             Color32::WHITE
         };
-        style.visuals.selection.bg_fill = if dark {
-            Color32::from_rgb(24, 58, 51)
+        style.visuals.faint_bg_color = if dark {
+            Color32::from_rgb(30, 40, 55)
         } else {
-            Color32::from_rgb(218, 239, 232)
+            Color32::from_rgb(248, 250, 253)
+        };
+        style.visuals.widgets.noninteractive.bg_stroke.color = if dark {
+            Color32::from_rgb(43, 55, 73)
+        } else {
+            Color32::from_rgb(223, 229, 239)
+        };
+        style.visuals.widgets.inactive.bg_fill = if dark {
+            Color32::from_rgb(24, 32, 44)
+        } else {
+            Color32::WHITE
+        };
+        style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(
+            1.0,
+            if dark {
+                Color32::from_rgb(60, 76, 99)
+            } else {
+                Color32::from_rgb(197, 208, 224)
+            },
+        );
+        style.visuals.selection.bg_fill = if dark {
+            Color32::from_rgba_unmultiplied(77, 151, 255, 41)
+        } else {
+            Color32::from_rgba_unmultiplied(29, 111, 232, 32)
         };
         style.visuals.selection.stroke = egui::Stroke::new(
             1.0,
             if dark {
-                Color32::from_rgb(99, 211, 180)
+                Color32::from_rgb(77, 151, 255)
             } else {
-                Color32::from_rgb(8, 126, 112)
+                Color32::from_rgb(29, 111, 232)
             },
         );
-        style.visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(7);
-        style.visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(7);
-        style.visuals.widgets.active.corner_radius = egui::CornerRadius::same(7);
+        style.visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(8);
+        style.visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(8);
+        style.visuals.widgets.active.corner_radius = egui::CornerRadius::same(8);
     });
 }
 fn accent(ui: &egui::Ui) -> Color32 {
-    if ui.visuals().dark_mode {
-        Color32::from_rgb(99, 211, 180)
-    } else {
-        Color32::from_rgb(8, 126, 112)
-    }
+    crate::widgets::accent_color(ui)
 }
 fn card<R>(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui) -> R) -> R {
     card_with_min_height(ui, 0.0, body)
@@ -456,16 +477,13 @@ fn card_with_min_height<R>(
 ) -> R {
     egui::Frame::new()
         .fill(ui.visuals().window_fill())
-        .stroke(egui::Stroke::new(
-            1.0,
-            ui.visuals().widgets.noninteractive.bg_stroke.color,
-        ))
-        .corner_radius(13)
-        .inner_margin(20)
+        .stroke(egui::Stroke::new(1.0, crate::widgets::border_color(ui)))
+        .corner_radius(10)
+        .inner_margin(16)
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             // The requested outer height includes both one-point frame borders.
-            ui.set_min_height((height - 42.0).max(0.0));
+            ui.set_min_height((height - 34.0).max(0.0));
             body(ui)
         })
         .inner
@@ -474,19 +492,16 @@ fn primary(ui: &mut egui::Ui, text: &str, enabled: bool) -> bool {
     let color = accent(ui);
     ui.add_enabled(
         enabled,
-        egui::Button::new(RichText::new(text).color(if ui.visuals().dark_mode {
-            Color32::from_rgb(16, 37, 31)
-        } else {
-            Color32::WHITE
-        }))
-        .fill(color),
+        egui::Button::new(RichText::new(text).strong().color(Color32::WHITE))
+            .fill(color)
+            .stroke(egui::Stroke::new(1.0, color)),
     )
     .clicked()
 }
 fn heading(ui: &mut egui::Ui, title: &str, note: &str) {
     ui.heading(title);
     ui.label(RichText::new(note).weak());
-    ui.add_space(12.0);
+    ui.add_space(10.0);
 }
 fn line(ui: &mut egui::Ui, label: &str, value: &str) {
     let label_width = 148.0_f32.min(ui.available_width() * 0.4);
@@ -1162,6 +1177,8 @@ impl App {
         self.ui.workspace.node_names.remove(profile);
         self.ui.workspace.port_forward_names.remove(profile);
         self.ui.workspace.paused_port_forwards.remove(profile);
+        self.ui.workspace.pac.remove(profile);
+        self.ui.workspace.proxy_modes.remove(profile);
         self.save_workspace();
         if self.ui.persistence
             && let Err(error) = Draft::remove(&self.root, profile)
@@ -1405,6 +1422,7 @@ impl App {
                 } => {
                     // The captured JSON, rather than today's selected editor, was applied.
                     self.applied_draft(&uncertain.profile, uncertain.json.as_deref());
+                    self.save_profile_proxy_mode(&uncertain.profile, proxy_mode);
                     self.note_applied_proxy(proxy_mode, pac.as_ref());
                     self.invalidate_candidate();
                     self.ui.onboarding = false;
@@ -1416,6 +1434,12 @@ impl App {
                     }
                 }
                 Command::SetProxyMode { mode, pac, .. } => {
+                    if let Some(running_profile) = self.committed_id().map(str::to_owned) {
+                        self.save_profile_proxy_mode(&running_profile, mode);
+                        if self.profile_id == running_profile {
+                            self.mode = mode;
+                        }
+                    }
                     self.note_applied_proxy(mode, pac.as_ref());
                     self.invalidate_candidate();
                     self.refresh_profiles();

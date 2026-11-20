@@ -61,7 +61,16 @@ fn format_invalid_preview(invalid: &[(usize, String, String)]) -> String {
 }
 
 impl App {
+    #[cfg(test)]
     pub(super) fn refresh_geodata_cache(&mut self) -> Option<GeoDataCache> {
+        let editor = self.editor.clone();
+        self.refresh_geodata_cache_for(&editor)
+    }
+
+    pub(in crate::app) fn refresh_geodata_cache_for(
+        &mut self,
+        config_json: &str,
+    ) -> Option<GeoDataCache> {
         let asset_root = self.asset_root.trim().to_owned();
         if asset_root.is_empty() {
             self.ui.geodata_cache = None;
@@ -72,7 +81,7 @@ impl App {
             self.ui.geodata_cache = None;
             return None;
         }
-        let parsed_config = serde_json::from_str::<serde_json::Value>(&self.editor).ok();
+        let parsed_config = serde_json::from_str::<serde_json::Value>(config_json).ok();
         let mut tracked_files =
             std::collections::BTreeSet::from(["geosite.dat".to_owned(), "geoip.dat".to_owned()]);
         if let Some(value) = &parsed_config {
@@ -140,8 +149,10 @@ impl App {
         }
     }
 
-    fn sync_pac_script(
+    fn sync_pac_script_for(
         &mut self,
+        profile_id: &str,
+        config_json: &str,
         draft: &mut PacDraft,
         endpoint: Option<std::net::SocketAddr>,
         cached_geo: Option<&GeoDataCache>,
@@ -151,7 +162,7 @@ impl App {
             draft.script.hash(&mut hasher);
             let script_hash = hasher.finish();
             let custom_key = (
-                self.profile_id.clone(),
+                profile_id.to_owned(),
                 std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
                 PacMode::Custom,
                 script_hash,
@@ -176,9 +187,9 @@ impl App {
         let Some(endpoint) = endpoint else {
             return false;
         };
-        let config_str = matches!(draft.mode, PacMode::AutoRules).then_some(self.editor.as_str());
+        let config_str = matches!(draft.mode, PacMode::AutoRules).then_some(config_json);
         let key = (
-            self.profile_id.clone(),
+            profile_id.to_owned(),
             endpoint,
             draft.mode,
             hash_list_and_context(
@@ -192,7 +203,7 @@ impl App {
             return false;
         }
         self.ui.pac_compile_key = Some(key);
-        let config_value = serde_json::from_str::<serde_json::Value>(&self.editor)
+        let config_value = serde_json::from_str::<serde_json::Value>(config_json)
             .unwrap_or_else(|_| serde_json::json!({}));
         match xray_pac::compile_draft(&config_value, endpoint, draft, cached_geo.map(|c| &c.data)) {
             Ok(generated) => {
@@ -214,8 +225,42 @@ impl App {
         }
     }
 
-    fn commit_pac_list_change(
+    fn is_pac_sync_pending(&self) -> bool {
+        self.busy && self.pending.values().any(|p| p.poll.is_none())
+    }
+
+    fn auto_sync_running_pac_if_active(&mut self, profile_id: &str, draft: &PacDraft) {
+        let should_sync = self.is_running()
+            && self.ui.pac_checked
+            && self.ui.connected
+            && !self.busy
+            && self.ui.uncertain.is_none()
+            && self.write_blocker().is_none()
+            && self
+                .status
+                .as_ref()
+                .and_then(|s| s.generation.as_ref())
+                .is_some_and(|g| {
+                    g.proxy_mode == ProxyMode::Pac
+                        && g.candidate.profile_id == profile_id
+                        && g.pac.as_ref().is_none_or(|p| {
+                            p.revision != hash(draft.script.as_bytes()) || p.port != draft.port
+                        })
+                });
+        if should_sync {
+            let http_tag = self.runtime_http_tag();
+            self.send(Command::SetProxyMode {
+                mode: ProxyMode::Pac,
+                http_inbound_tag: http_tag,
+                pac: Some(draft.clone()),
+            });
+        }
+    }
+
+    fn commit_pac_list_change_for(
         &mut self,
+        profile_id: &str,
+        config_json: &str,
         draft: &mut PacDraft,
         endpoint: Option<std::net::SocketAddr>,
     ) {
@@ -223,13 +268,22 @@ impl App {
             draft.mode = PacMode::ProxyList;
         }
         self.ui.pac_compile_key = None;
-        let cached_geo = self.refresh_geodata_cache();
-        self.sync_pac_script(draft, endpoint, cached_geo.as_ref());
-        self.save_pac_draft(draft.clone());
+        let cached_geo = self.refresh_geodata_cache_for(config_json);
+        self.sync_pac_script_for(
+            profile_id,
+            config_json,
+            draft,
+            endpoint,
+            cached_geo.as_ref(),
+        );
+        self.save_pac_draft_for(profile_id, draft.clone());
+        self.auto_sync_running_pac_if_active(profile_id, draft);
     }
 
-    fn add_pac_domain(
+    fn add_pac_domain_for(
         &mut self,
+        profile_id: &str,
+        config_json: &str,
         draft: &mut PacDraft,
         endpoint: Option<std::net::SocketAddr>,
     ) -> bool {
@@ -248,7 +302,7 @@ impl App {
                 }
                 draft.geosites.push(spec.clone());
                 self.ui.pac_domain_input.clear();
-                self.commit_pac_list_change(draft, endpoint);
+                self.commit_pac_list_change_for(profile_id, config_json, draft, endpoint);
                 self.message = format!("已添加并保存 GeoSite 分组：{spec}");
                 return true;
             }
@@ -264,7 +318,7 @@ impl App {
                     }
                     draft.domains.push(domain.clone());
                     self.ui.pac_domain_input.clear();
-                    self.commit_pac_list_change(draft, endpoint);
+                    self.commit_pac_list_change_for(profile_id, config_json, draft, endpoint);
                     self.message = format!("已添加并保存域名：{domain}");
                     true
                 }
@@ -286,7 +340,7 @@ impl App {
             let added_count = parsed.added.len();
             draft.domains.extend(parsed.added);
             self.ui.pac_domain_input.clear();
-            self.commit_pac_list_change(draft, endpoint);
+            self.commit_pac_list_change_for(profile_id, config_json, draft, endpoint);
             self.message = if parsed.invalid.is_empty() && parsed.duplicates == 0 {
                 format!("已批量添加并保存 {added_count} 条域名。")
             } else {
@@ -301,8 +355,12 @@ impl App {
     }
 
     pub(super) fn apply_pac_batch(&mut self, input: &str, replace: bool) -> bool {
-        let mut draft = self.pac_draft();
-        let endpoint = self.pac_endpoint().ok();
+        let (profile_id, config_json) = self.active_pac_target();
+        let mut draft = self.pac_draft_for(&profile_id);
+        let endpoint = self
+            .pac_endpoint_in(&config_json, Some(&self.http_tag))
+            .ok()
+            .map(|(_, ep)| ep);
         let existing = if replace {
             Vec::new()
         } else {
@@ -321,10 +379,10 @@ impl App {
         if replace {
             draft.domains = parsed.added.clone();
             self.ui.pac_selected_domains.clear();
-            self.commit_pac_list_change(&mut draft, endpoint);
+            self.commit_pac_list_change_for(&profile_id, &config_json, &mut draft, endpoint);
         } else if !parsed.added.is_empty() {
             draft.domains.extend(parsed.added.iter().cloned());
-            self.commit_pac_list_change(&mut draft, endpoint);
+            self.commit_pac_list_change_for(&profile_id, &config_json, &mut draft, endpoint);
         }
 
         let summary = if replace {
@@ -355,24 +413,35 @@ impl App {
         }
     }
 
-    pub(super) fn clear_all_pac_domains(&mut self) {
-        let mut draft = self.pac_draft();
+    pub(super) fn clear_all_pac_domains_for(&mut self, profile_id: &str) {
+        let (active_id, active_json) = self.active_pac_target();
+        let config_json = if active_id == profile_id {
+            active_json
+        } else {
+            self.editor.clone()
+        };
+        let mut draft = self.pac_draft_for(profile_id);
         let count = draft.domains.len() + draft.geosites.len();
         draft.domains.clear();
         draft.geosites.clear();
         self.ui.pac_selected_domains.clear();
         self.ui.pac_domain_filter.clear();
-        let endpoint = self.pac_endpoint().ok();
-        self.commit_pac_list_change(&mut draft, endpoint);
+        let endpoint = self
+            .pac_endpoint_in(&config_json, Some(&self.http_tag))
+            .ok()
+            .map(|(_, ep)| ep);
+        self.commit_pac_list_change_for(profile_id, &config_json, &mut draft, endpoint);
         self.message = format!("已清空 {count} 项清单规则。");
     }
 
     fn extract_pac_domains_from_config(
         &mut self,
+        profile_id: &str,
+        config_json: &str,
         draft: &mut PacDraft,
         endpoint: Option<std::net::SocketAddr>,
     ) {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&self.editor) else {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(config_json) else {
             self.message = "当前 JSON 无法解析，无法提取路由规则。".into();
             return;
         };
@@ -408,7 +477,7 @@ impl App {
             }
         }
         if added_domains > 0 || added_geosites > 0 {
-            self.commit_pac_list_change(draft, endpoint);
+            self.commit_pac_list_change_for(profile_id, config_json, draft, endpoint);
         }
         let mut parts = vec![format!(
             "已从路由提取：{added_geosites} 个 GeoSite 分组、{added_domains} 条域名"
@@ -425,6 +494,8 @@ impl App {
 
     fn dedup_and_sort_pac_domains(
         &mut self,
+        profile_id: &str,
+        config_json: &str,
         draft: &mut PacDraft,
         endpoint: Option<std::net::SocketAddr>,
     ) {
@@ -450,18 +521,21 @@ impl App {
         self.ui
             .pac_selected_domains
             .retain(|selected| draft.domains.iter().any(|d| d == selected));
-        self.commit_pac_list_change(draft, endpoint);
+        self.commit_pac_list_change_for(profile_id, config_json, draft, endpoint);
         self.message = format!("已整理并按域名排序（去除 {removed_dups} 条重复）。");
     }
 
     fn pac_geosite_section(
         &mut self,
         ui: &mut egui::Ui,
+        profile_id: &str,
+        config_json: &str,
         draft: &mut PacDraft,
         endpoint: Option<std::net::SocketAddr>,
-        categories: &[GeoSiteCategorySummary],
-        geosite_error: Option<&str>,
+        cached_geo: Option<&GeoDataCache>,
     ) -> bool {
+        let categories = cached_geo.map(|c| c.categories.as_slice()).unwrap_or(&[]);
+        let geosite_error = cached_geo.and_then(|c| c.geosite_error.as_deref());
         let mut changed = false;
         ui.add_space(6.0);
         ui.label(RichText::new("GeoSite 分组").strong());
@@ -582,7 +656,7 @@ impl App {
             });
         }
         if changed {
-            self.commit_pac_list_change(draft, endpoint);
+            self.commit_pac_list_change_for(profile_id, config_json, draft, endpoint);
         }
         changed
     }
@@ -590,6 +664,8 @@ impl App {
     fn pac_domains_section(
         &mut self,
         ui: &mut egui::Ui,
+        profile_id: &str,
+        config_json: &str,
         draft: &mut PacDraft,
         endpoint: Option<std::net::SocketAddr>,
     ) {
@@ -614,7 +690,7 @@ impl App {
             let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             let clicked = ui.button("添加").clicked();
             if enter || clicked {
-                let added = self.add_pac_domain(draft, endpoint);
+                let added = self.add_pac_domain_for(profile_id, config_json, draft, endpoint);
                 response.request_focus();
                 if !added
                     && !self.ui.pac_domain_input.is_empty()
@@ -633,14 +709,11 @@ impl App {
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
             if ui
-                .add_enabled(
-                    !self.profile_id.is_empty(),
-                    egui::Button::new("从路由规则提取"),
-                )
-                .on_hover_text("从当前配置的 /routing/rules 提取普通域名与 geosite 分组")
+                .add_enabled(!profile_id.is_empty(), egui::Button::new("从路由规则提取"))
+                .on_hover_text("从当前联动配置的 /routing/rules 提取普通域名与 geosite 分组")
                 .clicked()
             {
-                self.extract_pac_domains_from_config(draft, endpoint);
+                self.extract_pac_domains_from_config(profile_id, config_json, draft, endpoint);
             }
             if ui.button("批量粘贴…").clicked() {
                 self.ui.pac_batch_input = if draft.domains.is_empty() {
@@ -659,7 +732,7 @@ impl App {
                 )
                 .clicked()
             {
-                self.dedup_and_sort_pac_domains(draft, endpoint);
+                self.dedup_and_sort_pac_domains(profile_id, config_json, draft, endpoint);
             }
             if ui
                 .add_enabled(!draft.domains.is_empty(), egui::Button::new("复制清单"))
@@ -771,13 +844,13 @@ impl App {
                     .retain(|domain| !self.ui.pac_selected_domains.contains(domain));
                 let removed = before.saturating_sub(draft.domains.len());
                 self.ui.pac_selected_domains.clear();
-                self.commit_pac_list_change(draft, endpoint);
+                self.commit_pac_list_change_for(profile_id, config_json, draft, endpoint);
                 self.message = format!("已批量移除 {removed} 条域名。");
                 return;
             }
             if ui.button("清空清单").clicked() {
                 self.ui.dialog = Some(Dialog::Confirm(Action::ClearPacDomains(
-                    self.profile_id.clone(),
+                    profile_id.to_owned(),
                 )));
             }
         });
@@ -848,23 +921,23 @@ impl App {
         if let Some(index) = remove_index {
             let removed = draft.domains.remove(index);
             self.ui.pac_selected_domains.remove(&removed);
-            self.commit_pac_list_change(draft, endpoint);
+            self.commit_pac_list_change_for(profile_id, config_json, draft, endpoint);
             self.message = format!("已移除域名：{removed}");
         }
     }
 
-    fn active_pac_banner(&mut self, ui: &mut egui::Ui, draft: &PacDraft) {
+    fn active_pac_banner(&mut self, ui: &mut egui::Ui, target_profile: &str, draft: &PacDraft) {
         let running = self.is_running();
+        let syncing = self.is_pac_sync_pending();
         let owned = self
             .status
             .as_ref()
             .is_some_and(|s| s.proxy_state == "Owned");
         let generation = self.status.as_ref().and_then(|s| s.generation.clone());
-        let pac_service = self
+        let pac_serving = self
             .status
             .as_ref()
-            .map(|s| s.pac_state.as_str())
-            .unwrap_or("");
+            .is_some_and(|s| s.pac_state == "Serving");
         let active_strategy = self.active_pac_strategy();
 
         card(ui, |ui| {
@@ -874,7 +947,7 @@ impl App {
                 generation.as_ref().and_then(|g| g.pac.as_ref()),
             ) {
                 (Some(g), Some(pac)) if g.proxy_mode == ProxyMode::Pac => {
-                    let state_text = if running && owned && pac_service == "Serving" {
+                    let state_text = if running && owned && pac_serving {
                         "生效中 · PAC 自动代理正在接管系统代理"
                     } else if running && owned {
                         "已应用 PAC · 等待 PAC 服务就绪"
@@ -884,7 +957,7 @@ impl App {
                         "Core 当前未运行（下列为上次应用的 PAC 版本）"
                     };
                     ui.label(RichText::new(state_text).strong().color(
-                        if running && owned && pac_service == "Serving" {
+                        if running && owned && pac_serving {
                             accent(ui)
                         } else {
                             ui.visuals().warn_fg_color
@@ -909,7 +982,7 @@ impl App {
                     line(
                         ui,
                         "PAC 服务",
-                        if pac_service == "Serving" {
+                        if pac_serving {
                             "已发布（正在监听本地端口）"
                         } else {
                             "未发布"
@@ -923,11 +996,17 @@ impl App {
                             self.message = "已复制正在生效的 PAC URL。".into();
                         }
                     });
-                    let matches_draft = g.candidate.profile_id == self.profile_id
+                    let matches_draft = g.candidate.profile_id == target_profile
                         && pac.revision == hash(draft.script.as_bytes());
                     if matches_draft {
                         ui.label(
-                            RichText::new("与本页当前编辑内容一致，无需重新应用。")
+                            RichText::new("与当前激活配置及本页策略一致，无需重新应用。")
+                                .small()
+                                .color(accent(ui)),
+                        );
+                    } else if syncing {
+                        ui.label(
+                            RichText::new("正在自动同步更新生效中的 PAC 脚本…")
                                 .small()
                                 .color(accent(ui)),
                         );
@@ -995,27 +1074,53 @@ impl App {
         heading(
             ui,
             "PAC 自动代理",
-            "结合当前配置路由与 GeoSite 自动生成分流 PAC，实时检查，测试后一键应用。",
+            "自动与当前激活配置联动；结合配置路由与 GeoSite 生成分流 PAC，修改策略实时检查并在 PAC 模式下自动热更新。",
         );
-        let mut draft = self.pac_draft();
+        let (target_profile, target_json) = self.active_pac_target();
+        let mut draft = self.pac_draft_for(&target_profile);
         let mut changed = false;
-        let has_config = !self.profile_id.is_empty() && !self.editor.trim().is_empty();
+        let has_config = !target_profile.is_empty() && !target_json.trim().is_empty();
         let endpoint_result = if has_config {
-            self.pac_endpoint()
+            let preferred = self.http_tag.clone();
+            self.pac_endpoint_in(&target_json, Some(&preferred))
+                .map(|(tag, ep)| {
+                    if target_profile == self.profile_id {
+                        self.http_tag = tag;
+                    }
+                    ep
+                })
         } else {
             Err(String::new())
         };
         let endpoint = endpoint_result.as_ref().ok().copied();
-        let cached_geo = self.refresh_geodata_cache();
-        if self.sync_pac_script(&mut draft, endpoint, cached_geo.as_ref()) {
+        let cached_geo = self.refresh_geodata_cache_for(&target_json);
+        if self.sync_pac_script_for(
+            &target_profile,
+            &target_json,
+            &mut draft,
+            endpoint,
+            cached_geo.as_ref(),
+        ) {
             changed = true;
         }
 
-        self.active_pac_banner(ui, &draft);
+        self.active_pac_banner(ui, &target_profile, &draft);
 
         // Card 1: mode & GeoSite picker.
         card(ui, |ui| {
             ui.label(RichText::new("1 · 分流模式与 GeoSite").strong().size(18.0));
+            if has_config {
+                ui.horizontal_wrapped(|ui| {
+                    line(ui, "联动配置", self.ui.workspace.name(&target_profile));
+                    if target_profile != self.profile_id && self.committed_id().is_some() {
+                        crate::widgets::badge(
+                            ui,
+                            "已自动跟随当前激活配置",
+                            crate::widgets::BadgeTone::Accent,
+                        );
+                    }
+                });
+            }
             if let Some(endpoint) = endpoint {
                 line(ui, "代理目标", &endpoint.to_string());
             } else if !has_config {
@@ -1047,8 +1152,15 @@ impl App {
                                 .clicked()
                             {
                                 self.ui.pac_compile_key = None;
-                                self.sync_pac_script(&mut draft, endpoint, cached_geo.as_ref());
-                                self.save_pac_draft(draft.clone());
+                                self.sync_pac_script_for(
+                                    &target_profile,
+                                    &target_json,
+                                    &mut draft,
+                                    endpoint,
+                                    cached_geo.as_ref(),
+                                );
+                                self.save_pac_draft_for(&target_profile, draft.clone());
+                                self.auto_sync_running_pac_if_active(&target_profile, &draft);
                                 self.message = format!("已切换 PAC 策略：{}", mode_label(mode));
                                 changed = false;
                             }
@@ -1120,13 +1232,14 @@ impl App {
             }
 
             if matches!(draft.mode, PacMode::DirectList | PacMode::ProxyList) {
-                let categories = cached_geo
-                    .as_ref()
-                    .map(|c| c.categories.as_slice())
-                    .unwrap_or(&[]);
-                let geosite_error = cached_geo.as_ref().and_then(|c| c.geosite_error.as_deref());
-                changed |=
-                    self.pac_geosite_section(ui, &mut draft, endpoint, categories, geosite_error);
+                changed |= self.pac_geosite_section(
+                    ui,
+                    &target_profile,
+                    &target_json,
+                    &mut draft,
+                    endpoint,
+                    cached_geo.as_ref(),
+                );
             }
         });
 
@@ -1134,7 +1247,7 @@ impl App {
         if matches!(draft.mode, PacMode::DirectList | PacMode::ProxyList) {
             ui.add_space(12.0);
             card(ui, |ui| {
-                self.pac_domains_section(ui, &mut draft, endpoint);
+                self.pac_domains_section(ui, &target_profile, &target_json, &mut draft, endpoint);
             });
         }
 
@@ -1223,6 +1336,12 @@ impl App {
                 line(ui, "当前 PAC URL", &pac.url);
                 if pac.revision == hash(draft.script.as_bytes()) {
                     ui.label(RichText::new("当前运行版本已同步此 PAC 脚本。").weak());
+                } else if self.is_pac_sync_pending() {
+                    ui.label(
+                        RichText::new("正在自动同步最新 PAC 脚本到运行中的代理…")
+                            .small()
+                            .color(accent(ui)),
+                    );
                 } else {
                     ui.colored_label(
                         ui.visuals().warn_fg_color,
@@ -1242,9 +1361,19 @@ impl App {
                     && self.ui.connected
                     && self.write_blocker().is_none(),
             ) {
-                self.save_pac_draft(draft.clone());
-                self.mode = ProxyMode::Pac;
-                self.validate_and_apply_draft();
+                self.save_pac_draft_for(&target_profile, draft.clone());
+                self.save_profile_proxy_mode(&target_profile, ProxyMode::Pac);
+                if target_profile == self.profile_id {
+                    self.mode = ProxyMode::Pac;
+                    self.validate_and_apply_draft();
+                } else {
+                    let http_tag = self.runtime_http_tag();
+                    self.send(Command::SetProxyMode {
+                        mode: ProxyMode::Pac,
+                        http_inbound_tag: http_tag,
+                        pac: Some(draft.clone()),
+                    });
+                }
                 changed = false;
             }
         });
@@ -1267,7 +1396,7 @@ impl App {
                 #[cfg(windows)]
                 if ui
                     .add_enabled(
-                        !self.profile_id.is_empty() && self.write_blocker().is_none(),
+                        !target_profile.is_empty() && self.write_blocker().is_none(),
                         egui::Button::new("导入 PAC 文件…"),
                     )
                     .clicked()
@@ -1280,7 +1409,13 @@ impl App {
                             draft.script = script;
                             draft.mode = PacMode::Custom;
                             self.ui.pac_compile_key = None;
-                            self.sync_pac_script(&mut draft, endpoint, cached_geo.as_ref());
+                            self.sync_pac_script_for(
+                                &target_profile,
+                                &target_json,
+                                &mut draft,
+                                endpoint,
+                                cached_geo.as_ref(),
+                            );
                             changed = true;
                         }
                         Err(error) => self.message = format!("读取 PAC 文件失败：{error}"),
@@ -1290,7 +1425,13 @@ impl App {
                 {
                     draft.mode = PacMode::AutoRules;
                     self.ui.pac_compile_key = None;
-                    self.sync_pac_script(&mut draft, endpoint, cached_geo.as_ref());
+                    self.sync_pac_script_for(
+                        &target_profile,
+                        &target_json,
+                        &mut draft,
+                        endpoint,
+                        cached_geo.as_ref(),
+                    );
                     changed = true;
                 }
             });
@@ -1316,12 +1457,19 @@ impl App {
             if response.changed() {
                 draft.mode = PacMode::Custom;
                 self.ui.pac_compile_key = None;
-                self.sync_pac_script(&mut draft, endpoint, cached_geo.as_ref());
+                self.sync_pac_script_for(
+                    &target_profile,
+                    &target_json,
+                    &mut draft,
+                    endpoint,
+                    cached_geo.as_ref(),
+                );
                 changed = true;
             }
         });
         if changed {
-            self.save_pac_draft(draft);
+            self.save_pac_draft_for(&target_profile, draft.clone());
+            self.auto_sync_running_pac_if_active(&target_profile, &draft);
         }
     }
 }

@@ -154,6 +154,159 @@ impl App {
             }
         });
         ui.add_space(16.0);
+        let runtime_inbounds: Vec<serde_json::Value> = self
+            .status
+            .as_ref()
+            .and_then(|s| s.generation.as_ref())
+            .and_then(|g| {
+                self.ui
+                    .runtime
+                    .as_ref()
+                    .filter(|r| r.generation_id == g.id)
+                    .and_then(|r| serde_json::from_str::<serde_json::Value>(&r.json).ok())
+            })
+            .and_then(|v| v.get("inbounds")?.as_array().cloned())
+            .unwrap_or_default();
+        card(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    RichText::new("本地入口与端口转发就绪状态")
+                        .strong()
+                        .size(18.0),
+                );
+                crate::widgets::badge(
+                    ui,
+                    &format!("{} 项", runtime_inbounds.len()),
+                    if runtime_inbounds.is_empty() {
+                        crate::widgets::BadgeTone::Muted
+                    } else {
+                        crate::widgets::BadgeTone::Accent
+                    },
+                );
+            });
+            if runtime_inbounds.is_empty() {
+                ui.label(
+                    RichText::new("当前没有已发布的运行入站；启动 Core 后将显示每个入口及端口转发的就绪探针状态。")
+                        .small()
+                        .weak(),
+                );
+            } else {
+                let running_core = self.is_running();
+                let ready = self
+                    .status
+                    .as_ref()
+                    .is_some_and(|s| s.listener_state == "Ready");
+                for ib in &runtime_inbounds {
+                    let tag = ib.get("tag").and_then(|v| v.as_str()).unwrap_or("未命名");
+                    let proto = ib
+                        .get("protocol")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let listen = ib
+                        .get("listen")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("0.0.0.0");
+                    let port = ib.get("port").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let (detail, status, tone) = if proto == "dokodemo-door" {
+                        let net = crate::port_forward::normalize_network(
+                            ib.pointer("/settings/network").and_then(|v| v.as_str()),
+                        );
+                        let t_host = ib
+                            .pointer("/settings/address")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let t_port = ib
+                            .pointer("/settings/port")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        let (status, tone) = if !running_core {
+                            ("Core 未运行", crate::widgets::BadgeTone::Muted)
+                        } else if net == "udp" {
+                            (
+                                "UDP 转发已校验（不做 TCP 探针）",
+                                crate::widgets::BadgeTone::Accent,
+                            )
+                        } else if ready {
+                            ("TCP 监听就绪", crate::widgets::BadgeTone::Success)
+                        } else {
+                            ("启动中", crate::widgets::BadgeTone::Warn)
+                        };
+                        (
+                            format!("转发 · {listen}:{port} -> {t_host}:{t_port}"),
+                            status,
+                            tone,
+                        )
+                    } else {
+                        let (status, tone) = if !running_core {
+                            ("Core 未运行", crate::widgets::BadgeTone::Muted)
+                        } else if ready && matches!(proto, "http" | "socks" | "mixed") {
+                            ("协议握手就绪", crate::widgets::BadgeTone::Success)
+                        } else if ready {
+                            ("Core 已校验", crate::widgets::BadgeTone::Accent)
+                        } else {
+                            ("启动中", crate::widgets::BadgeTone::Warn)
+                        };
+                        (format!("{proto} · {listen}:{port}"), status, tone)
+                    };
+                    egui::Frame::new()
+                        .fill(ui.visuals().faint_bg_color)
+                        .stroke(egui::Stroke::new(
+                            1.0,
+                            ui.visuals().widgets.noninteractive.bg_stroke.color,
+                        ))
+                        .corner_radius(egui::CornerRadius::same(8))
+                        .inner_margin(egui::Margin::symmetric(10, 7))
+                        .show(ui, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                let clicked = crate::widgets::clickable_mono_badge(
+                                    ui,
+                                    tag,
+                                    if self.route_inbound.trim() == tag {
+                                        crate::widgets::BadgeTone::Accent
+                                    } else {
+                                        crate::widgets::BadgeTone::Muted
+                                    },
+                                )
+                                .on_hover_text("点击填入下方路由静态预测")
+                                .clicked();
+                                if clicked {
+                                    self.route_inbound = tag.to_owned();
+                                    if proto == "dokodemo-door" {
+                                        let net = if crate::port_forward::normalize_network(
+                                            ib.pointer("/settings/network")
+                                                .and_then(|v| v.as_str()),
+                                        ) == "udp"
+                                        {
+                                            "udp"
+                                        } else {
+                                            "tcp"
+                                        };
+                                        let t_host = ib
+                                            .pointer("/settings/address")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("");
+                                        let t_port = ib
+                                            .pointer("/settings/port")
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or(0);
+                                        if !t_host.is_empty() {
+                                            self.route_host = t_host.to_owned();
+                                        }
+                                        if t_port > 0 {
+                                            self.ui.route_port = t_port.to_string();
+                                        }
+                                        self.route_network = net.to_owned();
+                                    }
+                                }
+                                ui.label(RichText::new(&detail).monospace().size(12.5));
+                                crate::widgets::badge(ui, status, tone);
+                            });
+                        });
+                    ui.add_space(4.0);
+                }
+            }
+        });
+        ui.add_space(16.0);
         card(ui, |ui| {
             ui.label(
                 RichText::new("当前运行配置 · 路由静态预测")
@@ -213,6 +366,84 @@ impl App {
                     (host_resp, port_resp)
                 })
                 .inner;
+            struct RouteInboundShortcut {
+                tag: String,
+                forward_target: Option<(String, u16, String)>,
+            }
+            let apply_shortcut = |app: &mut App, shortcut: &RouteInboundShortcut| {
+                app.route_inbound = shortcut.tag.clone();
+                if let Some((host, port, net)) = &shortcut.forward_target {
+                    app.route_host = host.clone();
+                    if *port > 0 {
+                        app.ui.route_port = port.to_string();
+                    }
+                    app.route_network = net.clone();
+                }
+            };
+            let runtime_inbounds_route: Vec<RouteInboundShortcut> = self
+                .ui
+                .runtime
+                .as_ref()
+                .and_then(|r| serde_json::from_str::<serde_json::Value>(&r.json).ok())
+                .and_then(|v| {
+                    v.get("inbounds")?.as_array().map(|arr| {
+                        arr.iter()
+                            .filter_map(|ib| {
+                                let tag = ib.get("tag")?.as_str()?.trim();
+                                if tag.is_empty() {
+                                    return None;
+                                }
+                                let forward_target = if ib.get("protocol").and_then(|p| p.as_str())
+                                    == Some("dokodemo-door")
+                                {
+                                    let host = ib
+                                        .pointer("/settings/address")
+                                        .and_then(|a| a.as_str())
+                                        .unwrap_or("")
+                                        .to_owned();
+                                    let port = ib
+                                        .pointer("/settings/port")
+                                        .and_then(|p| p.as_u64())
+                                        .and_then(|p| u16::try_from(p).ok())
+                                        .unwrap_or(0);
+                                    let net = if crate::port_forward::normalize_network(
+                                        ib.pointer("/settings/network").and_then(|n| n.as_str()),
+                                    ) == "udp"
+                                    {
+                                        "udp".to_owned()
+                                    } else {
+                                        "tcp".to_owned()
+                                    };
+                                    (!host.is_empty()).then_some((host, port, net))
+                                } else {
+                                    None
+                                };
+                                Some(RouteInboundShortcut {
+                                    tag: tag.to_owned(),
+                                    forward_target,
+                                })
+                            })
+                            .collect()
+                    })
+                })
+                .unwrap_or_default();
+            if !runtime_inbounds_route.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("快捷入站：").small().weak());
+                    if ui
+                        .selectable_label(self.route_inbound.trim().is_empty(), "不指定")
+                        .clicked()
+                    {
+                        self.route_inbound.clear();
+                    }
+                    for item in &runtime_inbounds_route {
+                        let selected = self.route_inbound.trim() == item.tag;
+                        if ui.selectable_label(selected, &item.tag).clicked() {
+                            apply_shortcut(self, item);
+                        }
+                    }
+                });
+            }
             egui::CollapsingHeader::new("高级匹配条件（可选）").show(ui, |ui| {
                 egui::Grid::new("route-advanced-fields")
                     .num_columns(2)
@@ -222,27 +453,17 @@ impl App {
                     .show(ui, |ui| {
                         ui.label("入站 Tag");
                         ui.vertical(|ui| {
-                            ui.add(singleline(&mut self.route_inbound, field_width));
-                            let runtime_tags: Vec<String> = self
-                                .ui
-                                .runtime
-                                .as_ref()
-                                .and_then(|r| serde_json::from_str::<serde_json::Value>(&r.json).ok())
-                                .and_then(|v| {
-                                    v.get("inbounds")?.as_array().map(|arr| {
-                                        arr.iter()
-                                            .filter_map(|ib| ib.get("tag").and_then(|t| t.as_str()))
-                                            .filter(|t| !t.is_empty())
-                                            .map(str::to_owned)
-                                            .collect()
-                                    })
-                                })
-                                .unwrap_or_default();
-                            if !runtime_tags.is_empty() {
+                            crate::widgets::singleline_select_all(
+                                ui,
+                                &mut self.route_inbound,
+                                field_width,
+                                "",
+                            );
+                            if !runtime_inbounds_route.is_empty() {
                                 ui.horizontal_wrapped(|ui| {
-                                    for tag in runtime_tags {
-                                        if ui.small_button(&tag).clicked() {
-                                            self.route_inbound = tag;
+                                    for item in &runtime_inbounds_route {
+                                        if ui.small_button(&item.tag).clicked() {
+                                            apply_shortcut(self, item);
                                         }
                                     }
                                 });
@@ -370,11 +591,23 @@ impl App {
             }
             if let Ok(result) = serde_json::from_str::<RouteResult>(&self.route_result) {
                 ui.separator();
-                line(
-                    ui,
-                    "静态预测",
-                    result.expected_outbound.as_deref().unwrap_or("未知"),
-                );
+                let outbound = result.expected_outbound.as_deref().unwrap_or("未知");
+                let outbound_tone = match result.expected_outbound.as_deref() {
+                    Some("direct") => crate::widgets::BadgeTone::Success,
+                    Some("block") => crate::widgets::BadgeTone::Danger,
+                    Some(_) => crate::widgets::BadgeTone::Accent,
+                    None => crate::widgets::BadgeTone::Muted,
+                };
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("静态预测：").strong());
+                    crate::widgets::badge(ui, outbound, outbound_tone);
+                    let rule_text = result
+                        .rule_index
+                        .map(|i| format!("命中第 {} 条规则", i + 1))
+                        .unwrap_or_else(|| "无确定命中".into());
+                    crate::widgets::badge(ui, &rule_text, crate::widgets::BadgeTone::Muted);
+                });
+                line(ui, "静态预测", outbound);
                 line(
                     ui,
                     "命中规则",

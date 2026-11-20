@@ -50,3 +50,328 @@ pub fn focus_and_select_all(ctx: &egui::Context, response: &egui::Response, valu
         select_all_text(ctx, state, response.id, value.chars().count());
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BadgeTone {
+    Accent,
+    Success,
+    Warn,
+    Danger,
+    Muted,
+}
+
+pub fn accent_color(ui: &egui::Ui) -> egui::Color32 {
+    if ui.visuals().dark_mode {
+        egui::Color32::from_rgb(77, 151, 255)
+    } else {
+        egui::Color32::from_rgb(29, 111, 232)
+    }
+}
+
+pub fn accent_soft_color(ui: &egui::Ui) -> egui::Color32 {
+    if ui.visuals().dark_mode {
+        egui::Color32::from_rgba_unmultiplied(77, 151, 255, 41)
+    } else {
+        egui::Color32::from_rgba_unmultiplied(29, 111, 232, 28)
+    }
+}
+
+pub fn panel_alt_color(ui: &egui::Ui) -> egui::Color32 {
+    if ui.visuals().dark_mode {
+        egui::Color32::from_rgb(30, 40, 55)
+    } else {
+        egui::Color32::from_rgb(248, 250, 253)
+    }
+}
+
+pub fn border_color(ui: &egui::Ui) -> egui::Color32 {
+    if ui.visuals().dark_mode {
+        egui::Color32::from_rgb(43, 55, 73)
+    } else {
+        egui::Color32::from_rgb(223, 229, 239)
+    }
+}
+
+pub fn border_strong_color(ui: &egui::Ui) -> egui::Color32 {
+    if ui.visuals().dark_mode {
+        egui::Color32::from_rgb(60, 76, 99)
+    } else {
+        egui::Color32::from_rgb(197, 208, 224)
+    }
+}
+
+pub fn tone_palette(
+    ui: &egui::Ui,
+    tone: BadgeTone,
+) -> (egui::Color32, egui::Color32, egui::Color32) {
+    let dark = ui.visuals().dark_mode;
+    match tone {
+        BadgeTone::Accent => {
+            let fg = accent_color(ui);
+            let bg = accent_soft_color(ui);
+            (fg, bg, fg.linear_multiply(0.32))
+        }
+        BadgeTone::Success => {
+            let fg = if dark {
+                egui::Color32::from_rgb(74, 222, 128)
+            } else {
+                egui::Color32::from_rgb(21, 128, 61)
+            };
+            let bg = if dark {
+                egui::Color32::from_rgba_unmultiplied(74, 222, 128, 36)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(21, 128, 61, 30)
+            };
+            (fg, bg, fg.linear_multiply(0.32))
+        }
+        BadgeTone::Warn => {
+            let fg = if dark {
+                egui::Color32::from_rgb(251, 191, 36)
+            } else {
+                egui::Color32::from_rgb(180, 83, 9)
+            };
+            let bg = if dark {
+                egui::Color32::from_rgba_unmultiplied(251, 191, 36, 36)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(217, 119, 6, 32)
+            };
+            (fg, bg, fg.linear_multiply(0.32))
+        }
+        BadgeTone::Danger => {
+            let fg = if dark {
+                egui::Color32::from_rgb(248, 113, 113)
+            } else {
+                egui::Color32::from_rgb(185, 28, 28)
+            };
+            let bg = if dark {
+                egui::Color32::from_rgba_unmultiplied(248, 113, 113, 40)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(220, 38, 38, 28)
+            };
+            (fg, bg, fg.linear_multiply(0.32))
+        }
+        BadgeTone::Muted => {
+            let fg = ui.visuals().text_color().linear_multiply(0.76);
+            let bg = panel_alt_color(ui);
+            let border = border_color(ui);
+            (fg, bg, border)
+        }
+    }
+}
+
+pub fn status_dot(ui: &mut egui::Ui, running: bool) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        let center = rect.center();
+        let (dot_color, _, _) = tone_palette(
+            ui,
+            if running {
+                BadgeTone::Success
+            } else {
+                BadgeTone::Muted
+            },
+        );
+        if running {
+            ui.painter()
+                .circle_filled(center, 7.0, dot_color.linear_multiply(0.22));
+        }
+        ui.painter().circle_filled(
+            center,
+            4.5,
+            if running {
+                dot_color
+            } else {
+                ui.visuals().weak_text_color()
+            },
+        );
+    }
+}
+
+pub fn nav_tab(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
+    let accent = accent_color(ui);
+    let fill = if active {
+        accent_soft_color(ui)
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    let stroke = if active {
+        egui::Stroke::new(1.0, accent.linear_multiply(0.3))
+    } else {
+        egui::Stroke::NONE
+    };
+    let text = if active {
+        egui::RichText::new(label).strong().color(accent)
+    } else {
+        egui::RichText::new(label).color(ui.visuals().weak_text_color())
+    };
+    ui.add(
+        egui::Button::new(text)
+            .fill(fill)
+            .stroke(stroke)
+            .corner_radius(8)
+            .min_size(egui::vec2(0.0, 32.0)),
+    )
+}
+
+pub fn pill_tab(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
+    let accent = accent_color(ui);
+    let fill = if active { accent } else { panel_alt_color(ui) };
+    let stroke = egui::Stroke::new(1.0, if active { accent } else { border_color(ui) });
+    let text = if active {
+        egui::RichText::new(label)
+            .strong()
+            .color(egui::Color32::WHITE)
+    } else {
+        egui::RichText::new(label).color(ui.visuals().weak_text_color())
+    };
+    ui.add(
+        egui::Button::new(text)
+            .fill(fill)
+            .stroke(stroke)
+            .corner_radius(8),
+    )
+}
+
+pub fn seg_button(ui: &mut egui::Ui, label: &str, active: bool, enabled: bool) -> egui::Response {
+    let accent = accent_color(ui);
+    let fill = if active {
+        accent
+    } else {
+        ui.visuals().window_fill()
+    };
+    let stroke = egui::Stroke::new(
+        1.0,
+        if active {
+            accent
+        } else {
+            border_strong_color(ui)
+        },
+    );
+    let text = if active {
+        egui::RichText::new(label)
+            .small()
+            .strong()
+            .color(egui::Color32::WHITE)
+    } else {
+        egui::RichText::new(label)
+            .small()
+            .color(ui.visuals().weak_text_color())
+    };
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(text)
+            .fill(fill)
+            .stroke(stroke)
+            .corner_radius(7),
+    )
+}
+
+pub fn subcard<R>(
+    ui: &mut egui::Ui,
+    border_tone: Option<BadgeTone>,
+    dimmed: bool,
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let fill = if dimmed {
+        panel_alt_color(ui)
+    } else {
+        ui.visuals().window_fill()
+    };
+    let border = match border_tone {
+        Some(tone) => tone_palette(ui, tone).0,
+        None => border_color(ui),
+    };
+    egui::Frame::new()
+        .fill(fill)
+        .stroke(egui::Stroke::new(1.0, border))
+        .corner_radius(10)
+        .inner_margin(egui::Margin::symmetric(14, 11))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            body(ui)
+        })
+        .inner
+}
+
+pub fn kv_row(ui: &mut egui::Ui, key: &str, value: egui::RichText) {
+    let label_width = 148.0_f32.min(ui.available_width() * 0.42);
+    ui.horizontal_top(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(label_width, 0.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_min_width(label_width);
+                ui.add(egui::Label::new(egui::RichText::new(key).small().weak()).wrap());
+            },
+        );
+        ui.add(egui::Label::new(value).wrap());
+    });
+}
+
+fn render_badge(ui: &mut egui::Ui, text: &str, tone: BadgeTone, monospace: bool) {
+    let (fg, bg, border) = tone_palette(ui, tone);
+    egui::Frame::new()
+        .fill(bg)
+        .stroke(egui::Stroke::new(1.0, border))
+        .corner_radius(egui::CornerRadius::same(255))
+        .inner_margin(egui::Margin::symmetric(8, 2))
+        .show(ui, |ui| {
+            let mut rich = egui::RichText::new(text).small().strong().color(fg);
+            if monospace {
+                rich = rich.monospace();
+            }
+            ui.label(rich);
+        });
+}
+
+pub fn badge(ui: &mut egui::Ui, text: &str, tone: BadgeTone) {
+    render_badge(ui, text, tone, false);
+}
+
+pub fn mono_badge(ui: &mut egui::Ui, text: &str, tone: BadgeTone) {
+    render_badge(ui, text, tone, true);
+}
+
+pub fn clickable_mono_badge(ui: &mut egui::Ui, text: &str, tone: BadgeTone) -> egui::Response {
+    let (fg, bg, border) = tone_palette(ui, tone);
+    let rich = egui::RichText::new(text)
+        .small()
+        .strong()
+        .monospace()
+        .color(fg);
+    ui.add(
+        egui::Button::new(rich)
+            .fill(bg)
+            .stroke(egui::Stroke::new(1.0, border))
+            .corner_radius(egui::CornerRadius::same(255))
+            .min_size(egui::Vec2::ZERO),
+    )
+}
+
+pub fn banner_box(ui: &mut egui::Ui, tone: BadgeTone, text: &str) {
+    let (fg, bg, border) = tone_palette(ui, tone);
+    egui::Frame::new()
+        .fill(bg)
+        .stroke(egui::Stroke::new(1.0, border))
+        .corner_radius(8)
+        .inner_margin(egui::Margin::symmetric(10, 7))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.add(egui::Label::new(egui::RichText::new(text).small().color(fg)).wrap());
+        });
+}
+
+pub fn flow_strip(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::new()
+        .fill(ui.visuals().faint_bg_color)
+        .stroke(egui::Stroke::new(
+            1.0,
+            ui.visuals().widgets.noninteractive.bg_stroke.color,
+        ))
+        .corner_radius(8)
+        .inner_margin(egui::Margin::symmetric(10, 7))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal_wrapped(body);
+        });
+}

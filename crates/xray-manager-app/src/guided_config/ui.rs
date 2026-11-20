@@ -7,6 +7,9 @@ pub struct State {
     pub focus: Option<String>,
     pub notice: Option<String>,
     pub native: bool,
+    pub pf_refs: BTreeMap<String, (usize, usize)>,
+    pub pf_names: BTreeMap<String, String>,
+    pub expanded_nodes: std::collections::BTreeSet<usize>,
 }
 #[derive(Default)]
 pub struct Outcome {
@@ -779,23 +782,22 @@ pub fn edit_nodes(
                 .and_then(Value::as_str)
                 .unwrap_or("未知协议")
                 .to_owned();
-            let title = format!(
-                "{} · {}{} · {}",
-                node_name(node, names),
-                protocol,
-                if index == 0 { " · 默认" } else { "" },
-                node.pointer("/settings/vnext/0")
-                    .or_else(|| node.pointer("/settings/servers/0"))
-                    .map(|server| format!(
+            let (active_pf, paused_pf) = state.pf_refs.get(&tag).copied().unwrap_or((0, 0));
+            let total_pf = active_pf + paused_pf;
+            let addr_summary = node
+                .pointer("/settings/vnext/0")
+                .or_else(|| node.pointer("/settings/servers/0"))
+                .map(|server| {
+                    format!(
                         "{}:{}",
                         server["address"].as_str().unwrap_or("待补充地址"),
                         server
                             .get("port")
                             .map(Value::to_string)
                             .unwrap_or_else(|| "待补充端口".into())
-                    ))
-                    .unwrap_or_else(|| "本地处理 / 原生配置".into())
-            );
+                    )
+                })
+                .unwrap_or_else(|| "本地处理 / 原生配置".into());
             let prefix = format!("/outbounds/{index}");
             let local_focus = focus
                 .as_deref()
@@ -820,37 +822,98 @@ pub fn edit_nodes(
             {
                 out.raw = true;
             }
+            if targeted {
+                state.expanded_nodes.insert(index);
+            }
+            let is_expanded = state.expanded_nodes.contains(&index);
             ui.push_id((&tag, index), |ui| {
-                egui::CollapsingHeader::new(title)
-                    .id_salt("node-card")
-                    .open(if targeted { Some(true) } else { None })
-                    .show(ui, |ui| {
-                        if !tag.is_empty() {
-                            let mut name = node_name(node, names);
-                            ui.label("节点显示名称");
-                            if ui
-                                .add(crate::widgets::singleline(&mut name, f32::INFINITY))
-                                .changed()
-                            {
-                                names.insert(tag.clone(), name.chars().take(80).collect());
-                                out.names_changed = true;
-                            }
-                        }
-                        out.changed |= node_form(ui, node, local_focus.as_deref());
+                ui.add_space(6.0);
+                crate::widgets::subcard(
+                    ui,
+                    (paused_pf > 0).then_some(crate::widgets::BadgeTone::Warn),
+                    false,
+                    |ui| {
                         ui.horizontal_wrapped(|ui| {
-                            if index != 0 && ui.button("设为默认").clicked() {
+                            ui.label(RichText::new(node_name(node, names)).strong().size(15.0));
+                            if !tag.is_empty() {
+                                crate::widgets::mono_badge(
+                                    ui,
+                                    &tag,
+                                    crate::widgets::BadgeTone::Muted,
+                                );
+                            }
+                            crate::widgets::badge(
+                                ui,
+                                &protocol,
+                                crate::widgets::BadgeTone::Accent,
+                            );
+                            if index == 0 {
+                                crate::widgets::badge(
+                                    ui,
+                                    "默认访问",
+                                    crate::widgets::BadgeTone::Success,
+                                );
+                            }
+                            if total_pf > 0 {
+                                crate::widgets::badge(
+                                    ui,
+                                    &format!("被 {total_pf} 条端口转发引用"),
+                                    crate::widgets::BadgeTone::Warn,
+                                );
+                            }
+                            ui.add_space(4.0);
+                            ui.label(RichText::new(&addr_summary).small().monospace().weak());
+                            if index != 0 && ui.small_button("设为默认").clicked() {
                                 promote_default = Some(index);
                             }
-                            if ui.button("查看原生字段").clicked() {
-                                out.raw = true;
+                            if ui
+                                .small_button(if is_expanded { "收起参数" } else { "编辑参数" })
+                                .clicked()
+                            {
+                                if is_expanded {
+                                    state.expanded_nodes.remove(&index);
+                                } else {
+                                    state.expanded_nodes.insert(index);
+                                }
                             }
                             if ui
-                                .add_enabled(index != 0, egui::Button::new("删除节点"))
+                                .add_enabled(
+                                    index != 0 && paused_pf == 0,
+                                    egui::Button::new("删除节点").small(),
+                                )
                                 .clicked()
                             {
                                 remove = Some(index);
                             }
                         });
+                        if paused_pf > 0 {
+                            ui.add_space(4.0);
+                            crate::widgets::banner_box(
+                                ui,
+                                crate::widgets::BadgeTone::Warn,
+                                &format!(
+                                    "有 {paused_pf} 条已停用的端口转发暂存项引用此节点；请先在「端口转发」修改其出口或删除。"
+                                ),
+                            );
+                        }
+                        if is_expanded {
+                            ui.separator();
+                            if !tag.is_empty() {
+                                let mut name = node_name(node, names);
+                                ui.label("节点显示名称");
+                                if ui
+                                    .add(crate::widgets::singleline(&mut name, f32::INFINITY))
+                                    .changed()
+                                {
+                                    names.insert(tag.clone(), name.chars().take(80).collect());
+                                    out.names_changed = true;
+                                }
+                            }
+                            out.changed |= node_form(ui, node, local_focus.as_deref());
+                            if ui.small_button("查看原生字段").clicked() {
+                                out.raw = true;
+                            }
+                        }
                     });
             });
         }
@@ -1096,8 +1159,54 @@ pub fn edit_routes(
             out.changed |= enable_inbound_sniffing(config, state);
         }
     });
+    ui.add_space(4.0);
+    crate::widgets::banner_box(
+        ui,
+        crate::widgets::BadgeTone::Accent,
+        "说明：「开启 Sniffing」仅作用于 HTTP/SOCKS/Mixed 代理入口，自动跳过 dokodemo-door 端口转发入口；置顶端口转发规则不计入常规冲突告警。",
+    );
     let mut action = None;
     let dokodemo_tags = crate::port_forward::dokodemo_tags(config);
+    let pf_inbounds: BTreeMap<String, (String, u16, String, u16, String)> = config
+        .get("inbounds")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|inbound| {
+            let tag = inbound.get("tag").and_then(Value::as_str)?.to_owned();
+            if !dokodemo_tags.contains(&tag) {
+                return None;
+            }
+            let listen = inbound
+                .get("listen")
+                .and_then(Value::as_str)
+                .unwrap_or(crate::port_forward::LISTEN_LAN)
+                .to_owned();
+            let port = inbound
+                .get("port")
+                .and_then(Value::as_u64)
+                .and_then(|p| u16::try_from(p).ok())
+                .unwrap_or(0);
+            let net = crate::port_forward::network_label(
+                inbound
+                    .pointer("/settings/network")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tcp"),
+            )
+            .to_owned();
+            let target_host = inbound
+                .pointer("/settings/address")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let target_port = inbound
+                .pointer("/settings/port")
+                .and_then(Value::as_u64)
+                .and_then(|p| u16::try_from(p).ok())
+                .unwrap_or(0);
+            Some((tag, (listen, port, net, target_port, target_host)))
+        })
+        .collect();
     if let Some(rules) = config
         .pointer_mut("/routing/rules")
         .and_then(Value::as_array_mut)
@@ -1122,99 +1231,241 @@ pub fn edit_routes(
                     .find(|(t, _)| t == outbound_tag)
                     .map(|(_, name)| name.as_str())
                     .unwrap_or(outbound_tag);
+                let pf_title = state
+                    .pf_names
+                    .get(&pf_tag)
+                    .filter(|n| !n.trim().is_empty())
+                    .cloned()
+                    .unwrap_or_else(|| pf_tag.clone());
+                let endpoint_detail = pf_inbounds
+                    .get(&pf_tag)
+                    .map(|(listen, port, net, target_port, target_host)| {
+                        format!("{listen}:{port} ({net}) → {target_host}:{target_port}")
+                    })
+                    .unwrap_or_default();
                 ui.push_id(index, |ui| {
-                    ui.separator();
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(RichText::new(format!("规则 {}", index + 1)).strong());
-                        ui.label(
-                            RichText::new(format!(
-                                "端口转发联动：{pf_tag} → {outbound_display}（自动置顶，在「端口转发」页签管理）"
-                            ))
-                            .small(),
-                        );
-                        if ui.button("前往端口转发").clicked() {
-                            out.port_forward = true;
-                        }
-                        if ui.small_button("编辑原生规则").clicked() {
-                            out.raw = true;
-                        }
-                    });
+                    ui.add_space(6.0);
+                    egui::Frame::new()
+                        .fill(ui.visuals().faint_bg_color)
+                        .stroke(egui::Stroke::new(
+                            1.0,
+                            ui.visuals().selection.stroke.color.linear_multiply(0.55),
+                        ))
+                        .corner_radius(8)
+                        .inner_margin(egui::Margin::symmetric(12, 9))
+                        .show(ui, |ui| {
+                            ui.set_min_width(ui.available_width());
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new(format!("规则 {}", index + 1)).strong());
+                                crate::widgets::badge(
+                                    ui,
+                                    &format!("端口转发自动置顶 · {pf_title}"),
+                                    crate::widgets::BadgeTone::Accent,
+                                );
+                                if ui.small_button("前往端口转发").clicked() {
+                                    out.port_forward = true;
+                                }
+                                if ui.small_button("编辑原生规则").clicked() {
+                                    out.raw = true;
+                                }
+                            });
+                            crate::widgets::flow_strip(ui, |ui| {
+                                ui.monospace(format!(
+                                    "inboundTag: [\"{pf_tag}\"] ({endpoint_detail})"
+                                ));
+                                ui.label(RichText::new("──▶").small().weak());
+                                crate::widgets::badge(
+                                    ui,
+                                    &format!("outboundTag: {outbound_tag} ({outbound_display})"),
+                                    if outbound_tag == "direct" {
+                                        crate::widgets::BadgeTone::Success
+                                    } else {
+                                        crate::widgets::BadgeTone::Accent
+                                    },
+                                );
+                            });
+                        });
                 });
                 continue;
             }
             ui.push_id(index, |ui| {
-                ui.separator();
-                let simple = simple_rule(rule);
-                let original_kind = if rule.get("domain").is_some() { "domain" } else { "ip" };
-                let mut match_kind = original_kind.to_owned();
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new(format!("规则 {}", index + 1)).strong());
+                ui.add_space(6.0);
+                crate::widgets::subcard(ui, None, false, |ui| {
+                    let simple = simple_rule(rule);
+                    let original_kind = if rule.get("domain").is_some() {
+                        "domain"
+                    } else {
+                        "ip"
+                    };
+                    let mut match_kind = original_kind.to_owned();
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(format!("规则 {}", index + 1)).strong());
+                        crate::widgets::badge(
+                            ui,
+                            "常规分流规则",
+                            crate::widgets::BadgeTone::Muted,
+                        );
+                        if simple {
+                            egui::ComboBox::from_id_salt("match-kind")
+                                .selected_text(if match_kind == "domain" {
+                                    "网站 / 域名"
+                                } else {
+                                    "IP / CIDR"
+                                })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut match_kind,
+                                        "domain".into(),
+                                        "网站 / 域名",
+                                    );
+                                    ui.selectable_value(&mut match_kind, "ip".into(), "IP / CIDR");
+                                });
+                        }
+                        ui.add_space(4.0);
+                        if ui.add_enabled(index > 0, egui::Button::new("上移").small()).clicked() {
+                            action = Some((index, 0));
+                        }
+                        if ui.small_button("下移").clicked() {
+                            action = Some((index, 1));
+                        }
+                        if ui.small_button("删除规则").clicked() {
+                            action = Some((index, 2));
+                        }
+                    });
                     if simple {
-                        egui::ComboBox::from_id_salt("match-kind").selected_text(if match_kind == "domain" { "网站 / 域名" } else { "IP / CIDR" }).show_ui(ui, |ui| {
-                            ui.selectable_value(&mut match_kind, "domain".into(), "网站 / 域名");
-                            ui.selectable_value(&mut match_kind, "ip".into(), "IP / CIDR");
+                        if match_kind != original_kind {
+                            let value = rule.as_object_mut().unwrap().remove(original_kind).unwrap();
+                            rule[&match_kind] = if match_kind == "domain" {
+                                domain_lines(
+                                    &value
+                                        .as_array()
+                                        .unwrap()
+                                        .iter()
+                                        .filter_map(Value::as_str)
+                                        .collect::<Vec<_>>()
+                                        .join("\n"),
+                                )
+                            } else {
+                                value
+                            };
+                            out.changed = true;
+                        }
+                        let path = if match_kind == "domain" {
+                            "/domain"
+                        } else {
+                            "/ip"
+                        };
+                        ui.label(if path == "/domain" {
+                            "匹配网站 / 域名（每行一项）"
+                        } else {
+                            "匹配 IP / CIDR（每行一项）"
+                        })
+                        .on_hover_text(if path == "/domain" {
+                            "输入 example.com 匹配此域及子域；精确匹配可填 full:example.com。也支持原生前缀；geosite / geoip 需要相应资源。"
+                        } else {
+                            "例如 192.0.2.0/24；也支持原生 geoip: 写法。"
                         });
-                    }
-                    if ui.add_enabled(index > 0, egui::Button::new("上移")).clicked() { action = Some((index,0)); }
-                    if ui.button("下移").clicked() { action = Some((index,1)); }
-                    if ui.button("删除规则").clicked() { action = Some((index,2)); }
-                });
-                if simple {
-                    if match_kind != original_kind {
-                        let value = rule.as_object_mut().unwrap().remove(original_kind).unwrap();
-                        rule[&match_kind] = if match_kind == "domain" {
-                            domain_lines(&value.as_array().unwrap().iter().filter_map(Value::as_str).collect::<Vec<_>>().join("\n"))
-                        } else { value };
-                        out.changed = true;
-                    }
-                    let path = if match_kind == "domain" { "/domain" } else { "/ip" };
-                    ui.label(if path == "/domain" { "匹配网站 / 域名（每行一项）" } else { "匹配 IP / CIDR（每行一项）" }).on_hover_text(if path == "/domain" { "输入 example.com 匹配此域及子域；精确匹配可填 full:example.com。也支持原生前缀；geosite / geoip 需要相应资源。" } else { "例如 192.0.2.0/24；也支持原生 geoip: 写法。" });
-                    let mut text = rule.pointer(path).and_then(Value::as_array).unwrap().iter().filter_map(Value::as_str).map(|s| if path == "/domain" { s.strip_prefix("domain:").unwrap_or(s) } else { s }).collect::<Vec<_>>().join("\n");
-                    let response = ui.add(egui::TextEdit::multiline(&mut text).desired_width(f32::INFINITY).desired_rows(3));
-                    if focus.as_deref().is_some_and(|f| f.starts_with(&format!("/routing/rules/{index}/"))) { response.scroll_to_me(Some(egui::Align::Center)); response.request_focus(); }
-                    if response.changed() {
-                        rule[path.trim_start_matches('/')] = if path == "/domain" { domain_lines(&text) } else { Value::Array(text.split('\n').map(|line| Value::String(line.trim().to_owned())).collect()) };
-                        out.changed = true;
-                    }
-                    if path == "/domain" {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(RichText::new("快捷 GeoSite：").small().weak());
-                            for preset in [
-                                "geosite:private",
-                                "geosite:cn",
-                                "geosite:geolocation-!cn",
-                                "geosite:category-ads-all",
-                                "geosite:google",
-                            ] {
-                                if ui.small_button(format!("+ {preset}")).clicked() {
-                                    let already = rule
-                                        .pointer("/domain")
-                                        .and_then(Value::as_array)
-                                        .is_some_and(|arr| {
-                                            arr.iter()
-                                                .filter_map(Value::as_str)
-                                                .any(|s| s.eq_ignore_ascii_case(preset))
-                                        });
-                                    if !already {
-                                        let mut updated = text.trim_end().to_owned();
-                                        if !updated.is_empty() {
-                                            updated.push('\n');
+                        let mut text = rule
+                            .pointer(path)
+                            .and_then(Value::as_array)
+                            .unwrap()
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(|s| {
+                                if path == "/domain" {
+                                    s.strip_prefix("domain:").unwrap_or(s)
+                                } else {
+                                    s
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let response = ui.add(
+                            egui::TextEdit::multiline(&mut text)
+                                .desired_width(f32::INFINITY)
+                                .desired_rows(3),
+                        );
+                        if focus
+                            .as_deref()
+                            .is_some_and(|f| f.starts_with(&format!("/routing/rules/{index}/")))
+                        {
+                            response.scroll_to_me(Some(egui::Align::Center));
+                            response.request_focus();
+                        }
+                        if response.changed() {
+                            rule[path.trim_start_matches('/')] = if path == "/domain" {
+                                domain_lines(&text)
+                            } else {
+                                Value::Array(
+                                    text.split('\n')
+                                        .map(|line| Value::String(line.trim().to_owned()))
+                                        .collect(),
+                                )
+                            };
+                            out.changed = true;
+                        }
+                        if path == "/domain" {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new("快捷 GeoSite：").small().weak());
+                                for preset in [
+                                    "geosite:private",
+                                    "geosite:cn",
+                                    "geosite:geolocation-!cn",
+                                    "geosite:category-ads-all",
+                                    "geosite:google",
+                                ] {
+                                    if ui.small_button(format!("+ {preset}")).clicked() {
+                                        let already = rule
+                                            .pointer("/domain")
+                                            .and_then(Value::as_array)
+                                            .is_some_and(|arr| {
+                                                arr.iter()
+                                                    .filter_map(Value::as_str)
+                                                    .any(|s| s.eq_ignore_ascii_case(preset))
+                                            });
+                                        if !already {
+                                            let mut updated = text.trim_end().to_owned();
+                                            if !updated.is_empty() {
+                                                updated.push('\n');
+                                            }
+                                            updated.push_str(preset);
+                                            rule["domain"] = domain_lines(&updated);
+                                            out.changed = true;
                                         }
-                                        updated.push_str(preset);
-                                        rule["domain"] = domain_lines(&updated);
-                                        out.changed = true;
                                     }
                                 }
-                            }
-                        });
+                            });
+                        }
+                        if text.trim().is_empty() || text.lines().any(|s| s.trim().is_empty()) {
+                            ui.colored_label(
+                                ui.visuals().warn_fg_color,
+                                "请补充匹配项，移除空行后检查。",
+                            );
+                        }
+                        out.changed |= choice(
+                            ui,
+                            rule,
+                            "/outboundTag",
+                            "处理方式",
+                            "",
+                            &targets
+                                .iter()
+                                .map(|(tag, name)| (tag.as_str(), name.as_str()))
+                                .collect::<Vec<_>>(),
+                        );
+                    } else {
+                        if focus
+                            .as_deref()
+                            .is_some_and(|f| f.starts_with(&format!("/routing/rules/{index}")))
+                        {
+                            out.raw = true;
+                        }
+                        ui.label("此规则包含组合条件、负载均衡或其他原生字段；内容与顺序保留，请使用高级编辑。");
+                        if ui.button("编辑原生规则").clicked() {
+                            out.raw = true;
+                        }
                     }
-                    if text.trim().is_empty() || text.lines().any(|s| s.trim().is_empty()) { ui.colored_label(ui.visuals().warn_fg_color, "请补充匹配项，移除空行后检查。"); }
-                    out.changed |= choice(ui, rule, "/outboundTag", "处理方式", "", &targets.iter().map(|(tag,name)| (tag.as_str(),name.as_str())).collect::<Vec<_>>());
-                } else {
-                    if focus.as_deref().is_some_and(|f| f.starts_with(&format!("/routing/rules/{index}"))) { out.raw = true; }
-                    ui.label("此规则包含组合条件、负载均衡或其他原生字段；内容与顺序保留，请使用高级编辑。");
-                    if ui.button("编辑原生规则").clicked() { out.raw = true; }
-                }
+                });
             });
         }
         if let Some((index, kind)) = action {
@@ -1275,21 +1526,40 @@ pub fn summary(ui: &mut egui::Ui, config: &Value, names: &BTreeMap<String, Strin
         .map_or(0, Vec::len);
     ui.label(format!("分流规则：{rules} 条，按顺序匹配"));
     if let Some(inbounds) = config.get("inbounds").and_then(Value::as_array) {
+        let dokodemo = crate::port_forward::dokodemo_tags(config);
         for inbound in inbounds {
-            ui.add(
-                egui::Label::new(format!(
-                    "本地入口：{} · {}:{}",
-                    inbound["protocol"].as_str().unwrap_or("未知协议"),
-                    inbound["listen"]
-                        .as_str()
-                        .unwrap_or("使用 Core 默认监听地址"),
+            let tag = inbound.get("tag").and_then(Value::as_str).unwrap_or("");
+            let listen = inbound
+                .get("listen")
+                .and_then(Value::as_str)
+                .unwrap_or("使用 Core 默认监听地址");
+            let port = inbound
+                .get("port")
+                .map(Value::to_string)
+                .unwrap_or_else(|| "待补充".into());
+            let label = if dokodemo.contains(tag) {
+                let net = crate::port_forward::network_label(
                     inbound
-                        .get("port")
-                        .map(Value::to_string)
-                        .unwrap_or_else(|| "待补充".into())
-                ))
-                .wrap(),
-            );
+                        .pointer("/settings/network")
+                        .and_then(Value::as_str)
+                        .unwrap_or("tcp"),
+                );
+                let target_host = inbound
+                    .pointer("/settings/address")
+                    .and_then(Value::as_str)
+                    .unwrap_or("待补充");
+                let target_port = inbound
+                    .pointer("/settings/port")
+                    .map(Value::to_string)
+                    .unwrap_or_else(|| "待补充".into());
+                format!("端口转发 ({net})：{listen}:{port} → {target_host}:{target_port}")
+            } else {
+                format!(
+                    "本地入口：{} · {listen}:{port}",
+                    inbound["protocol"].as_str().unwrap_or("未知协议")
+                )
+            };
+            ui.add(egui::Label::new(label).wrap());
         }
     }
 }

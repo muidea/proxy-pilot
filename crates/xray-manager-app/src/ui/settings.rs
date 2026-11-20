@@ -10,7 +10,9 @@ impl App {
                 (SettingsTab::Appearance, "外观"),
                 (SettingsTab::Storage, "数据与存储"),
             ] {
-                ui.selectable_value(&mut self.ui.settings_tab, tab, label);
+                if crate::widgets::pill_tab(ui, label, self.ui.settings_tab == tab).clicked() {
+                    self.ui.settings_tab = tab;
+                }
             }
         });
         ui.add_space(12.0);
@@ -74,6 +76,23 @@ impl App {
                         RichText::new("状态同时使用文字表达，所有页面、对话框使用一致的显示风格。")
                             .small()
                             .weak(),
+                    );
+                    ui.separator();
+                    ui.label(RichText::new("总览页面").strong().size(16.0));
+                    let mut show_activity = self.ui.workspace.overview_show_activity;
+                    if ui
+                        .checkbox(&mut show_activity, "在总览页显示「最近活动与版本」")
+                        .changed()
+                    {
+                        self.ui.workspace.overview_show_activity = show_activity;
+                        self.save_workspace();
+                    }
+                    ui.label(
+                        RichText::new(
+                            "默认不显示以保持总览精简；随时可开启或前往「日志」「设置 · Core」查看。",
+                        )
+                        .small()
+                        .weak(),
                     );
                 }
                 SettingsTab::Storage => {

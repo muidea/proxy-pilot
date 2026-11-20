@@ -463,6 +463,13 @@ impl App {
             self.candidate_context = Some(self.context());
             self.candidate = Some(c.clone());
             self.confirm_apply = true;
+            let pac = if self.mode == ProxyMode::Pac {
+                let editor = self.editor.clone();
+                let preferred = self.http_tag.clone();
+                Some(self.compiled_pac_draft_for(&c.profile_id, &editor, Some(&preferred)))
+            } else {
+                None
+            };
             if auto_apply && !self.should_confirm_preview(&c) {
                 self.ui.preview_open = false;
                 self.message = format!("Core 校验通过（{}），正在应用…", c.core.version);
@@ -471,7 +478,7 @@ impl App {
                     candidate_digest: c.digest,
                     proxy_mode: self.mode,
                     http_inbound_tag: self.http_tag.clone(),
-                    pac: (self.mode == ProxyMode::Pac).then(|| self.pac_draft()),
+                    pac,
                 });
             } else {
                 self.ui.preview_open = true;
@@ -509,7 +516,7 @@ impl App {
     pub(in crate::app) fn pac_draft(&self) -> PacDraft {
         self.pac_draft_for(&self.profile_id)
     }
-    fn pac_draft_for(&self, profile: &str) -> PacDraft {
+    pub(in crate::app) fn pac_draft_for(&self, profile: &str) -> PacDraft {
         self.ui
             .workspace
             .pac
@@ -518,18 +525,44 @@ impl App {
             .unwrap_or_default()
     }
     /// Mode switches apply to the committed generation, not the profile being edited.
+    #[cfg(test)]
     pub(in crate::app) fn running_pac_draft(&self) -> PacDraft {
         self.committed_id()
             .map(|profile| self.pac_draft_for(profile))
             .unwrap_or_default()
     }
-    pub(in crate::app) fn pac_endpoint(
-        &mut self,
-    ) -> std::result::Result<std::net::SocketAddr, String> {
-        if self.editor.trim().is_empty() {
+    pub(in crate::app) fn active_pac_target(&self) -> (String, String) {
+        let profile_id = self
+            .committed_id()
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.profile_id.clone());
+        let json = if profile_id == self.profile_id {
+            self.editor.clone()
+        } else if let Some(runtime) = self.ui.runtime.as_ref().filter(|r| {
+            self.status
+                .as_ref()
+                .and_then(|s| s.generation.as_ref())
+                .is_some_and(|g| g.id == r.generation_id && g.candidate.profile_id == profile_id)
+        }) {
+            runtime.json.clone()
+        } else if let Some(draft) = self.ui.drafts.get(&profile_id) {
+            draft.json.clone()
+        } else if let Some(cached) = self.ui.profile_cache.get(&profile_id) {
+            cached.json.clone()
+        } else {
+            self.editor.clone()
+        };
+        (profile_id, json)
+    }
+    pub(in crate::app) fn pac_endpoint_in(
+        &self,
+        config_json: &str,
+        preferred_tag: Option<&str>,
+    ) -> std::result::Result<(String, std::net::SocketAddr), String> {
+        if config_json.trim().is_empty() {
             return Err("尚未选择配置；请先在配置页添加或打开配置。".into());
         }
-        let value = serde_json::from_str::<serde_json::Value>(&self.editor)
+        let value = serde_json::from_str::<serde_json::Value>(config_json)
             .map_err(|error| format!("当前 JSON 无法解析：{error}"))?;
         let candidates: Vec<String> = value
             .get("inbounds")
@@ -546,25 +579,23 @@ impl App {
                     .into(),
             );
         }
-        // Prefer the current selection, but recover automatically when the
-        // user added/renamed an inbound or made the previous one ineligible.
+        // Prefer the selected tag, but recover automatically when an inbound is added or renamed.
         let mut order = Vec::with_capacity(candidates.len());
-        if candidates.contains(&self.http_tag) {
-            order.push(self.http_tag.clone());
+        if let Some(preferred) = preferred_tag
+            && candidates.iter().any(|tag| tag == preferred)
+        {
+            order.push(preferred.to_owned());
         }
         order.extend(
             candidates
                 .iter()
-                .filter(|tag| **tag != self.http_tag)
+                .filter(|tag| preferred_tag != Some(tag.as_str()))
                 .cloned(),
         );
         let mut last_error = String::new();
         for tag in order {
             match xray_runtime::http_endpoint(&value, &tag) {
-                Ok(endpoint) => {
-                    self.http_tag = tag;
-                    return Ok(endpoint);
-                }
+                Ok(endpoint) => return Ok((tag, endpoint)),
                 Err(error) => last_error = error.message,
             }
         }
@@ -572,9 +603,73 @@ impl App {
             "当前 HTTP/Mixed 入站不能用于系统代理：{last_error}"
         ))
     }
+    #[cfg(test)]
+    pub(in crate::app) fn pac_endpoint(
+        &mut self,
+    ) -> std::result::Result<std::net::SocketAddr, String> {
+        let preferred = self.http_tag.clone();
+        let (tag, endpoint) = self.pac_endpoint_in(&self.editor, Some(&preferred))?;
+        self.http_tag = tag;
+        Ok(endpoint)
+    }
+    pub(in crate::app) fn compiled_pac_draft_for(
+        &mut self,
+        profile_id: &str,
+        config_json: &str,
+        preferred_http_tag: Option<&str>,
+    ) -> PacDraft {
+        let mut draft = self.pac_draft_for(profile_id);
+        if draft.mode == xray_model::PacMode::Custom && !draft.script.trim().is_empty() {
+            return draft;
+        }
+        let Ok((_, endpoint)) = self.pac_endpoint_in(config_json, preferred_http_tag) else {
+            return draft;
+        };
+        let geo = self.refresh_geodata_cache_for(config_json);
+        let config_value = serde_json::from_str::<serde_json::Value>(config_json)
+            .unwrap_or_else(|_| serde_json::json!({}));
+        if let Ok(generated) = xray_pac::compile_draft(
+            &config_value,
+            endpoint,
+            &draft,
+            geo.as_ref().map(|c| &c.data),
+        ) && draft.script != generated.script
+        {
+            draft.script = generated.script;
+            self.save_pac_draft_for(profile_id, draft.clone());
+        }
+        draft
+    }
+    pub(in crate::app) fn save_pac_draft_for(&mut self, profile_id: &str, draft: PacDraft) {
+        if profile_id.is_empty() {
+            return;
+        }
+        if self.ui.workspace.pac.get(profile_id) != Some(&draft) {
+            self.ui.workspace.pac.insert(profile_id.into(), draft);
+            self.save_workspace();
+        }
+    }
+    #[cfg(test)]
     pub(in crate::app) fn save_pac_draft(&mut self, draft: PacDraft) {
-        self.ui.workspace.pac.insert(self.profile_id.clone(), draft);
-        self.save_workspace();
+        let profile_id = self.profile_id.clone();
+        self.save_pac_draft_for(&profile_id, draft);
+    }
+    pub(in crate::app) fn proxy_mode_for(&self, profile: &str) -> ProxyMode {
+        self.ui
+            .workspace
+            .proxy_modes
+            .get(profile)
+            .copied()
+            .unwrap_or_default()
+    }
+    pub(in crate::app) fn save_profile_proxy_mode(&mut self, profile: &str, mode: ProxyMode) {
+        if profile.is_empty() {
+            return;
+        }
+        if self.ui.workspace.proxy_modes.get(profile).copied() != Some(mode) {
+            self.ui.workspace.proxy_modes.insert(profile.into(), mode);
+            self.save_workspace();
+        }
     }
     pub(in crate::app) fn note_applied_proxy(&mut self, mode: ProxyMode, pac: Option<&PacDraft>) {
         let mut changed = self.ui.workspace.last_proxy_mode != mode;
@@ -1098,6 +1193,7 @@ impl App {
                             &pending.context.profile,
                             pending.submitted_json.as_deref(),
                         );
+                        self.save_profile_proxy_mode(&pending.context.profile, proxy_mode);
                         self.note_applied_proxy(proxy_mode, pac.as_ref());
                         self.clear_request_failure();
                         self.ui.onboarding = false;
@@ -1137,6 +1233,12 @@ impl App {
                         self.send(Command::GetStatus);
                     }
                     Command::SetProxyMode { mode, ref pac, .. } => {
+                        if let Some(running_profile) = self.committed_id().map(str::to_owned) {
+                            self.save_profile_proxy_mode(&running_profile, mode);
+                            if self.profile_id == running_profile {
+                                self.mode = mode;
+                            }
+                        }
                         self.note_applied_proxy(mode, pac.as_ref());
                         self.clear_request_failure();
                         let label = ui::command_name(&command);
@@ -1166,6 +1268,8 @@ impl App {
         self.editor = p.json;
         self.revision = p.revision;
         self.restore_draft();
+        self.mode = self.proxy_mode_for(&self.profile_id);
+        self.sync_http_tag();
         self.reset_undo(&self.editor.clone());
         self.ui.pac_notes.clear();
         self.ui.pac_test.clear();
@@ -1336,11 +1440,20 @@ impl App {
                 http_inbound_tag: self.runtime_http_tag(),
                 pac: None,
             }),
-            "pac" => self.send(Command::SetProxyMode {
-                mode: ProxyMode::Pac,
-                http_inbound_tag: self.runtime_http_tag(),
-                pac: Some(self.running_pac_draft()),
-            }),
+            "pac" => {
+                let http_inbound_tag = self.runtime_http_tag();
+                let (profile_id, config_json) = self.active_pac_target();
+                let pac = self.compiled_pac_draft_for(
+                    &profile_id,
+                    &config_json,
+                    Some(http_inbound_tag.as_str()),
+                );
+                self.send(Command::SetProxyMode {
+                    mode: ProxyMode::Pac,
+                    http_inbound_tag,
+                    pac: Some(pac),
+                });
+            }
             _ => {}
         }
     }

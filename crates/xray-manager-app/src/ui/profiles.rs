@@ -1,6 +1,22 @@
 use super::*;
 
 impl App {
+    fn profile_port_forward_count(&self, profile_id: &str) -> usize {
+        let json_text = if profile_id == self.profile_id {
+            Some(self.editor.as_str())
+        } else if let Some(draft) = self.ui.drafts.get(profile_id) {
+            Some(draft.json.as_str())
+        } else {
+            self.ui
+                .profile_cache
+                .get(profile_id)
+                .map(|p| p.json.as_str())
+        };
+        json_text
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+            .map(|v| crate::port_forward::dokodemo_tags(&v).len())
+            .unwrap_or(0)
+    }
     pub(in crate::app) fn profiles_page(&mut self, ui: &mut egui::Ui, viewport_height: f32) {
         let page_top = ui.cursor().top();
         heading(
@@ -102,34 +118,72 @@ impl App {
         };
         let running = self.committed_id() == Some(p.id.as_str()) && self.is_running();
         let pending_apply = p.id == self.profile_id && self.has_unapplied_runtime_diff();
-        let label = format!(
-            "{}\n{}{}",
-            self.ui.workspace.name(&p.id),
+        let pf_count = self.profile_port_forward_count(&p.id);
+        let remembered_mode = self.proxy_mode_for(&p.id);
+        let mode_short = match remembered_mode {
+            ProxyMode::Direct => "直连",
+            ProxyMode::Pac => "PAC",
+            ProxyMode::Global => "全局",
+        };
+        let selected = self.selected_profile == p.id;
+        let title = self.ui.workspace.name(&p.id).to_owned();
+        let meta = format!(
+            "{} · {}{}{}",
             if running { "运行中" } else { "未运行" },
+            mode_short,
             if dirty {
                 " · 未落盘"
             } else if pending_apply {
                 " · 待应用"
             } else {
                 ""
+            },
+            if pf_count > 0 {
+                format!(" · {pf_count} 条转发")
+            } else {
+                String::new()
             }
         );
-        if ui
-            .add_sized(
-                [ui.available_width().clamp(125.0, 184.0), 56.0],
-                egui::Button::new(label)
-                    .wrap_mode(egui::TextWrapMode::Truncate)
-                    .selected(self.selected_profile == p.id),
+        let fill = if selected {
+            crate::widgets::accent_soft_color(ui)
+        } else {
+            ui.visuals().window_fill()
+        };
+        let stroke = egui::Stroke::new(
+            if selected { 1.4 } else { 1.0 },
+            if selected {
+                crate::widgets::accent_color(ui)
+            } else {
+                crate::widgets::border_color(ui)
+            },
+        );
+        let card_width = ui.available_width().clamp(140.0, 184.0);
+        let frame_resp = egui::Frame::new()
+            .fill(fill)
+            .stroke(stroke)
+            .corner_radius(8)
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.set_min_width(card_width - 22.0);
+                ui.set_max_width(card_width - 22.0);
+                ui.add(egui::Label::new(RichText::new(title).strong().size(13.5)).truncate());
+                ui.add(egui::Label::new(RichText::new(meta).small().weak()).truncate());
+            });
+        let click_resp = ui
+            .interact(
+                frame_resp.response.rect,
+                ui.make_persistent_id(("profile-item", &p.id)),
+                egui::Sense::click(),
             )
-            .clicked()
-            && self.selected_profile != p.id
-        {
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        if click_resp.clicked() && self.selected_profile != p.id {
             if self.ui.draft_conflict || self.ui.unreadable_drafts.contains(&self.profile_id) {
                 self.ui.dialog = Some(Dialog::Confirm(Action::Switch(p.id)));
             } else {
                 self.switch_profile(p.id);
             }
         }
+        ui.add_space(4.0);
     }
     fn profile_editor(&mut self, ui: &mut egui::Ui, enabled: bool, min_height: f32) {
         if self.profile_id.is_empty() {
@@ -170,17 +224,18 @@ impl App {
                             Some(self.ui.workspace.name(&self.profile_id).into());
                     }
                 }
-                let status_text = if self.has_draft_edits() {
-                    "未落盘修改"
+                let (status_text, status_tone) = if self.has_draft_edits() {
+                    ("未落盘修改", crate::widgets::BadgeTone::Warn)
                 } else if self.has_unapplied_runtime_diff() {
-                    "已保存 · 待应用"
+                    ("已保存 · 待应用", crate::widgets::BadgeTone::Warn)
                 } else if self.committed_id() == Some(self.profile_id.as_str()) && self.is_running()
                 {
-                    "运行中"
+                    ("运行中", crate::widgets::BadgeTone::Success)
                 } else {
-                    "已保存"
+                    ("已保存", crate::widgets::BadgeTone::Muted)
                 };
-                ui.label(RichText::new(status_text).small().weak());
+                crate::widgets::badge(ui, status_text, status_tone);
+                ui.add_space(4.0);
                 if ui
                     .add_enabled(
                         enabled && self.ui.number_inputs.is_empty(),
@@ -235,20 +290,55 @@ impl App {
                 });
             }
             ui.separator();
-            ui.horizontal_wrapped(|ui| {
-                for (tab, title) in [
-                    (ProfileTab::Outbounds, "节点"),
-                    (ProfileTab::Routing, "分流规则"),
-                    (ProfileTab::PortForward, "端口转发"),
-                    (ProfileTab::Advanced, "更多与源码"),
-                ] {
-                    ui.selectable_value(&mut self.ui.profile_tab, tab, title);
-                }
-                ui.add_space(8.0);
+            let pf_count = self.profile_port_forward_count(&self.profile_id);
+            let pf_title = if pf_count > 0 {
+                format!("端口转发 ({pf_count})")
+            } else {
+                "端口转发".into()
+            };
+            if ui.available_width() >= 760.0 {
+                let mut next_tab = self.ui.profile_tab;
+                egui::Sides::new().show(
+                    ui,
+                    |ui| {
+                        for (tab, title) in [
+                            (ProfileTab::Outbounds, "节点"),
+                            (ProfileTab::Routing, "分流规则"),
+                            (ProfileTab::PortForward, pf_title.as_str()),
+                            (ProfileTab::Advanced, "更多与源码"),
+                        ] {
+                            if crate::widgets::pill_tab(ui, title, next_tab == tab).clicked() {
+                                next_tab = tab;
+                            }
+                        }
+                    },
+                    |ui| {
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.add_enabled_ui(enabled, |ui| {
+                                self.proxy_draft_controls_inline(ui);
+                            });
+                        });
+                    },
+                );
+                self.ui.profile_tab = next_tab;
+            } else {
+                ui.horizontal_wrapped(|ui| {
+                    for (tab, title) in [
+                        (ProfileTab::Outbounds, "节点"),
+                        (ProfileTab::Routing, "分流规则"),
+                        (ProfileTab::PortForward, pf_title.as_str()),
+                        (ProfileTab::Advanced, "更多与源码"),
+                    ] {
+                        if crate::widgets::pill_tab(ui, title, self.ui.profile_tab == tab).clicked()
+                        {
+                            self.ui.profile_tab = tab;
+                        }
+                    }
+                });
                 ui.add_enabled_ui(enabled, |ui| {
                     self.proxy_draft_controls(ui);
                 });
-            });
+            }
             ui.separator();
             // A small window may need page scrolling, but the editor retains
             // a usable minimum. Larger parents give all remaining height to it.
@@ -296,12 +386,57 @@ impl App {
         });
     }
     fn profile_footer(&mut self, ui: &mut egui::Ui, enabled: bool) {
-        if self.mode == ProxyMode::Pac && self.pac_draft().script.trim().is_empty() {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                "PAC 脚本为空；可在 PAC 页生成或填写后再应用。",
+        let pac_draft = self.pac_draft();
+        if self.mode == ProxyMode::Pac
+            && pac_draft.mode == xray_model::PacMode::Custom
+            && pac_draft.script.trim().is_empty()
+        {
+            crate::widgets::banner_box(
+                ui,
+                crate::widgets::BadgeTone::Warn,
+                "自定义 PAC 脚本为空；请在 PAC 页填写或导入脚本后再应用。",
             );
+            ui.add_space(4.0);
         }
+        let current = self
+            .committed_id()
+            .map(|id| self.ui.workspace.name(id))
+            .unwrap_or("无");
+        let status_hint = if self.has_draft_edits() || self.has_unapplied_runtime_diff() {
+            format!(
+                "待点击「检查并应用」生效到 Core · 当前{}：{current}",
+                if self.is_running() {
+                    "运行"
+                } else {
+                    "上次应用"
+                }
+            )
+        } else {
+            format!(
+                "当前编辑内容与正在运行的 Core 一致 · 当前{}：{current}",
+                if self.is_running() {
+                    "运行"
+                } else {
+                    "上次应用"
+                }
+            )
+        };
+        let hint_tone = if self.has_draft_edits() || self.has_unapplied_runtime_diff() {
+            crate::widgets::BadgeTone::Warn
+        } else {
+            crate::widgets::BadgeTone::Muted
+        };
+        let (hint_fg, _, _) = crate::widgets::tone_palette(ui, hint_tone);
+        ui.add(
+            egui::Label::new(RichText::new(status_hint).small().color(
+                if hint_tone == crate::widgets::BadgeTone::Warn {
+                    hint_fg
+                } else {
+                    ui.visuals().weak_text_color()
+                },
+            ))
+            .truncate(),
+        );
         ui.horizontal_wrapped(|ui| {
             if ui
                 .add_enabled(
@@ -339,9 +474,6 @@ impl App {
                 && !self.ui.draft_conflict
                 && !self.core_path.is_empty()
                 && self.selected_profile == self.profile_id;
-            if primary(ui, "检查并应用", can_validate) {
-                self.validate_and_apply_draft();
-            }
             if ui
                 .add_enabled(can_validate, egui::Button::new("预览变更"))
                 .clicked()
@@ -355,26 +487,10 @@ impl App {
                 self.ui.page = Page::Settings;
                 self.ui.settings_tab = SettingsTab::Core;
             }
+            if primary(ui, "检查并应用", can_validate) {
+                self.validate_and_apply_draft();
+            }
         });
-        let current = self
-            .committed_id()
-            .map(|id| self.ui.workspace.name(id))
-            .unwrap_or("无");
-        ui.add(
-            egui::Label::new(
-                RichText::new(format!(
-                    "当前{}：{current}",
-                    if self.is_running() {
-                        "运行"
-                    } else {
-                        "上次应用"
-                    }
-                ))
-                .small()
-                .weak(),
-            )
-            .truncate(),
-        );
     }
     fn jump_to_path(&mut self, path: String) {
         if path.starts_with("/outbounds") {
@@ -404,6 +520,7 @@ impl App {
             } else {
                 self.ui.profile_tab = ProfileTab::Advanced;
                 self.ui.advanced_tab = AdvancedTab::Inbounds;
+                self.ui.inbounds_native = true;
             }
         } else {
             self.ui.profile_tab = ProfileTab::Advanced;
@@ -426,6 +543,7 @@ impl App {
                 if path.starts_with("/inbounds/") {
                     self.ui.profile_tab = ProfileTab::Advanced;
                     self.ui.advanced_tab = AdvancedTab::Inbounds;
+                    self.ui.inbounds_native = true;
                 } else if path.starts_with("/outbounds/") {
                     self.ui.profile_tab = ProfileTab::Outbounds;
                 } else {
@@ -546,54 +664,101 @@ impl App {
             }
             ProfileTab::Advanced => {
                 ui.horizontal_wrapped(|ui| {
+                    let history_title = if self.history.is_empty() {
+                        "历史版本".into()
+                    } else {
+                        format!("历史版本 ({})", self.history.len())
+                    };
                     for (sub, title) in [
                         (AdvancedTab::Inbounds, "本地入口"),
                         (AdvancedTab::Json, "原始 JSON"),
-                        (AdvancedTab::History, "历史版本"),
+                        (AdvancedTab::History, history_title.as_str()),
                     ] {
-                        ui.selectable_value(&mut self.ui.advanced_tab, sub, title);
+                        if crate::widgets::pill_tab(ui, title, self.ui.advanced_tab == sub)
+                            .clicked()
+                        {
+                            self.ui.advanced_tab = sub;
+                        }
                     }
                 });
                 ui.separator();
                 match self.ui.advanced_tab {
                     AdvancedTab::Inbounds => {
-                        if let Ok(mut value) = serde_json::from_str(&self.editor) {
-                            if !crate::port_forward::dokodemo_tags(&value).is_empty() {
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.label(
-                                        RichText::new(
-                                            "提示：本配置包含 dokodemo-door 端口转发入站，可在「端口转发」页签用表单管理。",
-                                        )
-                                        .small()
-                                        .weak(),
-                                    );
-                                    if ui.small_button("前往端口转发").clicked() {
-                                        self.ui.profile_tab = ProfileTab::PortForward;
-                                    }
-                                });
+                        ui.horizontal_wrapped(|ui| {
+                            if crate::widgets::seg_button(
+                                ui,
+                                "常用卡片",
+                                !self.ui.inbounds_native,
+                                true,
+                            )
+                            .clicked()
+                            {
+                                self.ui.inbounds_native = false;
                             }
-                            let pending_focus = self.ui.guided.focus.clone();
-                            let changed = ui
-                                .push_id((&self.profile_id, self.view_epoch, "inbounds"), |ui| {
-                                    ui.add_enabled_ui(enabled, |ui| {
-                                        let ch = crate::native_editor::edit_focused(
-                                            ui,
-                                            &mut value,
-                                            "inbounds",
-                                            pending_focus.as_deref(),
-                                            &mut self.ui.number_inputs,
+                            if crate::widgets::seg_button(
+                                ui,
+                                "高级：原生字段编辑",
+                                self.ui.inbounds_native,
+                                true,
+                            )
+                            .clicked()
+                            {
+                                self.ui.inbounds_native = true;
+                            }
+                        });
+                        ui.add_space(6.0);
+                        if self.ui.inbounds_native {
+                            if let Ok(mut value) = serde_json::from_str(&self.editor) {
+                                if !crate::port_forward::dokodemo_tags(&value).is_empty() {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label(
+                                            RichText::new(
+                                                "提示：本配置包含 dokodemo-door 端口转发入站，可在「端口转发」页签用表单管理。",
+                                            )
+                                            .small()
+                                            .weak(),
                                         );
-                                        self.ui.guided.focus = None;
-                                        ch
-                                    })
-                                    .inner
-                                })
-                                .inner;
-                            if changed {
-                                self.ui.guided.notice = None;
-                                self.editor = serde_json::to_string_pretty(&value).unwrap();
-                                self.draft_edited();
+                                        if ui.small_button("前往端口转发").clicked() {
+                                            self.ui.profile_tab = ProfileTab::PortForward;
+                                        }
+                                    });
+                                }
+                                let pending_focus = self.ui.guided.focus.clone();
+                                let changed = ui
+                                    .push_id(
+                                        (&self.profile_id, self.view_epoch, "inbounds"),
+                                        |ui| {
+                                            ui.add_enabled_ui(enabled, |ui| {
+                                                let ch = crate::native_editor::edit_focused(
+                                                    ui,
+                                                    &mut value,
+                                                    "inbounds",
+                                                    pending_focus.as_deref(),
+                                                    &mut self.ui.number_inputs,
+                                                );
+                                                self.ui.guided.focus = None;
+                                                ch
+                                            })
+                                            .inner
+                                        },
+                                    )
+                                    .inner;
+                                if changed {
+                                    self.ui.guided.notice = None;
+                                    self.editor = serde_json::to_string_pretty(&value).unwrap();
+                                    self.draft_edited();
+                                }
+                            } else {
+                                ui.label("请先在原始 JSON 中修正语法。");
                             }
+                        } else if let Ok(mut value) =
+                            serde_json::from_str::<serde_json::Value>(&self.editor)
+                        {
+                            self.guided_inbounds_cards(
+                                ui,
+                                enabled && self.ui.number_inputs.is_empty(),
+                                &mut value,
+                            );
                         } else {
                             ui.label("请先在原始 JSON 中修正语法。");
                         }
@@ -640,16 +805,37 @@ impl App {
                                 Err(error) => self.fail(error.into(), String::new()),
                             }
                         }
+                        let paused_forwards = self
+                            .ui
+                            .workspace
+                            .paused_port_forwards
+                            .get(&self.profile_id)
+                            .filter(|list| !list.is_empty())
+                            .cloned();
+                        let paused_reserve = if paused_forwards.is_some() { 90.0 } else { 0.0 };
                         let response = ui
                             .add_enabled_ui(enabled && self.ui.number_inputs.is_empty(), |ui| {
                                 let note_height = ui.text_style_height(&egui::TextStyle::Small)
                                     + ui.spacing().item_spacing.y;
-                                let height = (ui.available_height() - note_height).max(80.0);
+                                let height = (ui.available_height() - note_height - paused_reserve)
+                                    .max(80.0);
                                 json_editor(ui, &mut self.editor, "profile-json", height)
                             })
                             .inner;
                         if response.changed() {
                             self.draft_edited();
+                        }
+                        if let Some(paused_list) = paused_forwards {
+                            let mut paused_json =
+                                serde_json::to_string_pretty(&paused_list).unwrap_or_default();
+                            egui::CollapsingHeader::new(format!(
+                                "工作区停用端口转发暂存（{} 条 · 不写入 Core JSON）",
+                                paused_list.len()
+                            ))
+                            .id_salt(("paused-pf-json", &self.profile_id))
+                            .show(ui, |ui| {
+                                json_viewer(ui, &mut paused_json, "paused-pf-viewer", 140.0);
+                            });
                         }
                         ui.label(
                             RichText::new("原生 JSON · 未识别字段保留 · 应用前需真实 Core 校验")
@@ -800,6 +986,18 @@ impl App {
                         );
                         self.ui.guided.focus = None;
                     } else if self.ui.number_inputs.is_empty() {
+                        self.ui.guided.pf_refs = crate::port_forward::outbound_ref_counts(
+                            &value,
+                            &self.ui.workspace,
+                            &self.profile_id,
+                        );
+                        self.ui.guided.pf_names = self
+                            .ui
+                            .workspace
+                            .port_forward_names
+                            .get(&self.profile_id)
+                            .cloned()
+                            .unwrap_or_default();
                         let result = if is_outbounds {
                             crate::guided_config::edit_nodes(
                                 ui,
@@ -899,46 +1097,88 @@ impl App {
             .unwrap_or_default();
 
         let active_count = entries.iter().filter(|e| e.enabled).count();
-        card(ui, |ui| {
-            ui.label(
-                RichText::new("本地端口转发（dokodemo-door）")
-                    .strong()
-                    .size(16.0),
-            );
-            ui.label(
-                RichText::new(
-                    "直接映射本机端口到目标地址；自动在分流规则顶部维护联动路由，不依赖系统代理模式。停用时仍保留参数。",
-                )
-                .small()
-                .weak(),
-            );
-            ui.add_space(4.0);
-            ui.horizontal_wrapped(|ui| {
-                if primary(ui, "+ 添加端口转发", enabled) {
-                    self.ui.pf_form =
-                        crate::port_forward::PortForwardForm::from_new(&value, &paused);
-                    self.ui.pf_error = None;
-                    self.ui.dialog = Some(Dialog::PortForward);
-                }
+        crate::widgets::subcard(ui, None, true, |ui| {
+            if ui.available_width() >= 560.0 {
+                egui::Sides::new().show(
+                    ui,
+                    |ui| {
+                        ui.vertical(|ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(
+                                    RichText::new("本地端口转发（dokodemo-door）")
+                                        .strong()
+                                        .size(15.5),
+                                );
+                                crate::widgets::badge(
+                                    ui,
+                                    &format!(
+                                        "共 {} 条 · 已启用 {} 条 · 已停用 {} 条",
+                                        entries.len(),
+                                        active_count,
+                                        entries.len().saturating_sub(active_count)
+                                    ),
+                                    crate::widgets::BadgeTone::Muted,
+                                );
+                            });
+                            ui.label(
+                                RichText::new(
+                                    "不依赖系统代理模式；启用条目自动写入 inbounds[] 并在 routing.rules[] 置顶，停用条目保留参数于工作区。",
+                                )
+                                .small()
+                                .weak(),
+                            );
+                        });
+                    },
+                    |ui| {
+                        if primary(ui, "+ 添加端口转发", enabled) {
+                            self.ui.pf_form =
+                                crate::port_forward::PortForwardForm::from_new(&value, &paused);
+                            self.ui.pf_error = None;
+                            self.ui.dialog = Some(Dialog::PortForward);
+                        }
+                    },
+                );
+            } else {
                 ui.label(
-                    RichText::new(format!(
-                        "共 {} 条 · 已启用 {} 条 · 已停用 {} 条",
-                        entries.len(),
-                        active_count,
-                        entries.len().saturating_sub(active_count)
-                    ))
+                    RichText::new("本地端口转发（dokodemo-door）")
+                        .strong()
+                        .size(15.5),
+                );
+                ui.label(
+                    RichText::new(
+                        "不依赖系统代理模式；启用条目自动写入 inbounds[] 并在 routing.rules[] 置顶，停用条目保留参数于工作区。",
+                    )
                     .small()
                     .weak(),
                 );
-            });
+                ui.horizontal_wrapped(|ui| {
+                    if primary(ui, "+ 添加端口转发", enabled) {
+                        self.ui.pf_form =
+                            crate::port_forward::PortForwardForm::from_new(&value, &paused);
+                        self.ui.pf_error = None;
+                        self.ui.dialog = Some(Dialog::PortForward);
+                    }
+                    crate::widgets::badge(
+                        ui,
+                        &format!(
+                            "共 {} 条 · 已启用 {} 条 · 已停用 {} 条",
+                            entries.len(),
+                            active_count,
+                            entries.len().saturating_sub(active_count)
+                        ),
+                        crate::widgets::BadgeTone::Muted,
+                    );
+                });
+            }
         });
         ui.add_space(8.0);
 
         if entries.is_empty() {
-            ui.label(
-                RichText::new("尚未配置端口转发；点击「+ 添加端口转发」即可快速创建本地映射。")
-                    .weak(),
-            );
+            crate::widgets::subcard(ui, None, false, |ui| {
+                ui.label(
+                    RichText::new("暂无端口转发规则。点击右上角「+ 添加端口转发」新增。").weak(),
+                );
+            });
             return;
         }
 
@@ -946,15 +1186,20 @@ impl App {
         let mut ws_changed = false;
         for entry in entries {
             ui.push_id((&entry.tag, entry.paused_index), |ui| {
-                card(ui, |ui| {
-                    let conflict_msg = if entry.enabled {
-                        inbound_conflicts.get(&entry.tag).cloned()
-                    } else {
-                        None
-                    };
-                    let missing_outbound = !available_outbounds
-                        .iter()
-                        .any(|(tag, _)| *tag == entry.outbound_tag);
+                let conflict_msg = if entry.enabled {
+                    inbound_conflicts.get(&entry.tag).cloned()
+                } else {
+                    None
+                };
+                let missing_outbound = !available_outbounds
+                    .iter()
+                    .any(|(tag, _)| *tag == entry.outbound_tag);
+                let border_tone = if conflict_msg.is_some() || missing_outbound {
+                    Some(crate::widgets::BadgeTone::Danger)
+                } else {
+                    None
+                };
+                crate::widgets::subcard(ui, border_tone, !entry.enabled, |ui| {
                     let expose_lan = !crate::port_forward::is_loopback_listen(&entry.listen);
                     let outbound_is_direct = value
                         .get("outbounds")
@@ -1003,17 +1248,21 @@ impl App {
                             }
                         }
                         let title = if entry.name.is_empty() {
-                            format!("转发 {} → {}", entry.port, entry.target_port)
+                            format!("转发 {} -> {}", entry.port, entry.target_port)
                         } else {
                             entry.name.clone()
                         };
-                        ui.label(RichText::new(title).strong());
-                        ui.label(
-                            RichText::new(crate::port_forward::network_label(&entry.network))
-                                .small()
-                                .color(accent(ui)),
+                        ui.label(RichText::new(title).strong().size(15.0));
+                        crate::widgets::badge(
+                            ui,
+                            crate::port_forward::network_label(&entry.network),
+                            crate::widgets::BadgeTone::Accent,
                         );
-                        ui.label(RichText::new(&entry.tag).small().monospace().weak());
+                        crate::widgets::mono_badge(
+                            ui,
+                            &entry.tag,
+                            crate::widgets::BadgeTone::Muted,
+                        );
 
                         let is_running_match = entry.enabled
                             && runtime_entries.iter().any(|r| {
@@ -1027,90 +1276,50 @@ impl App {
                                     && r.outbound_tag == entry.outbound_tag
                             });
                         if !entry.enabled {
-                            ui.label(RichText::new("已停用（参数保留）").small().weak());
+                            crate::widgets::badge(
+                                ui,
+                                "已停用（参数保留）",
+                                crate::widgets::BadgeTone::Muted,
+                            );
                         } else if conflict_msg.is_some() || missing_outbound {
-                            ui.colored_label(ui.visuals().error_fg_color, "配置异常");
+                            crate::widgets::badge(
+                                ui,
+                                "配置异常",
+                                crate::widgets::BadgeTone::Danger,
+                            );
                         } else if is_running_match {
-                            ui.label(RichText::new("生效中").small().color(accent(ui)));
+                            crate::widgets::badge(
+                                ui,
+                                "生效中",
+                                crate::widgets::BadgeTone::Success,
+                            );
                         } else {
-                            ui.colored_label(ui.visuals().warn_fg_color, "待应用");
+                            crate::widgets::badge(
+                                ui,
+                                "待应用",
+                                crate::widgets::BadgeTone::Warn,
+                            );
                         }
                         if expose_lan {
-                            ui.colored_label(ui.visuals().warn_fg_color, "局域网暴露 · 无认证");
+                            crate::widgets::badge(
+                                ui,
+                                "局域网暴露 · 无认证",
+                                crate::widgets::BadgeTone::Warn,
+                            );
                         }
-                    });
-
-                    let outbound_display = available_outbounds
-                        .iter()
-                        .find(|(tag, _)| *tag == entry.outbound_tag)
-                        .map(|(_, label)| label.as_str())
-                        .unwrap_or(&entry.outbound_tag);
-                    let target_text = if entry.target_host.is_empty() {
-                        "未填写目标".to_owned()
-                    } else if entry.target_port > 0 {
-                        format!("{}:{}", entry.target_host, entry.target_port)
-                    } else {
-                        entry.target_host.clone()
-                    };
-                    ui.monospace(format!(
-                        "{}:{}  ──▶  {}  ──▶  {}",
-                        entry.listen, entry.port, outbound_display, target_text
-                    ));
-
-                    if let Some(msg) = conflict_msg {
-                        ui.colored_label(ui.visuals().error_fg_color, msg);
-                    }
-                    if missing_outbound {
-                        ui.colored_label(
-                            ui.visuals().error_fg_color,
-                            format!(
-                                "所选出站「{}」在「节点」页已被移除，请编辑重新指定出口。",
-                                entry.outbound_tag
-                            ),
-                        );
-                    } else if entry.missing_route {
-                        ui.colored_label(
-                            ui.visuals().warn_fg_color,
-                            "未配置专属路由规则，当前将走默认访问出站；点「编辑」并保存可自动生成置顶规则。",
-                        );
-                    } else if entry.custom_route {
-                        ui.label(
-                            RichText::new(
-                                "此入站包含复合原生路由规则；保存表单不会覆盖原有复合路由。",
-                            )
-                            .small()
-                            .weak(),
-                        );
-                    }
-                    if expose_lan {
-                        ui.colored_label(
-                            ui.visuals().warn_fg_color,
-                            "注意：dokodemo-door 无密码认证保护，同局域网设备可直接连接此端口。",
-                        );
-                    }
-                    if private_target_via_proxy {
-                        ui.label(
-                            RichText::new(
-                                "提示：目标为内网/回环地址，请确认远端服务端路由未通过 geoip:private 拦截。",
-                            )
-                            .small()
-                            .weak(),
-                        );
-                    }
-
-                    ui.horizontal_wrapped(|ui| {
+                        ui.add_space(6.0);
                         let copy_ip = if entry.listen == crate::port_forward::LISTEN_LAN {
                             crate::port_forward::LISTEN_LOCAL
                         } else {
                             entry.listen.as_str()
                         };
                         let copy_addr = format!("{copy_ip}:{}", entry.port);
-                        if ui.button("复制监听地址").clicked() {
+                        if ui.small_button("复制监听地址").clicked() {
                             ui.ctx().copy_text(copy_addr.clone());
                             self.message = format!("已复制监听地址：{copy_addr}");
                         }
                         if ui
-                            .add_enabled(enabled, egui::Button::new("编辑"))
+                            .add_enabled(enabled, egui::Button::new("编辑").small())
                             .clicked()
                         {
                             self.ui.pf_form =
@@ -1119,7 +1328,7 @@ impl App {
                             self.ui.dialog = Some(Dialog::PortForward);
                         }
                         if ui
-                            .add_enabled(enabled, egui::Button::new("删除"))
+                            .add_enabled(enabled, egui::Button::new("删除").small())
                             .clicked()
                         {
                             crate::port_forward::remove_entry(
@@ -1135,6 +1344,73 @@ impl App {
                             self.message = format!("已移除端口转发：{}", entry.tag);
                         }
                     });
+
+                    let outbound_display = available_outbounds
+                        .iter()
+                        .find(|(tag, _)| *tag == entry.outbound_tag)
+                        .map(|(_, label)| label.as_str())
+                        .unwrap_or(&entry.outbound_tag);
+                    let target_text = if entry.target_host.is_empty() {
+                        "未填写目标".to_owned()
+                    } else if entry.target_port > 0 {
+                        format!("{}:{}", entry.target_host, entry.target_port)
+                    } else {
+                        entry.target_host.clone()
+                    };
+                    let outbound_tone = if missing_outbound {
+                        crate::widgets::BadgeTone::Danger
+                    } else if outbound_is_direct {
+                        crate::widgets::BadgeTone::Success
+                    } else {
+                        crate::widgets::BadgeTone::Accent
+                    };
+                    crate::widgets::flow_strip(ui, |ui| {
+                        ui.monospace(format!("{}:{}", entry.listen, entry.port));
+                        ui.label(RichText::new("-> 经由").small().weak());
+                        crate::widgets::badge(ui, outbound_display, outbound_tone);
+                        ui.label(RichText::new("-> 目标").small().weak());
+                        ui.monospace(&target_text);
+                    });
+
+                    if let Some(msg) = conflict_msg {
+                        crate::widgets::banner_box(ui, crate::widgets::BadgeTone::Danger, &msg);
+                    }
+                    if missing_outbound {
+                        crate::widgets::banner_box(
+                            ui,
+                            crate::widgets::BadgeTone::Danger,
+                            &format!(
+                                "所选出站「{}」在「节点」页已被移除，请编辑重新指定出口。",
+                                entry.outbound_tag
+                            ),
+                        );
+                    } else if entry.missing_route {
+                        crate::widgets::banner_box(
+                            ui,
+                            crate::widgets::BadgeTone::Warn,
+                            "未配置专属路由规则，当前将走默认访问出站；点「编辑」并保存可自动生成置顶规则。",
+                        );
+                    } else if entry.custom_route {
+                        crate::widgets::banner_box(
+                            ui,
+                            crate::widgets::BadgeTone::Muted,
+                            "此入站包含复合原生路由规则；保存表单不会覆盖原有复合路由。",
+                        );
+                    }
+                    if expose_lan {
+                        crate::widgets::banner_box(
+                            ui,
+                            crate::widgets::BadgeTone::Warn,
+                            "dokodemo-door 无密码认证保护，同局域网设备可直接连接此端口。",
+                        );
+                    }
+                    if private_target_via_proxy {
+                        crate::widgets::banner_box(
+                            ui,
+                            crate::widgets::BadgeTone::Accent,
+                            "提示：目标为内网/回环地址，请确认远端服务端路由未通过 geoip:private 拦截。",
+                        );
+                    }
                 });
             });
             ui.add_space(8.0);
@@ -1148,7 +1424,256 @@ impl App {
             self.draft_edited();
         }
     }
+    fn guided_inbounds_cards(
+        &mut self,
+        ui: &mut egui::Ui,
+        enabled: bool,
+        value: &mut serde_json::Value,
+    ) {
+        let mut changed = false;
+        let inbound_conflicts: std::collections::HashMap<usize, String> = value
+            .get("inbounds")
+            .and_then(serde_json::Value::as_array)
+            .map(|inbounds| {
+                xray_config::inbound_port_conflicts(inbounds)
+                    .into_iter()
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("系统代理 / 本地代理入口").strong());
+            if ui
+                .add_enabled(enabled, egui::Button::new("+ 添加 HTTP 入口").small())
+                .clicked()
+            {
+                let paused = self
+                    .ui
+                    .workspace
+                    .paused_port_forwards
+                    .get(&self.profile_id)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                let next_port = crate::port_forward::next_free_port(value, paused);
+                let arr = value
+                    .as_object_mut()
+                    .expect("config object")
+                    .entry("inbounds")
+                    .or_insert_with(|| serde_json::json!([]))
+                    .as_array_mut();
+                if let Some(inbounds) = arr {
+                    let tag = format!("http-{}", inbounds.len() + 1);
+                    inbounds.push(serde_json::json!({
+                        "tag": tag,
+                        "listen": "127.0.0.1",
+                        "port": next_port,
+                        "protocol": "http",
+                        "settings": {}
+                    }));
+                    changed = true;
+                }
+            }
+            if ui
+                .add_enabled(enabled, egui::Button::new("+ 添加 SOCKS 入口").small())
+                .clicked()
+            {
+                let paused = self
+                    .ui
+                    .workspace
+                    .paused_port_forwards
+                    .get(&self.profile_id)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                let next_port = crate::port_forward::next_free_port(value, paused);
+                let arr = value
+                    .as_object_mut()
+                    .expect("config object")
+                    .entry("inbounds")
+                    .or_insert_with(|| serde_json::json!([]))
+                    .as_array_mut();
+                if let Some(inbounds) = arr {
+                    let tag = format!("socks-{}", inbounds.len() + 1);
+                    inbounds.push(serde_json::json!({
+                        "tag": tag,
+                        "listen": "127.0.0.1",
+                        "port": next_port,
+                        "protocol": "socks",
+                        "settings": {"udp": true}
+                    }));
+                    changed = true;
+                }
+            }
+        });
+        ui.add_space(6.0);
+
+        let api_tag = value
+            .pointer("/api/tag")
+            .and_then(|t| t.as_str())
+            .map(str::to_owned);
+        let mut remove_idx = None;
+        let mut jump_port_forward = false;
+
+        if let Some(inbounds) = value
+            .get_mut("inbounds")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            if inbounds.is_empty() {
+                ui.label(RichText::new("当前配置暂无本地入口。").weak());
+            }
+            for (index, inbound) in inbounds.iter_mut().enumerate() {
+                let tag = inbound
+                    .get("tag")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("未命名")
+                    .to_owned();
+                let proto = inbound
+                    .get("protocol")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_owned();
+                let is_pf = proto == "dokodemo-door" && api_tag.as_deref() != Some(tag.as_str());
+                let sniffing_on = inbound
+                    .pointer("/sniffing/enabled")
+                    .and_then(|v| v.as_bool())
+                    == Some(true);
+
+                ui.push_id(("guided-inbound", index, &tag), |ui| {
+                    crate::widgets::subcard(
+                        ui,
+                        inbound_conflicts
+                            .contains_key(&index)
+                            .then_some(crate::widgets::BadgeTone::Danger),
+                        is_pf,
+                        |ui| {
+                            if is_pf {
+                                let listen = inbound
+                                    .get("listen")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("0.0.0.0");
+                                let port =
+                                    inbound.get("port").and_then(|v| v.as_u64()).unwrap_or(0);
+                                let t_host = inbound
+                                    .pointer("/settings/address")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                let t_port = inbound
+                                    .pointer("/settings/port")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0);
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(RichText::new(&tag).strong());
+                                    crate::widgets::badge(
+                                        ui,
+                                        "dokodemo-door",
+                                        crate::widgets::BadgeTone::Muted,
+                                    );
+                                    crate::widgets::badge(
+                                        ui,
+                                        "端口转发自动维护",
+                                        crate::widgets::BadgeTone::Accent,
+                                    );
+                                    ui.monospace(format!("{listen}:{port} → {t_host}:{t_port}"));
+                                    if ui.small_button("前往端口转发").clicked() {
+                                        jump_port_forward = true;
+                                    }
+                                });
+                                return;
+                            }
+
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new(&tag).strong());
+                                crate::widgets::badge(
+                                    ui,
+                                    &proto,
+                                    crate::widgets::BadgeTone::Accent,
+                                );
+                                crate::widgets::badge(
+                                    ui,
+                                    if sniffing_on {
+                                        "Sniffing: 已开启"
+                                    } else {
+                                        "Sniffing: 关闭"
+                                    },
+                                    if sniffing_on {
+                                        crate::widgets::BadgeTone::Success
+                                    } else {
+                                        crate::widgets::BadgeTone::Muted
+                                    },
+                                );
+                                if let Some(err) = inbound_conflicts.get(&index) {
+                                    crate::widgets::badge(
+                                        ui,
+                                        err,
+                                        crate::widgets::BadgeTone::Danger,
+                                    );
+                                }
+                            });
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label("监听");
+                                let mut listen_str = inbound
+                                    .get("listen")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("127.0.0.1")
+                                    .to_owned();
+                                if ui
+                                    .add_enabled(
+                                        enabled,
+                                        crate::widgets::singleline(&mut listen_str, 130.0),
+                                    )
+                                    .changed()
+                                {
+                                    inbound["listen"] = serde_json::json!(listen_str.trim());
+                                    changed = true;
+                                }
+                                ui.label("端口");
+                                let mut port_str = inbound
+                                    .get("port")
+                                    .and_then(|v| v.as_u64())
+                                    .map(|p| p.to_string())
+                                    .unwrap_or_default();
+                                if ui
+                                    .add_enabled(
+                                        enabled,
+                                        crate::widgets::singleline(&mut port_str, 90.0),
+                                    )
+                                    .changed()
+                                    && let Ok(port_num) = port_str.trim().parse::<u16>()
+                                    && port_num > 0
+                                {
+                                    inbound["port"] = serde_json::json!(port_num);
+                                    changed = true;
+                                }
+                                if ui
+                                    .add_enabled(enabled, egui::Button::new("删除").small())
+                                    .clicked()
+                                {
+                                    remove_idx = Some(index);
+                                }
+                            });
+                        },
+                    );
+                    ui.add_space(6.0);
+                });
+            }
+            if let Some(idx) = remove_idx {
+                inbounds.remove(idx);
+                changed = true;
+            }
+        }
+
+        if jump_port_forward {
+            self.ui.profile_tab = ProfileTab::PortForward;
+        }
+        if changed {
+            self.ui.guided.notice = None;
+            self.editor = serde_json::to_string_pretty(value).unwrap();
+            self.draft_edited();
+        }
+    }
     pub(in crate::app) fn proxy_draft_controls(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| self.proxy_draft_controls_inline(ui));
+    }
+    fn proxy_draft_controls_inline(&mut self, ui: &mut egui::Ui) {
         let before = (self.mode, self.http_tag.clone());
         let listeners = self.compatible_http_listeners();
         if matches!(self.mode, ProxyMode::Global | ProxyMode::Pac)
@@ -1157,40 +1682,45 @@ impl App {
         {
             self.http_tag = first.clone();
         }
-        ui.horizontal_wrapped(|ui| {
-            ui.label("系统代理");
-            egui::ComboBox::from_id_salt("draft-mode")
-                .selected_text(mode_name(self.mode))
+        let has_http = !listeners.is_empty();
+        ui.label(RichText::new("代理方式：").small().weak());
+        for (mode, short_label) in [
+            (ProxyMode::Direct, "直连"),
+            (ProxyMode::Pac, "PAC"),
+            (ProxyMode::Global, "全局"),
+        ] {
+            let allowed = mode == ProxyMode::Direct || has_http;
+            if crate::widgets::seg_button(ui, short_label, self.mode == mode, allowed).clicked() {
+                self.mode = mode;
+            }
+        }
+        if listeners.len() > 1 {
+            let selected = listeners
+                .iter()
+                .find(|(tag, _)| tag == &self.http_tag)
+                .map(|(_, label)| label.clone())
+                .unwrap_or_else(|| "请选择本地 HTTP 入口".into());
+            egui::ComboBox::from_id_salt("proxy-http-listener")
+                .width(ui.available_width().min(190.0))
+                .selected_text(selected)
                 .show_ui(ui, |ui| {
-                    for mode in [ProxyMode::Direct, ProxyMode::Global, ProxyMode::Pac] {
-                        ui.selectable_value(&mut self.mode, mode, mode_name(mode));
+                    for (tag, label) in &listeners {
+                        ui.selectable_value(&mut self.http_tag, tag.clone(), label);
                     }
                 });
-            if matches!(self.mode, ProxyMode::Global | ProxyMode::Pac) {
-                if listeners.len() > 1 {
-                    let selected = listeners
-                        .iter()
-                        .find(|(tag, _)| tag == &self.http_tag)
-                        .map(|(_, label)| label.clone())
-                        .unwrap_or_else(|| "请选择本地 HTTP 入口".into());
-                    egui::ComboBox::from_id_salt("proxy-http-listener")
-                        .width(ui.available_width().min(300.0))
-                        .selected_text(selected)
-                        .show_ui(ui, |ui| {
-                            for (tag, label) in &listeners {
-                                ui.selectable_value(&mut self.http_tag, tag.clone(), label);
-                            }
-                        });
-                } else if let Some((_, label)) = listeners.first() {
-                    ui.label(RichText::new(format!("入口：{label}")).small().weak());
-                } else {
-                    ui.colored_label(
-                        ui.visuals().warn_fg_color,
-                        "缺少 HTTP/Mixed 本地入口，请在「更多与源码 → 本地入口」添加。",
-                    );
-                }
-            }
-        });
+        } else if let Some((_, label)) = listeners.first() {
+            crate::widgets::badge(
+                ui,
+                &format!("HTTP: {label}"),
+                crate::widgets::BadgeTone::Muted,
+            );
+        } else {
+            crate::widgets::badge(ui, "无 HTTP 入口", crate::widgets::BadgeTone::Warn);
+        }
+        if before.0 != self.mode {
+            let profile_id = self.profile_id.clone();
+            self.save_profile_proxy_mode(&profile_id, self.mode);
+        }
         if before != (self.mode, self.http_tag.clone()) {
             self.invalidate_candidate();
         }
