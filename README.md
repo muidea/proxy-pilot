@@ -1,6 +1,6 @@
-# Xray Pilot
+# Proxy Pilot
 
-Xray Pilot 是 Windows 上的 Xray 配置与运行管理工具。你可以导入原生 JSON、检查配置、预览修改、启动 Core，并通过托盘管理系统代理。
+Proxy Pilot 是 Windows 上的 Xray 配置与运行管理工具。你可以导入原生 JSON、检查配置、预览修改、启动 Core，并通过托盘管理系统代理。
 
 最新已发布版本为 **0.1.1-rc.4 验证版（Pre-release）**，主要面向 Windows x64。仓库当前源码已提交为 **v0.1.1-rc.18（尚未发布到 Release 页）**；本地验证包版本与指纹以 `VERSION.txt` / `SOURCE-MANIFEST.json` 为准。已发布版本支持 Global / Direct、配置历史和登录自启；**当前源码新增启动状态恢复、PAC 自动代理与域名清单模板、日志持久化、WinHTTP 只读诊断、动态依赖和编辑撤销，尚未发布**。TUN、Windows 服务部署及自动更新尚未提供。完整验收仍在进行，见 [已知限制](#已知限制)。
 
@@ -8,23 +8,23 @@ Xray Pilot 是 Windows 上的 Xray 配置与运行管理工具。你可以导入
 
 当前源码采用 **总览 / 配置 / PAC / 诊断 / 日志 / 设置** 六页界面，支持浅色、深色和跟随系统。托盘、任务栏及标题栏使用统一图标。已发布 rc.4 仍为五页界面，不包含 PAC 页。
 
-验证步骤见包内 `docs/验证说明.md`。验证包统一使用 `xray-pilot-<版本>-windows-x64.zip`，以 `rc.N` 区分轮次；验证包只附带验证说明和 `docs/发布说明.md`，其余设计、评审、交接和历史文档保留在源码仓库。
+验证步骤见包内 `docs/验证说明.md`。验证包统一使用 `proxy-pilot-<版本>-windows-x64.zip`，以 `rc.N` 区分轮次；验证包只附带验证说明和 `docs/发布说明.md`，其余设计、评审、交接和历史文档保留在源码仓库。
 
 ## 安装
 
 ### 1. 准备程序
 
-从 [v0.1.1-rc.4 发布页](https://github.com/muidea/xray-pilot/releases/tag/v0.1.1-rc.4) 下载 [Windows x64 程序包](https://github.com/muidea/xray-pilot/releases/download/v0.1.1-rc.4/xray-pilot-0.1.1-rc.4-windows-x64.zip) 和 [SHA256SUMS](https://github.com/muidea/xray-pilot/releases/download/v0.1.1-rc.4/SHA256SUMS)，完整解压到固定位置，例如 `D:\Apps\xray-pilot`。这是供验证的预发布版；验证步骤见 [版本说明](docs/releases/v0.1.1-rc.4.md)。
+从 [v0.1.1-rc.4 发布页](https://github.com/muidea/xray-pilot/releases/tag/v0.1.1-rc.4) 下载 [Windows x64 程序包](https://github.com/muidea/xray-pilot/releases/download/v0.1.1-rc.4/xray-pilot-0.1.1-rc.4-windows-x64.zip) 和 [SHA256SUMS](https://github.com/muidea/xray-pilot/releases/download/v0.1.1-rc.4/SHA256SUMS)，完整解压到固定位置，例如 `D:\Apps\proxy-pilot`。这是供验证的预发布版；验证步骤见 [版本说明](docs/releases/v0.1.1-rc.4.md)。
 
 获取仓库源码后，也可按 [源码构建说明](docs/development.md#从源码构建) 自行构建。
 
-解压后的 `xray-pilot` 目录包含：
+解压后的 `proxy-pilot` 目录包含：
 
 | 文件 / 目录 | 用途 |
 | --- | --- |
-| `xray-manager.exe` | 日常使用的图形界面，双击启动 |
-| `xray-supervisor.exe` | 独立后台运行程序，供命令行部署使用 |
-| `xrayctl.exe` | 查询状态、停止和故障排查 |
+| `proxy-pilot.exe` | 日常使用的图形界面，双击启动 |
+| `proxy-supervisor.exe` | 独立后台运行程序，供命令行部署使用 |
+| `proxyctl.exe` | 查询状态、停止和故障排查 |
 | `VERSION.txt` | 版本和构建来源，反馈问题时可附上 |
 | `examples/` | 可导入的示例配置 |
 | `docs/`、`scripts/` | 详细说明及验证脚本 |
@@ -39,10 +39,10 @@ Get-FileHash .\xray-pilot-0.1.1-rc.4-windows-x64.zip -Algorithm SHA256
 
 ### 2. 选择数据目录并启动
 
-双击 `xray-manager.exe` 即可启动。Windows 默认数据目录为程序安装目录下的 `data`，例如 `D:\Apps\xray-pilot\data`；从快捷方式或其他工作目录启动也使用此位置。GUI、后台、CLI 和随包依赖安装脚本使用同一默认目录。需要自定义目录时，从程序所在目录执行：
+双击 `proxy-pilot.exe` 即可启动。Windows 默认数据目录为程序安装目录下的 `data`，例如 `D:\Apps\proxy-pilot\data`；从快捷方式或其他工作目录启动也使用此位置。GUI、后台、CLI 和随包依赖安装脚本使用同一默认目录。需要自定义目录时，从程序所在目录执行：
 
 ```powershell
-.\xray-manager.exe --data-dir "D:\Xray Pilot Data"
+.\proxy-pilot.exe --data-dir "D:\Proxy Pilot Data"
 ```
 
 后续启动和诊断都应使用同一数据目录。可创建带上述参数的快捷方式。首次使用会进入设置向导，依次准备官方依赖、添加配置、检查并确认启动。
@@ -64,8 +64,8 @@ Get-FileHash .\xray-pilot-0.1.1-rc.4-windows-x64.zip -Algorithm SHA256
 也可先用随包脚本自动准备依赖，再打开 GUI 配置连接：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-dependencies.ps1 -Action Install -DataDir "D:\Xray Pilot Data"
-.\xray-manager.exe --data-dir "D:\Xray Pilot Data"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-dependencies.ps1 -Action Install -DataDir "D:\Proxy Pilot Data"
+.\proxy-pilot.exe --data-dir "D:\Proxy Pilot Data"
 ```
 
 脚本输出已验证的 Core 和资源路径；GUI 在尚未配置 Core 时会读取已安装的版本，随后保存设置即可。指定其他官方版本时增加 `-CoreVersion v26.11.9`。
@@ -73,7 +73,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-dependenci
 无法联网时，从 [官方 v26.11.9 发布页](https://github.com/XTLS/Xray-core/releases/tag/v26.11.9) 下载 `Xray-windows-64.zip` 和 `Xray-windows-64.zip.dgst`，放在同一目录，然后执行：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-dependencies.ps1 -Action Install -DataDir "D:\Xray Pilot Data" -CoreVersion v26.11.9 -ArchivePath "D:\Downloads\Xray-windows-64.zip"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-dependencies.ps1 -Action Install -DataDir "D:\Proxy Pilot Data" -CoreVersion v26.11.9 -ArchivePath "D:\Downloads\Xray-windows-64.zip"
 ```
 
 离线包同样需要通过 SHA-256、文件完整性和 Core 版本检查。已有自行从官方获取的 Core 也可在设置中手动选择其 `xray.exe` 及资源目录。
@@ -167,7 +167,7 @@ curl.exe --proxy http://127.0.0.1:10809 --head https://example.com
 | 操作 | 结果 |
 | --- | --- |
 | 关闭窗口 | Windows 下收起到托盘 |
-| 托盘 **打开 Xray Pilot** | 重新打开界面 |
+| 托盘 **打开 Proxy Pilot** | 重新打开界面 |
 | 托盘 **配置**（当前源码，待下一包） | 选择要编辑的配置；仍需检查并确认应用 |
 | 托盘 **使用 PAC 自动代理**（当前源码） | 使用当前配置的 PAC 草稿切换 PAC 模式；脚本为空时按当前配置生成 |
 
@@ -199,32 +199,32 @@ curl.exe --proxy http://127.0.0.1:10809 --head https://example.com
 已有配置并希望通过终端管理时，可在 PowerShell 中执行：
 
 ```powershell
-.\xray-supervisor.exe --data-dir "D:\Xray Pilot Data"
+.\proxy-supervisor.exe --data-dir "D:\Proxy Pilot Data"
 ```
 
 在另一个 PowerShell 窗口查询或控制：
 
 ```powershell
-.\xrayctl.exe --data-dir "D:\Xray Pilot Data" status
-.\xrayctl.exe --data-dir "D:\Xray Pilot Data" start
-.\xrayctl.exe --data-dir "D:\Xray Pilot Data" stop
-.\xrayctl.exe --data-dir "D:\Xray Pilot Data" shutdown
+.\proxyctl.exe --data-dir "D:\Proxy Pilot Data" status
+.\proxyctl.exe --data-dir "D:\Proxy Pilot Data" start
+.\proxyctl.exe --data-dir "D:\Proxy Pilot Data" stop
+.\proxyctl.exe --data-dir "D:\Proxy Pilot Data" shutdown
 ```
 
-同一数据目录只允许一个后台实例；GUI 已启动后台时直接使用 `xrayctl.exe`，无需再启动第二个 Supervisor。首次创建、导入和应用配置建议使用 GUI。程序只在当前登录用户会话内运行：Supervisor、Core、托盘和登录自启任务均使用当前用户身份；不会注册 Windows 服务或 SYSTEM 级后台服务。
+同一数据目录只允许一个后台实例；GUI 已启动后台时直接使用 `proxyctl.exe`，无需再启动第二个 Supervisor。首次创建、导入和应用配置建议使用 GUI。程序只在当前登录用户会话内运行：Supervisor、Core、托盘和登录自启任务均使用当前用户身份；不会注册 Windows 服务或 SYSTEM 级后台服务。
 
 ### 离线维护（当前源码，待下一验证包）
 
 完全退出程序后，先备份数据目录，再运行预览：
 
 ```powershell
-.\xrayctl.exe --data-dir "D:\Xray Pilot Data" maintenance
+.\proxyctl.exe --data-dir "D:\Proxy Pilot Data" maintenance
 ```
 
 默认保留 7 天内的准备产物，历史、设置、候选及操作证据引用的文件持续保留。输出中的 `orphan` 表示可以回收，`recent` / `referenced` 表示保留。核对预览后增加 `--apply` 执行，可用 `--retain-days 30` 延长保留期。后台未退出、操作 / 恢复尚未完成或证据异常时拒绝维护。
 
 ```powershell
-.\xrayctl.exe --data-dir "D:\Xray Pilot Data" maintenance --retain-days 30 --apply
+.\proxyctl.exe --data-dir "D:\Proxy Pilot Data" maintenance --retain-days 30 --apply
 ```
 
 需要压缩旧操作详情时，另加 `--compress-operations`，先不带 `--apply` 预览。压缩保留完整请求、结果及去重身份；**旧版程序无法读取压缩记录**，需要降级时应恢复压缩前的完整数据备份。不会删除配置历史、恢复凭据、依赖下载缓存或已安装依赖版本，因而不保证数据目录大小有固定上限。详细规则见 [维护与本轮收口记录](docs/phase0-2-remaining-closeout.md)。
@@ -254,8 +254,8 @@ curl.exe --proxy http://127.0.0.1:10809 --head https://example.com
 | `RECOVERY_REQUIRED` / `PROXY_RECOVERY_REQUIRED` | 停止 Core、查询状态并保留整个数据目录；修复可信的原始文件后重启。不要删除租约或历史记录来绕过错误 |
 
 ```powershell
-.\xrayctl.exe --data-dir "D:\Xray Pilot Data" logs
-.\xrayctl.exe --data-dir "D:\Xray Pilot Data" operation REQUEST_ID
+.\proxyctl.exe --data-dir "D:\Proxy Pilot Data" logs
+.\proxyctl.exe --data-dir "D:\Proxy Pilot Data" operation REQUEST_ID
 ```
 
 底部状态栏显示简短消息摘要；错误卡片中的详情、请求身份和操作证据可独立展开查看。主题在 **设置 → 外观** 选择，顶栏不再提供快捷主题按钮或程序菜单。

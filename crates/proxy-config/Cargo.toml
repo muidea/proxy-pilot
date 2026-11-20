@@ -1,0 +1,21 @@
+[package]
+name = "proxy-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+proxy-model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+fs2.workspace = true
+base64 = "0.22"
+percent-encoding = "2"
+url = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

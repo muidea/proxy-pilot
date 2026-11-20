@@ -6,8 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-xray-model.workspace = true
-xray-config.workspace = true
+proxy-model.workspace = true
+proxy-config.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

@@ -2,10 +2,10 @@
 # Isolated current-user pipe tests. Does not change WinINet or login tasks.
 $BinaryDir=(Resolve-Path $BinaryDir).Path
 $ErrorActionPreference = 'Stop'
-$work = Join-Path ([IO.Path]::GetTempPath()) ('xray-pilot-pipe-audit-' + [guid]::NewGuid().ToString('N'))
+$work = Join-Path ([IO.Path]::GetTempPath()) ('proxy-pilot-pipe-audit-' + [guid]::NewGuid().ToString('N'))
 $data = Join-Path $work 'data'
 $null = New-Item -ItemType Directory -Path $data -Force
-$server = Start-Process -FilePath (Join-Path $BinaryDir 'xray-supervisor.exe') -ArgumentList @('--data-dir', ('"' + $data + '"')) -PassThru -WindowStyle Hidden -RedirectStandardError (Join-Path $work 'server.log')
+$server = Start-Process -FilePath (Join-Path $BinaryDir 'proxy-supervisor.exe') -ArgumentList @('--data-dir', ('"' + $data + '"')) -PassThru -WindowStyle Hidden -RedirectStandardError (Join-Path $work 'server.log')
 function Open-Pipe {
     $stream = New-Object IO.Pipes.NamedPipeClientStream('.', $script:name, [IO.Pipes.PipeDirection]::InOut)
     $stream.Connect(10000)
@@ -39,7 +39,7 @@ try {
     $canonical = '\\?\' + $root
     $sha = [Security.Cryptography.SHA256]::Create()
     $digest = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($principal + ':' + $canonical)) | ForEach-Object { $_.ToString('x2') })
-    $script:name = 'xray-pilot-' + $digest.Substring(0,32)
+    $script:name = 'proxy-pilot-' + $digest.Substring(0,32)
     Ping
     foreach ($kind in @('oversize','invalid-json','truncated','no-header')) {
         $stream = Open-Pipe
@@ -107,7 +107,7 @@ try {
     $server.Kill(); $server.WaitForExit()
     $occupied = New-Object IO.Pipes.NamedPipeServerStream($script:name,[IO.Pipes.PipeDirection]::InOut,1)
     try {
-        $duplicate = Start-Process -FilePath (Join-Path $BinaryDir 'xray-supervisor.exe') -ArgumentList @('--data-dir', ('"' + $data + '"')) -PassThru -WindowStyle Hidden -RedirectStandardError (Join-Path $work 'occupied.log')
+        $duplicate = Start-Process -FilePath (Join-Path $BinaryDir 'proxy-supervisor.exe') -ArgumentList @('--data-dir', ('"' + $data + '"')) -PassThru -WindowStyle Hidden -RedirectStandardError (Join-Path $work 'occupied.log')
         try {
             if (-not $duplicate.WaitForExit(10000)) {throw 'Supervisor ignored occupied endpoint'}
             if ($duplicate.ExitCode -eq 0) {throw 'Supervisor incorrectly accepted occupied endpoint'}

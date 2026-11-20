@@ -17,12 +17,12 @@ tokio = { version = "1", features = ["full"] }
 fs2 = "0.4"
 tempfile = "3"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Memory", "Win32_System_Pipes", "Win32_System_IO", "Win32_Storage_FileSystem", "Win32_Networking_WinInet", "Win32_Networking_WinHttp"] }
-xray-model = { path = "crates/xray-model" }
-xray-pac = { path = "crates/xray-pac" }
-xray-config = { path = "crates/xray-config" }
-xray-runtime = { path = "crates/xray-runtime" }
+proxy-model = { path = "crates/proxy-model" }
+proxy-pac = { path = "crates/proxy-pac" }
+proxy-config = { path = "crates/proxy-config" }
+proxy-runtime = { path = "crates/proxy-runtime" }
 windows-integration = { path = "crates/windows-integration" }
-xray-supervisor = { path = "crates/xray-supervisor" }
+proxy-supervisor = { path = "crates/proxy-supervisor" }
 
 [profile.release]
 lto = "thin"

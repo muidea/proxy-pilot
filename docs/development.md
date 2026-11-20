@@ -8,7 +8,7 @@
 
 ```powershell
 cargo build --release --workspace --locked
-.\target\release\xray-manager.exe
+.\target\release\proxy-pilot.exe
 ```
 
 Linux GUI 需要图形桌面；系统代理、托盘、文件选择器和登录自启仅实现 Windows 版本。
@@ -16,12 +16,12 @@ Linux GUI 需要图形桌面；系统代理、托盘、文件选择器和登录�
 当前源码已补配置向导、PAC 自动代理、日志持久化、WinHTTP 只读诊断、Dynamic 依赖和编辑撤销，尚未包含在已发布的 rc.4 中；复测请构建当前源码。流程与边界见 [设计文档核对](phase0-2-design-crosscheck.md)、[本轮收口](phase0-2-remaining-closeout.md) 和 [配置交互实现](configuration-interaction.md)。
 
 ```bash
-cargo run -p xray-manager-app -- --data-dir /absolute/path/to/data
+cargo run -p proxy-manager-app -- --data-dir /absolute/path/to/data
 ```
 
 ## 高级诊断接口
 
-CLI 命令与源码入口见 [xrayctl.rs](../crates/xray-supervisor/src/bin/xrayctl.rs)。`operation ID` 返回操作记录或大记录摘要；`operation-details ID` 分块还原完整记录。
+CLI 命令与源码入口见 [proxyctl.rs](../crates/proxy-supervisor/src/bin/proxyctl.rs)。`operation ID` 返回操作记录或大记录摘要；`operation-details ID` 分块还原完整记录。
 
 `request` 从标准输入接收完整的 `xray_model::Request` JSON。写操作须带当前 `expected_generation`，首次应用为 null。请求重试须保留 request ID 和全部原内容；改变内容返回 REQUEST_ID_CONFLICT。
 
@@ -41,7 +41,7 @@ CLI 命令与源码入口见 [xrayctl.rs](../crates/xray-supervisor/src/bin/xray
 
 ## 离线维护
 
-`xrayctl --data-dir PATH maintenance` 默认只预览，无需后台。`--retain-days DAYS` 控制孤儿产物及终态压缩的最小年龄，`--apply` 才修改文件；`--compress-operations` 显式启用保留完整语义的 gzip envelope。运行时持有同一 Store 独占锁，存在恢复 / 未完成 / 损坏证据或链接时保守拒绝。压缩格式旧版不可读，降级需完整备份。引用与失败保护合同见 [维护说明](phase0-2-remaining-closeout.md)。
+`proxyctl --data-dir PATH maintenance` 默认只预览，无需后台。`--retain-days DAYS` 控制孤儿产物及终态压缩的最小年龄，`--apply` 才修改文件；`--compress-operations` 显式启用保留完整语义的 gzip envelope。运行时持有同一 Store 独占锁，存在恢复 / 未完成 / 损坏证据或链接时保守拒绝。压缩格式旧版不可读，降级需完整备份。引用与失败保护合同见 [维护说明](phase0-2-remaining-closeout.md)。
 
 ## 回归与平台验收
 
@@ -51,12 +51,12 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked -- --test-threads=4
 ```
 
-GUI 回归默认不生成截图文件。需要复核真实 egui 图元与字体图集时，将测试进程的 `XRAY_UI_CAPTURE_DIR` 指向 `target/ui-captures` 再运行 `cargo test -p xray-manager-app --locked -- --test-threads=4`；PowerShell 可先设置 `$env:XRAY_UI_CAPTURE_DIR = "target/ui-captures"`，完成后运行 `Remove-Item Env:XRAY_UI_CAPTURE_DIR`。输出的 JSON 网格和 RGBA 字体图集属于本地产物，保存在已忽略的 `target/`，不随源码提交。无窗口图元回归不能替代完整原生桌面交互验收。
+GUI 回归默认不生成截图文件。需要复核真实 egui 图元与字体图集时，将测试进程的 `XRAY_UI_CAPTURE_DIR` 指向 `target/ui-captures` 再运行 `cargo test -p proxy-manager-app --locked -- --test-threads=4`；PowerShell 可先设置 `$env:XRAY_UI_CAPTURE_DIR = "target/ui-captures"`，完成后运行 `Remove-Item Env:XRAY_UI_CAPTURE_DIR`。输出的 JSON 网格和 RGBA 字体图集属于本地产物，保存在已忽略的 `target/`，不随源码提交。无窗口图元回归不能替代完整原生桌面交互验收。
 
-PAC 专项不需要官方 Core：`cargo test -p xray-pac` 与 `cargo test -p xray-supervisor --test pac_flow` 覆盖生成、校验、执行测试、不可变发布、租约、端口/版本切换、失败补偿和启动恢复。需要真实 Core 的 PAC 发布用例默认忽略，设置 `XRAY_TEST_CORE` 后运行：
+PAC 专项不需要官方 Core：`cargo test -p proxy-pac` 与 `cargo test -p proxy-supervisor --test pac_flow` 覆盖生成、校验、执行测试、不可变发布、租约、端口/版本切换、失败补偿和启动恢复。需要真实 Core 的 PAC 发布用例默认忽略，设置 `XRAY_TEST_CORE` 后运行：
 
 ```bash
-XRAY_TEST_CORE=/path/to/xray cargo test -p xray-supervisor --test real_core -- --ignored
+XRAY_TEST_CORE=/path/to/xray cargo test -p proxy-supervisor --test real_core -- --ignored
 ```
 
 真实 WinINet / PAC 前后可用只读快照脚本 `scripts/windows-proxy-snapshot.ps1 -Save/-Compare` 记录并比较五个当前用户代理字段；脚本不写注册表。会话日志位于数据目录 `logs/supervisor.log`；写入时带 UTC 时间戳和操作/代次上下文，凭据字段脱敏，超过 4 MiB 轮转一个备份，旧备份保留 7 天。日志不是持久审计记录，不应作为唯一恢复凭据。
@@ -65,7 +65,7 @@ XRAY_TEST_CORE=/path/to/xray cargo test -p xray-supervisor --test real_core -- -
 
 ```bash
 python3 scripts/fetch-test-core.py --destination /tmp/xray-test-core
-XRAY_TEST_CORE=/tmp/xray-test-core/xray cargo test -p xray-supervisor --test real_core -- --ignored
+XRAY_TEST_CORE=/tmp/xray-test-core/xray cargo test -p proxy-supervisor --test real_core -- --ignored
 ```
 
 Windows PowerShell 设置 `$env:XRAY_TEST_CORE = "C:\path\to\xray.exe"` 后执行同一测试命令。测试使用模拟系统代理，不修改本机 WinINet 设置。CI 包含 Linux / Windows 构建、回归和官方 Core 冒烟；Windows 原生 Core、当前用户限定的 Named Pipe、Job 清理及 GUI 关闭/重开已验证；计划任务的创建、外部修改保护及幂等禁用也已验证；真实 WinINet、托盘菜单全部交互、实际登录启动与当前用户权限拒绝仍需进一步验收。程序不注册 Windows 服务或 SYSTEM 级后台任务。
@@ -74,7 +74,7 @@ API 内部出站的导入 / 冻结 / 官方 Core 校验专项：
 
 ```powershell
 $env:XRAY_TEST_CORE = "C:\Tools\Xray\xray.exe"
-cargo test -p xray-supervisor --test config_import --locked -- --ignored
+cargo test -p proxy-supervisor --test config_import --locked -- --ignored
 ```
 
 默认使用合成 API 配置，只导入并校验，不启动 Core。可选设置 `XRAY_TEST_CONFIG` 为待核对的原生配置文件，测试只读该文件，使用独立临时数据目录和模拟代理；断言不输出配置内容和 Core 错误正文，避免扩散认证信息。Linux 同样支持这两个环境变量。CI 显式运行合成配置的官方 Core 专项；常规 `config_import` 回归另外覆盖不完整配置原文保存、请求去重及运行检查拒绝。
@@ -97,7 +97,7 @@ cargo test -p windows-integration --lib native_login_task_roundtrip -- --ignored
 
 ```powershell
 $env:XRAY_TEST_CORE = "C:\Tools\Xray\xray.exe"
-cargo test -p xray-supervisor --test acceptance_edges --locked -- --ignored
+cargo test -p proxy-supervisor --test acceptance_edges --locked -- --ignored
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-ipc-audit.ps1 -BinaryDir .\target\release -CorePath $env:XRAY_TEST_CORE
 ```
 
@@ -117,7 +117,7 @@ cargo build --release --workspace --locked
 python scripts/package-windows.py --binary-dir target/release
 ```
 
-输出位于 dist，统一使用 `xray-pilot-<版本>-windows-x64.zip`，以及 SHA256SUMS。验证版本通过版本号中的 `rc.N` 区分，例如下一验证版本可使用 `xray-pilot-0.1.1-rc.5-windows-x64.zip`；正式版本例如 `xray-pilot-0.1.1-windows-x64.zip`。文件名不再附加界面名称、验证用途或时间戳。包内包含三个程序、README、版本及源码提交标识、文档、示例和 Windows 验证脚本；不包含 Core 或用户数据。脚本会逐文件核对压缩包内容。正式发布前应使用干净的、与构建输入相同的源码提交，脚本将当前 HEAD 写入 VERSION.txt。
+输出位于 dist，统一使用 `proxy-pilot-<版本>-windows-x64.zip`，以及 SHA256SUMS。验证版本通过版本号中的 `rc.N` 区分，例如下一验证版本可使用 `proxy-pilot-0.1.1-rc.5-windows-x64.zip`；正式版本例如 `proxy-pilot-0.1.1-windows-x64.zip`。文件名不再附加界面名称、验证用途或时间戳。包内包含三个程序、README、版本及源码提交标识、文档、示例和 Windows 验证脚本；不包含 Core 或用户数据。脚本会逐文件核对压缩包内容。正式发布前应使用干净的、与构建输入相同的源码提交，脚本将当前 HEAD 写入 VERSION.txt。
 
 对外提供内容不同的验证包时，应递增预发布版本，同步更新 Cargo.toml 与 Cargo.lock，并重新构建。已发布的版本不复用为不同内容的新包；当前已发布 rc.4，新一轮交付应从 rc.5 起。脚本拒绝覆盖输出目录中的同名包；同版本重复验证构建可使用独立的 `--output-dir`。
 
@@ -147,4 +147,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-portable-c
 
 ## 程序图标资源
 
-矢量源、PNG 与多尺寸 ICO 位于 `crates/xray-manager-app/assets`。普通构建直接使用已提交资源；Windows 构建会通过 winresource 嵌入 EXE 图标，MSVC 使用 Windows SDK，交叉编译 GNU 使用 MinGW windres。调整图形时安装 ImageMagick，执行 `python scripts/generate-icons.py` 重新生成资源。接入与尺寸说明见 [程序图标](ui-icon.md)。
+矢量源、PNG 与多尺寸 ICO 位于 `crates/proxy-manager-app/assets`。普通构建直接使用已提交资源；Windows 构建会通过 winresource 嵌入 EXE 图标，MSVC 使用 Windows SDK，交叉编译 GNU 使用 MinGW windres。调整图形时安装 ImageMagick，执行 `python scripts/generate-icons.py` 重新生成资源。接入与尺寸说明见 [程序图标](ui-icon.md)。

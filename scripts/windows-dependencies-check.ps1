@@ -1,6 +1,6 @@
 ﻿param([string]$Installer = (Join-Path $PSScriptRoot 'windows-dependencies.ps1'), [string]$ArchivePath = '')
 $ErrorActionPreference = 'Stop'
-$work = Join-Path ([IO.Path]::GetTempPath()) ('xray-pilot-dependencies-' + [guid]::NewGuid().ToString('N'))
+$work = Join-Path ([IO.Path]::GetTempPath()) ('proxy-pilot-dependencies-' + [guid]::NewGuid().ToString('N'))
 $data = Join-Path $work 'data 中文 spaces'
 $null = New-Item -ItemType Directory -Path (Join-Path $data 'config') -Force
 $settingsPath = Join-Path $data 'config\manager.json'

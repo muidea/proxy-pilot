@@ -213,8 +213,8 @@ fn native_login_task_roundtrip() {
     let mut c = StartupController::new(
         Box::new(SystemStartup),
         tmp.path(),
-        &xray_config::security::principal().unwrap(),
-        &xray_model::id(),
+        &proxy_config::security::principal().unwrap(),
+        &proxy_model::id(),
     );
     let _cleanup = Cleanup {
         name: c.name.clone(),

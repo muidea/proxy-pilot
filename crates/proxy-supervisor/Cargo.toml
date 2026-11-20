@@ -1,0 +1,23 @@
+[package]
+name = "proxy-supervisor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+proxy-model.workspace = true
+proxy-config.workspace = true
+proxy-runtime.workspace = true
+proxy-pac.workspace = true
+windows-integration.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+flate2 = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -26,25 +26,25 @@ jobs:
       - name: Download and verify official test Core
         run: python scripts/fetch-test-core.py --github-env
       - name: Official Core smoke test (uses a fake system proxy)
-        run: cargo test -p xray-supervisor --test real_core --locked -- --ignored
+        run: cargo test -p proxy-supervisor --test real_core --locked -- --ignored
       - name: Official Core PAC publication and release
-        run: cargo test -p xray-supervisor --test real_core --locked official_core_serves_immutable_pac_and_releases -- --ignored
+        run: cargo test -p proxy-supervisor --test real_core --locked official_core_serves_immutable_pac_and_releases -- --ignored
       - name: Native API configuration import and validation (does not start Core)
-        run: cargo test -p xray-supervisor --test config_import --locked -- --ignored
+        run: cargo test -p proxy-supervisor --test config_import --locked -- --ignored
       - name: Windows official dependency deployment and repair
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/windows-dependencies-check.ps1
       - name: Controlled upstream and file-lock acceptance (fake system proxy)
-        run: cargo test -p xray-supervisor --test acceptance_edges --locked -- --ignored
+        run: cargo test -p proxy-supervisor --test acceptance_edges --locked -- --ignored
       - name: Official Core proxy lease evidence recovery (fake system proxy)
-        run: cargo test -p xray-supervisor --lib official_global_lease_loss_keeps_diagnostics_and_can_be_repaired --locked -- --ignored
+        run: cargo test -p proxy-supervisor --lib official_global_lease_loss_keeps_diagnostics_and_can_be_repaired --locked -- --ignored
       - name: Windows candidate publication recovery
         if: runner.os == 'Windows'
-        run: cargo test -p xray-supervisor --lib official_candidate_and_history_publications_recover_on_windows --locked -- --ignored
+        run: cargo test -p proxy-supervisor --lib official_candidate_and_history_publications_recover_on_windows --locked -- --ignored
       - name: Windows shared restart budget with official Core
         if: runner.os == 'Windows'
-        run: cargo test -p xray-supervisor --lib official_failed_starts_and_successful_restarts_share_budget_on_windows --locked -- --ignored
+        run: cargo test -p proxy-supervisor --lib official_failed_starts_and_successful_restarts_share_budget_on_windows --locked -- --ignored
       - name: Release binaries
         run: cargo build --workspace --release --locked
       - name: Windows IPC and Job recovery smoke
@@ -61,7 +61,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: runner.os == 'Windows'
         with:
-          name: xray-pilot-windows-x64
+          name: proxy-pilot-windows-x64
           path: |
-            dist/xray-pilot-*-windows-x64.zip
+            dist/proxy-pilot-*-windows-x64.zip
             dist/SHA256SUMS

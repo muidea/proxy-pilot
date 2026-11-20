@@ -1,6 +1,6 @@
 use crate::ProxyBackend;
+use proxy_model::{Error, ProxySnapshot, Result};
 use std::path::Path;
-use xray_model::{Error, ProxySnapshot, Result};
 
 pub struct SystemProxy;
 #[cfg(not(windows))]
@@ -73,9 +73,9 @@ impl ProxyBackend for SystemProxy {
     fn write(&mut self, s: &ProxySnapshot) -> Result<()> {
         unsafe {
             use windows_sys::Win32::Networking::WinInet::*;
-            let server = xray_config::security::wide(&s.server);
-            let bypass = xray_config::security::wide(&s.bypass);
-            let pac = xray_config::security::wide(&s.pac_url);
+            let server = proxy_config::security::wide(&s.server);
+            let bypass = proxy_config::security::wide(&s.bypass);
+            let pac = proxy_config::security::wide(&s.pac_url);
             let mut options: [INTERNET_PER_CONN_OPTIONW; 4] = std::mem::zeroed();
             options[0].dwOption = INTERNET_PER_CONN_FLAGS;
             options[0].Value.dwValue = s.flags;
@@ -195,7 +195,7 @@ impl crate::startup::StartupBackend for SystemStartup {
         let root = root.to_string_lossy();
         let root = root.strip_prefix(r"\\?\").unwrap_or(&root);
         Ok(serde_json::from_value(Self::invoke(
-            serde_json::json!({"op":"prepare", "owner":owner, "exe":exe, "root":root, "sid":xray_config::security::principal()?}),
+            serde_json::json!({"op":"prepare", "owner":owner, "exe":exe, "root":root, "sid":proxy_config::security::principal()?}),
         )?)?)
     }
     fn replace(
@@ -213,7 +213,7 @@ impl crate::startup::StartupBackend for SystemStartup {
 
 /// Read-only WinHTTP session proxy diagnostics. Never modifies WinHTTP.
 #[cfg(windows)]
-pub fn winhttp_snapshot() -> Result<xray_model::WinHttpConfig> {
+pub fn winhttp_snapshot() -> Result<proxy_model::WinHttpConfig> {
     unsafe {
         use std::slice;
         use windows_sys::Win32::{
@@ -238,7 +238,7 @@ pub fn winhttp_snapshot() -> Result<xray_model::WinHttpConfig> {
                 value
             }
         }
-        let agent = xray_config::security::wide("XrayPilotDiagnostics");
+        let agent = proxy_config::security::wide("ProxyPilotDiagnostics");
         let session = WinHttpOpen(
             agent.as_ptr(),
             WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
@@ -266,7 +266,7 @@ pub fn winhttp_snapshot() -> Result<xray_model::WinHttpConfig> {
             WINHTTP_ACCESS_TYPE_NO_PROXY => "NO_PROXY",
             _ => "DEFAULT_PROXY",
         };
-        Ok(xray_model::WinHttpConfig {
+        Ok(proxy_model::WinHttpConfig {
             access_type: access_type.into(),
             proxy: take(info.lpszProxy),
             bypass: take(info.lpszProxyBypass),
@@ -275,7 +275,7 @@ pub fn winhttp_snapshot() -> Result<xray_model::WinHttpConfig> {
 }
 
 #[cfg(not(windows))]
-pub fn winhttp_snapshot() -> Result<xray_model::WinHttpConfig> {
+pub fn winhttp_snapshot() -> Result<proxy_model::WinHttpConfig> {
     Err(Error::new(
         "UNSUPPORTED_PLATFORM",
         "WinHTTP diagnostics are available on Windows only",

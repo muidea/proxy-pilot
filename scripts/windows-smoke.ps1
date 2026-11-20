@@ -66,7 +66,7 @@ public static class XraySmokeWindow {
 '@
 $BinaryDir = (Resolve-Path $BinaryDir).Path
 $CorePath = (Resolve-Path $CorePath).Path
-$work = Join-Path ([IO.Path]::GetTempPath()) ('xray-pilot-smoke-' + [guid]::NewGuid().ToString('N'))
+$work = Join-Path ([IO.Path]::GetTempPath()) ('proxy-pilot-smoke-' + [guid]::NewGuid().ToString('N'))
 $data = Join-Path $work 'data with spaces'
 $null = New-Item -ItemType Directory -Path $data -Force
 $server = $null
@@ -74,7 +74,7 @@ $guiProcess = $null
 $coreProcess = $null
 function Call-Ctl([string]$action, [string]$inputJson = '') {
     $info = New-Object System.Diagnostics.ProcessStartInfo
-    $info.FileName = Join-Path $BinaryDir 'xrayctl.exe'
+    $info.FileName = Join-Path $BinaryDir 'proxyctl.exe'
     $info.Arguments = '--data-dir "' + $data + '" ' + $action
     $info.UseShellExecute = $false
     $info.CreateNoWindow = $true
@@ -105,7 +105,7 @@ function New-Request([string]$operation, $payload, $generation) {
     return (@{ protocol_version = 1; request_id = [guid]::NewGuid().ToString(); expected_generation = $generation; command = $command } | ConvertTo-Json -Depth 64 -Compress)
 }
 function Start-Server {
-    $script:server = Start-Process -FilePath (Join-Path $BinaryDir 'xray-supervisor.exe') -ArgumentList @('--data-dir', ('"' + $data + '"')) -PassThru -WindowStyle Hidden -RedirectStandardError (Join-Path $work 'supervisor-error.log')
+    $script:server = Start-Process -FilePath (Join-Path $BinaryDir 'proxy-supervisor.exe') -ArgumentList @('--data-dir', ('"' + $data + '"')) -PassThru -WindowStyle Hidden -RedirectStandardError (Join-Path $work 'supervisor-error.log')
     for ($i=0; $i -lt 50; $i++) {
         try { $null = Call-Ctl 'status'; return } catch {
             $lastFailure = $_.Exception.Message
@@ -116,13 +116,13 @@ function Start-Server {
     throw ('Supervisor unavailable: ' + $lastFailure)
 }
 function Start-Gui {
-    $script:guiProcess = Start-Process -FilePath (Join-Path $BinaryDir 'xray-manager.exe') -ArgumentList @('--data-dir', ('"' + $data + '"')) -PassThru
+    $script:guiProcess = Start-Process -FilePath (Join-Path $BinaryDir 'proxy-pilot.exe') -ArgumentList @('--data-dir', ('"' + $data + '"')) -PassThru
     for ($i=0; $i -lt 100; $i++) {
         $script:guiProcess.Refresh()
         if ($script:guiProcess.HasExited) { throw 'GUI exited during startup' }
         # A helper window can exist before eframe creates and initializes the actual UI.
         if ($script:guiProcess.MainWindowHandle -ne [IntPtr]::Zero -and
-            $script:guiProcess.MainWindowTitle -eq 'Xray Pilot' -and
+            $script:guiProcess.MainWindowTitle -eq 'Proxy Pilot' -and
             [XraySmokeWindow]::IsWindowVisible($script:guiProcess.MainWindowHandle)) {
             $readyHandle = $script:guiProcess.MainWindowHandle
             Start-Sleep -Milliseconds 300
@@ -164,7 +164,7 @@ try {
         $guiProcess.Refresh()
         if ($guiProcess.HasExited) { throw 'Closing the window exited instead of hiding to tray' }
         if ([XraySmokeWindow]::IsWindowVisible($windowHandle)) { throw ("GUI window remained visible after close: $windowTitle") }
-        [XraySmokeWindow]::TrayCommand($guiProcess.Id, '打开 Xray Pilot')
+        [XraySmokeWindow]::TrayCommand($guiProcess.Id, '打开 Proxy Pilot')
         for ($i=0; $i -lt 100 -and -not [XraySmokeWindow]::IsWindowVisible($windowHandle); $i++) { Start-Sleep -Milliseconds 100 }
         if (-not [XraySmokeWindow]::IsWindowVisible($windowHandle)) { throw 'Tray Open did not wake the hidden GUI' }
         if (-not $guiProcess.CloseMainWindow()) { throw 'Cannot hide GUI again' }
@@ -194,7 +194,7 @@ try {
         $children = @(Get-CimInstance Win32_Process -Filter ("ParentProcessId = " + $server.Id) | Where-Object { $_.Name -eq 'xray.exe' })
         if ($children.Count -ne 1) { throw 'Expected one restarted Core' }
         $coreProcess = Get-Process -Id $children[0].ProcessId
-        $guiProcess = Start-Process -FilePath (Join-Path $BinaryDir 'xray-manager.exe') -ArgumentList @('--background', '--data-dir', ('"' + $data + '"')) -PassThru
+        $guiProcess = Start-Process -FilePath (Join-Path $BinaryDir 'proxy-pilot.exe') -ArgumentList @('--background', '--data-dir', ('"' + $data + '"')) -PassThru
         # A background-started instance has no visible viewport to drive polling.
         Start-Sleep -Seconds 3
         [XraySmokeWindow]::TrayCommand($guiProcess.Id, '退出程序（停止 Core 并恢复代理）')

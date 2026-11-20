@@ -1,11 +1,11 @@
 ﻿param([Parameter(Mandatory=$true)][string]$BinaryDir)
 # Isolated default-directory checks. Never touches an existing installation or user data.
 $ErrorActionPreference = 'Stop'
-$work = Join-Path ([IO.Path]::GetTempPath()) ('xray-pilot-portable-' + [guid]::NewGuid().ToString('N'))
+$work = Join-Path ([IO.Path]::GetTempPath()) ('proxy-pilot-portable-' + [guid]::NewGuid().ToString('N'))
 $install = Join-Path $work 'installation with spaces'
 $outside = Join-Path $work 'unrelated working directory'
 $null = New-Item -ItemType Directory -Path $install, $outside, (Join-Path $install 'scripts') -Force
-foreach ($name in @('xray-manager.exe', 'xray-supervisor.exe', 'xrayctl.exe')) {
+foreach ($name in @('proxy-pilot.exe', 'proxy-supervisor.exe', 'proxyctl.exe')) {
     Copy-Item -LiteralPath (Join-Path $BinaryDir $name) -Destination (Join-Path $install $name)
 }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-dependencies.ps1') -Destination (Join-Path $install 'scripts\windows-dependencies.ps1')
@@ -17,7 +17,7 @@ $gui = $null
 $server = $null
 function Call-Ctl([string]$action) {
     $info = New-Object Diagnostics.ProcessStartInfo
-    $info.FileName = Join-Path $install 'xrayctl.exe'
+    $info.FileName = Join-Path $install 'proxyctl.exe'
     $info.Arguments = $action
     $info.WorkingDirectory = $outside
     $info.UseShellExecute = $false
@@ -46,7 +46,7 @@ try {
         if ($report.selected) { throw 'Unexpected preexisting bundle' }
     } finally { Pop-Location }
     if (-not (Test-Path (Join-Path $data 'dependencies\install.lock'))) { throw 'Installer did not use installation/data' }
-    $gui = Start-Process -FilePath (Join-Path $install 'xray-manager.exe') -ArgumentList '--background' -WorkingDirectory $outside -PassThru
+    $gui = Start-Process -FilePath (Join-Path $install 'proxy-pilot.exe') -ArgumentList '--background' -WorkingDirectory $outside -PassThru
     Wait-Server
     if ($gui.HasExited -or -not (Test-Path (Join-Path $data 'runtime\installation.json'))) { throw 'GUI did not create its adjacent data directory' }
     $gui.Kill(); $gui.WaitForExit()
@@ -56,7 +56,7 @@ try {
         try { $null = Call-Ctl 'status' } catch { break }
         Start-Sleep -Milliseconds 100
     }
-    $server = Start-Process -FilePath (Join-Path $install 'xray-supervisor.exe') -WorkingDirectory $outside -WindowStyle Hidden -PassThru
+    $server = Start-Process -FilePath (Join-Path $install 'proxy-supervisor.exe') -WorkingDirectory $outside -WindowStyle Hidden -PassThru
     Wait-Server
     if ($server.HasExited) { throw 'Standalone Supervisor did not use the same adjacent data directory' }
     $null = Call-Ctl 'shutdown'

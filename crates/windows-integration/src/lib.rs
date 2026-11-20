@@ -2,10 +2,10 @@ mod platform;
 pub use platform::{SystemProxy, SystemStartup, winhttp_snapshot};
 pub mod startup;
 
+use proxy_config::{optional_json, write_json};
+use proxy_model::{Error, ProxySnapshot, Result, canonical_hash, id};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use xray_config::{optional_json, write_json};
-use xray_model::{Error, ProxySnapshot, Result, canonical_hash, id};
 
 pub trait ProxyBackend: Send {
     fn read(&self) -> Result<ProxySnapshot>;

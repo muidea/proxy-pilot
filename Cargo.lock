@@ -3024,6 +3024,95 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
+name = "proxy-config"
+version = "0.1.1-rc.38"
+dependencies = [
+ "base64",
+ "fs2",
+ "percent-encoding",
+ "proxy-model",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "url",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "proxy-manager-app"
+version = "0.1.1-rc.38"
+dependencies = [
+ "eframe",
+ "proxy-config",
+ "proxy-model",
+ "proxy-pac",
+ "proxy-runtime",
+ "proxy-supervisor",
+ "raw-window-handle",
+ "rfd",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tray-icon",
+ "windows-sys 0.61.2",
+ "winresource",
+]
+
+[[package]]
+name = "proxy-model"
+version = "0.1.1-rc.38"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
+]
+
+[[package]]
+name = "proxy-pac"
+version = "0.1.1-rc.38"
+dependencies = [
+ "boa_engine",
+ "proxy-config",
+ "proxy-model",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "url",
+]
+
+[[package]]
+name = "proxy-runtime"
+version = "0.1.1-rc.38"
+dependencies = [
+ "base64",
+ "proxy-model",
+ "serde_json",
+ "tempfile",
+ "time",
+ "tokio",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "proxy-supervisor"
+version = "0.1.1-rc.38"
+dependencies = [
+ "flate2",
+ "proxy-config",
+ "proxy-model",
+ "proxy-pac",
+ "proxy-runtime",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "windows-integration",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4399,12 +4488,12 @@ checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 name = "windows-integration"
 version = "0.1.1-rc.38"
 dependencies = [
+ "proxy-config",
+ "proxy-model",
  "serde",
  "serde_json",
  "tempfile",
  "windows-sys 0.61.2",
- "xray-config",
- "xray-model",
 ]
 
 [[package]]
@@ -4747,95 +4836,6 @@ name = "xml-rs"
 version = "0.8.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
-
-[[package]]
-name = "xray-config"
-version = "0.1.1-rc.38"
-dependencies = [
- "base64",
- "fs2",
- "percent-encoding",
- "serde",
- "serde_json",
- "tempfile",
- "url",
- "windows-sys 0.61.2",
- "xray-model",
-]
-
-[[package]]
-name = "xray-manager-app"
-version = "0.1.1-rc.38"
-dependencies = [
- "eframe",
- "raw-window-handle",
- "rfd",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tray-icon",
- "windows-sys 0.61.2",
- "winresource",
- "xray-config",
- "xray-model",
- "xray-pac",
- "xray-runtime",
- "xray-supervisor",
-]
-
-[[package]]
-name = "xray-model"
-version = "0.1.1-rc.38"
-dependencies = [
- "serde",
- "serde_json",
- "sha2",
- "uuid",
-]
-
-[[package]]
-name = "xray-pac"
-version = "0.1.1-rc.38"
-dependencies = [
- "boa_engine",
- "serde",
- "serde_json",
- "tempfile",
- "url",
- "xray-config",
- "xray-model",
-]
-
-[[package]]
-name = "xray-runtime"
-version = "0.1.1-rc.38"
-dependencies = [
- "base64",
- "serde_json",
- "tempfile",
- "time",
- "tokio",
- "windows-sys 0.61.2",
- "xray-model",
-]
-
-[[package]]
-name = "xray-supervisor"
-version = "0.1.1-rc.38"
-dependencies = [
- "flate2",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "windows-integration",
- "windows-sys 0.61.2",
- "xray-config",
- "xray-model",
- "xray-pac",
- "xray-runtime",
-]
 
 [[package]]
 name = "yoke"

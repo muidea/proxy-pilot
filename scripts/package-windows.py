@@ -79,7 +79,7 @@ def main():
     ).strip()
     files = [
         (args.binary_dir / name, name)
-        for name in ("xray-manager.exe", "xray-supervisor.exe", "xrayctl.exe")
+        for name in ("proxy-pilot.exe", "proxy-supervisor.exe", "proxyctl.exe")
     ]
     files += [(root / "LICENSE", "LICENSE")]
     readme_data = package_readme((root / "README.md").read_text(encoding="utf-8")).encode("utf-8")
@@ -104,7 +104,7 @@ def main():
             parser.error(f"Missing package input: {source}")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     now = datetime.now(timezone.utc)
-    package = args.output_dir / f"xray-pilot-{version}-windows-x64.zip"
+    package = args.output_dir / f"proxy-pilot-{version}-windows-x64.zip"
     if package.exists():
         parser.error(
             f"Package already exists: {package}. "
@@ -145,17 +145,17 @@ def main():
     extra["VERSION.txt"] = metadata.encode("utf-8")
     with zipfile.ZipFile(package, "x", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for source, name in files:
-            archive.write(source, f"xray-pilot/{name}")
+            archive.write(source, f"proxy-pilot/{name}")
         for name, data in extra.items():
-            archive.writestr(f"xray-pilot/{name}", data)
+            archive.writestr(f"proxy-pilot/{name}", data)
     with zipfile.ZipFile(package) as archive:
         if archive.testzip() is not None:
             raise RuntimeError("Package CRC verification failed")
         for source, name in files:
-            if archive.read(f"xray-pilot/{name}") != source.read_bytes():
+            if archive.read(f"proxy-pilot/{name}") != source.read_bytes():
                 raise RuntimeError(f"Package input differs: {source}")
         for name, data in extra.items():
-            if archive.read(f"xray-pilot/{name}") != data:
+            if archive.read(f"proxy-pilot/{name}") != data:
                 raise RuntimeError(f"Package metadata differs: {name}")
     if args.validation and source_manifest(root)[1] != tree_hash:
         package.unlink()

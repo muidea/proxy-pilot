@@ -1,0 +1,192 @@
+//! GUI metadata is separate from committed native profiles and runtime manifests.
+use proxy_model::Result;
+use serde::{Deserialize, Serialize};
+use std::{collections::BTreeMap, path::Path};
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub enum ExitDefault {
+    #[default]
+    Gui,
+    Shutdown,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PausedPortForward {
+    pub tag: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    pub listen: String,
+    pub port: u16,
+    pub network: String,
+    pub target_host: String,
+    pub target_port: u16,
+    pub outbound_tag: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_inbound: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+pub struct Workspace {
+    #[serde(default)]
+    pub names: BTreeMap<String, String>,
+    #[serde(default)]
+    pub node_names: BTreeMap<String, BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub port_forward_names: BTreeMap<String, BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub paused_port_forwards: BTreeMap<String, Vec<PausedPortForward>>,
+    #[serde(default)]
+    pub asset_roots: BTreeMap<String, String>,
+    /// Per-profile PAC editor draft. Never applied until an explicit run transaction.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pac: BTreeMap<String, proxy_model::PacDraft>,
+    /// Per-profile draft proxy mode. Never applied until an explicit run transaction.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub proxy_modes: BTreeMap<String, proxy_model::ProxyMode>,
+    /// Last observed Core running state, used to restore it after a normal exit.
+    #[serde(default)]
+    pub last_core_running: bool,
+    /// Last committed proxy connection mode before exiting, used during startup restore.
+    #[serde(default)]
+    pub last_proxy_mode: proxy_model::ProxyMode,
+    /// Last applied PAC configuration, used to restore PAC auto-proxy on startup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_pac: Option<proxy_model::PacDraft>,
+    /// Last reminder choice for the single tray exit action.
+    #[serde(default)]
+    pub exit_default: ExitDefault,
+    /// Whether the Overview page displays the "最近活动与版本" card (hidden by default).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub overview_show_activity: bool,
+}
+impl Workspace {
+    pub fn load(root: &Path) -> Result<Self> {
+        Ok(proxy_config::optional_json(&root.join("config/gui.json"))?.unwrap_or_default())
+    }
+    pub fn save(&self, root: &Path) -> Result<()> {
+        proxy_config::write_json(&root.join("config/gui.json"), self)
+    }
+    pub fn name<'a>(&'a self, id: &'a str) -> &'a str {
+        self.names.get(id).map(String::as_str).unwrap_or(id)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct NumberInput {
+    pub source: String,
+    pub text: String,
+}
+impl NumberInput {
+    pub fn matches(&self, value: &serde_json::Value) -> bool {
+        value.as_number().is_some_and(|number| {
+            self.source
+                .parse::<serde_json::Number>()
+                .is_ok_and(|source| *number == source)
+        })
+    }
+}
+pub type NumberInputs = BTreeMap<String, NumberInput>;
+
+#[derive(Clone, Deserialize, Serialize)]
+pub struct Draft {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub number_inputs: NumberInputs,
+    pub base_revision: String,
+    pub json: String,
+}
+impl Draft {
+    fn path(root: &Path, id: &str) -> Result<std::path::PathBuf> {
+        proxy_config::valid_id(id)?;
+        Ok(root.join("config/editor-drafts").join(format!("{id}.json")))
+    }
+    pub fn load(root: &Path, id: &str) -> Result<Option<Self>> {
+        let draft: Option<Self> = proxy_config::optional_json(&Self::path(root, id)?)?;
+        if let Some(draft) = &draft
+            && !draft.number_inputs.is_empty()
+        {
+            let value: serde_json::Value = serde_json::from_str(&draft.json)?;
+            for (path, input) in &draft.number_inputs {
+                if !value.pointer(path).is_some_and(|n| input.matches(n))
+                    || input.text.parse::<serde_json::Number>().is_ok()
+                {
+                    return Err(proxy_model::Error::new(
+                        "DRAFT_RECOVERY_REQUIRED",
+                        "Unfinished number input does not match its draft; preserve the draft for recovery",
+                    ));
+                }
+            }
+        }
+        Ok(draft)
+    }
+    pub fn save(&self, root: &Path, id: &str) -> Result<()> {
+        proxy_config::write_json(&Self::path(root, id)?, self)
+    }
+    pub fn remove(root: &Path, id: &str) -> Result<()> {
+        match std::fs::remove_file(Self::path(root, id)?) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn metadata_and_drafts_never_replace_native_profiles() {
+        let root = tempfile::tempdir().unwrap();
+        let store = proxy_config::Store::open(root.path()).unwrap();
+        let profile = store.create("work", "{}").unwrap();
+        let mut workspace = Workspace::default();
+        workspace.names.insert("work".into(), "工作网络".into());
+        workspace.node_names.insert(
+            "work".into(),
+            BTreeMap::from([("node-1".into(), "香港节点".into())]),
+        );
+        workspace.last_core_running = true;
+        let pac_draft = proxy_model::PacDraft {
+            mode: proxy_model::PacMode::ProxyList,
+            geosites: vec!["geosite:cn".into()],
+            domains: vec!["example.com".into()],
+            script: "function FindProxyForURL(){ return 'DIRECT'; }".into(),
+            port: proxy_model::DEFAULT_PAC_PORT,
+        };
+        workspace.pac.insert("work".into(), pac_draft.clone());
+        workspace
+            .proxy_modes
+            .insert("work".into(), proxy_model::ProxyMode::Pac);
+        workspace.save(root.path()).unwrap();
+        let draft = Draft {
+            number_inputs: Default::default(),
+            base_revision: profile.revision.clone(),
+            json: "{\"unapplied\":true}".into(),
+        };
+        draft.save(root.path(), "work").unwrap();
+        assert_eq!(store.profile("work").unwrap().json, "{}");
+        assert_eq!(
+            Workspace::load(root.path()).unwrap().name("work"),
+            "工作网络"
+        );
+        assert_eq!(
+            Draft::load(root.path(), "work")
+                .unwrap()
+                .unwrap()
+                .base_revision,
+            profile.revision
+        );
+        assert_eq!(
+            Workspace::load(root.path()).unwrap().node_names["work"]["node-1"],
+            "香港节点"
+        );
+        assert!(Workspace::load(root.path()).unwrap().last_core_running);
+        assert_eq!(Workspace::load(root.path()).unwrap().pac["work"], pac_draft);
+        assert_eq!(
+            Workspace::load(root.path()).unwrap().proxy_modes["work"],
+            proxy_model::ProxyMode::Pac
+        );
+        assert!(Draft::load(root.path(), "../work").is_err());
+        Draft::remove(root.path(), "work").unwrap();
+        assert!(Draft::load(root.path(), "work").unwrap().is_none());
+    }
+}

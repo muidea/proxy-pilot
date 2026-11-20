@@ -1,11 +1,11 @@
 //! Login task ownership and recoverable manager-settings transactions.
+use proxy_config::{optional_json, read_json, write_json};
+use proxy_model::{Error, Result, Settings, canonical_hash, hash};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
 };
-use xray_config::{optional_json, read_json, write_json};
-use xray_model::{Error, Result, Settings, canonical_hash, hash};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StartupTask {
@@ -57,13 +57,13 @@ impl StartupController {
         installation: &str,
     ) -> Self {
         let owner = format!(
-            "XrayPilot:{principal}:{installation}:{}",
+            "ProxyPilot:{principal}:{installation}:{}",
             hash(root.to_string_lossy().as_bytes())
         );
         Self {
             backend,
             root: root.into(),
-            name: format!("XrayPilot-{}", &hash(owner.as_bytes())[..32]),
+            name: format!("ProxyPilot-{}", &hash(owner.as_bytes())[..32]),
             owner,
             #[cfg(test)]
             fail_settings_write: false,
