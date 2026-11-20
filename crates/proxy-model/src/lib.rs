@@ -684,7 +684,14 @@ pub fn to_portable_path(base: &Path, target: &Path) -> PathBuf {
         return PathBuf::new();
     }
     let clean_target = strip_windows_verbatim(target);
-    if !clean_target.is_absolute() {
+    if clean_target
+        .components()
+        .any(|c| matches!(c, Component::Prefix(_)))
+        && !clean_target.has_root()
+    {
+        return target.to_path_buf();
+    }
+    if !clean_target.has_root() {
         let normalized = normalize_lexical(&clean_target);
         let parts: Vec<String> = normalized
             .components()
@@ -698,7 +705,7 @@ pub fn to_portable_path(base: &Path, target: &Path) -> PathBuf {
     }
     let clean_base = normalize_lexical(&strip_windows_verbatim(base));
     let norm_target = normalize_lexical(&clean_target);
-    if !clean_base.is_absolute() {
+    if !clean_base.has_root() {
         return target.to_path_buf();
     }
     let base_comps: Vec<Component<'_>> = clean_base.components().collect();
@@ -713,7 +720,7 @@ pub fn to_portable_path(base: &Path, target: &Path) -> PathBuf {
     let same_root = base_comps
         .iter()
         .take(common)
-        .any(|c| matches!(c, Component::RootDir | Component::Prefix(_)));
+        .any(|c| matches!(c, Component::RootDir));
     if !same_root {
         return target.to_path_buf();
     }
@@ -733,12 +740,15 @@ pub fn to_portable_path(base: &Path, target: &Path) -> PathBuf {
     join_forward_slashes(&parts)
 }
 
-/// Resolve `path` against `base` if `path` is relative; keep absolute or empty paths intact.
+/// Resolve `path` against `base` if `path` is relative; keep absolute/rooted or empty paths intact.
 pub fn resolve_path(base: &Path, path: &Path) -> PathBuf {
     if path.as_os_str().is_empty() {
         return PathBuf::new();
     }
-    if path.is_absolute() {
+    if path.is_absolute()
+        || path.has_root()
+        || path.components().any(|c| matches!(c, Component::Prefix(_)))
+    {
         return path.to_path_buf();
     }
     if base.as_os_str().is_empty() {
@@ -810,5 +820,27 @@ mod path_tests {
         );
         assert_eq!(to_portable_path(base, Path::new("")), PathBuf::new());
         assert_eq!(resolve_path(base, Path::new("")), PathBuf::new());
+        assert_eq!(
+            resolve_path(base, Path::new("/other/absolute")),
+            PathBuf::from("/other/absolute")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_drive_and_verbatim_portable_paths_roundtrip() {
+        let base = Path::new(r"C:\ProxyPilot\data");
+        assert_eq!(
+            to_portable_path(base, Path::new(r"\\?\c:\ProxyPilot\data\cores\xray.exe")),
+            PathBuf::from("cores/xray.exe")
+        );
+        assert_eq!(
+            to_portable_path(base, Path::new(r"D:\External\xray.exe")),
+            PathBuf::from(r"D:\External\xray.exe")
+        );
+        assert_eq!(
+            to_portable_path(base, Path::new("C:relative.exe")),
+            PathBuf::from("C:relative.exe")
+        );
     }
 }
