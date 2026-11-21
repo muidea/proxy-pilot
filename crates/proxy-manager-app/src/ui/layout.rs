@@ -333,54 +333,21 @@ impl App {
         let running = self.is_running();
         let enabled = self.write_blocker().is_none();
         let generation = self.status.as_ref().and_then(|s| s.generation.clone());
-        ui.horizontal_wrapped(|ui| {
-            ui.vertical(|ui| {
-                ui.heading("总览");
-                ui.label(
-                    RichText::new("直观查看 Core、系统代理归属、生效 PAC 与端口转发独立运行状态。")
-                        .weak(),
-                );
-            });
-            ui.add_space(12.0);
-            if running {
-                if ui
-                    .add_enabled(
-                        self.ui.connected && !self.busy && self.ui.uncertain.is_none(),
-                        egui::Button::new("停止 Core"),
-                    )
-                    .clicked()
-                {
-                    self.ui.dialog = Some(Dialog::Confirm(Action::Stop));
-                }
-                if ui
-                    .add_enabled(enabled, egui::Button::new("重启当前运行版本"))
-                    .clicked()
-                {
-                    self.ui.dialog = Some(Dialog::Confirm(Action::Restart));
-                }
-            } else if generation.is_some() {
-                if primary(ui, "启动上次应用版本", enabled) {
-                    self.ui.dialog = Some(Dialog::Confirm(Action::Restart));
-                }
-                if ui.button("选择配置并启动").clicked() {
-                    self.ui.page = Page::Profiles;
-                }
-            } else if primary(ui, "选择配置并启动", enabled) {
-                self.ui.page = Page::Profiles;
-            }
-            if ui.button("管理配置").clicked() {
-                self.ui.page = Page::Profiles;
-            }
-        });
+        heading(
+            ui,
+            "总览",
+            "直观查看 Core 连接状态、系统代理方式、生效 PAC 与端口转发运行情况。",
+        );
         if let Some(notice) = self
             .status
             .as_ref()
             .and_then(|status| status.auto_connect_notice.as_deref())
         {
-            ui.add_space(8.0);
             crate::widgets::banner_box(ui, crate::widgets::BadgeTone::Warn, notice);
+            ui.add_space(12.0);
+        } else {
+            ui.add_space(2.0);
         }
-        ui.add_space(12.0);
         let runtime = self
             .ui
             .runtime
@@ -463,16 +430,12 @@ impl App {
                     RichText::new(core_label).strong().color(core_fg),
                 );
                 ui.separator();
-                crate::widgets::kv_row(
-                    ui,
-                    "运行中配置",
-                    RichText::new(if running {
-                        name.as_str()
-                    } else {
-                        "无运行配置"
-                    })
-                    .strong(),
-                );
+                let profile_desc = match generation.as_ref() {
+                    Some(_) if running => name.clone(),
+                    Some(_) => format!("{name}（已停止）"),
+                    None => "尚未应用配置".into(),
+                };
+                crate::widgets::kv_row(ui, "当前配置", RichText::new(profile_desc).strong());
                 ui.separator();
                 let mode_desc = match (running, owned, committed) {
                     (true, true, Some(ProxyMode::Pac)) => "PAC 自动代理（由本程序接管）",
@@ -502,28 +465,19 @@ impl App {
                     crate::widgets::kv_row(ui, "生效 PAC 策略", RichText::new(desc).strong());
                 }
                 ui.separator();
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("端口转发").small().weak());
-                    ui.label(
-                        RichText::new(if running {
-                            if pf_count > 0 {
-                                format!("{pf_count} 条独立监听生效中")
-                            } else {
-                                "0 条监听".into()
-                            }
-                        } else {
-                            "已随 Core 停止".into()
-                        })
-                        .strong(),
-                    );
-                    if ui.button("管理端口转发").clicked() {
-                        app.ui.page = Page::Profiles;
-                        app.ui.profile_tab = ProfileTab::PortForward;
+                let pf_summary = if running {
+                    if pf_count > 0 {
+                        format!("{pf_count} 条监听生效中")
+                    } else {
+                        "0 条监听".into()
                     }
-                });
-                ui.add_space(4.0);
+                } else {
+                    "已随 Core 停止".into()
+                };
+                crate::widgets::kv_row(ui, "Xray 端口转发", RichText::new(pf_summary).strong());
+                ui.separator();
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("快捷切换运行代理模式：").small().weak());
+                    ui.label(RichText::new("代理模式").small().weak());
                     for (mode, label) in [
                         (ProxyMode::Direct, "直连"),
                         (ProxyMode::Pac, "PAC"),
@@ -546,7 +500,39 @@ impl App {
                             app.ui.dialog = Some(Dialog::Confirm(Action::Proxy(mode)));
                         }
                     }
-                    if ui.button("打开路由诊断").clicked() {
+                });
+                ui.separator();
+                ui.horizontal_wrapped(|ui| {
+                    if running {
+                        if ui
+                            .add_enabled(
+                                app.ui.connected && !app.busy && app.ui.uncertain.is_none(),
+                                egui::Button::new("停止 Core"),
+                            )
+                            .clicked()
+                        {
+                            app.ui.dialog = Some(Dialog::Confirm(Action::Stop));
+                        }
+                        if ui
+                            .add_enabled(enabled, egui::Button::new("重启 Core"))
+                            .clicked()
+                        {
+                            app.ui.dialog = Some(Dialog::Confirm(Action::Restart));
+                        }
+                        if ui.button("管理配置").clicked() {
+                            app.ui.page = Page::Profiles;
+                        }
+                    } else if generation.is_some() {
+                        if primary(ui, "启动 Core", enabled) {
+                            app.ui.dialog = Some(Dialog::Confirm(Action::Restart));
+                        }
+                        if ui.button("管理配置").clicked() {
+                            app.ui.page = Page::Profiles;
+                        }
+                    } else if primary(ui, "选择配置", enabled) {
+                        app.ui.page = Page::Profiles;
+                    }
+                    if ui.button("路由诊断").clicked() {
                         app.ui.page = Page::Diagnostics;
                     }
                 });
@@ -555,20 +541,20 @@ impl App {
         let render_forwards_card = |app: &mut App, ui: &mut egui::Ui| {
             card(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("运行中端口转发清单").strong().size(16.0));
-                    if ui.button("前往管理").clicked() {
+                    ui.label(RichText::new("端口转发与隧道").strong().size(16.0));
+                    if ui.button("管理转发").clicked() {
                         app.ui.page = Page::Profiles;
                         app.ui.profile_tab = ProfileTab::PortForward;
                     }
                 });
                 ui.add_space(4.0);
                 if !running {
-                    ui.label(
-                        RichText::new(
-                            "Core 当前未运行。点击「启动上次应用版本」后自动恢复 Xray 端口转发监听。",
-                        )
-                        .weak(),
-                    );
+                    let msg = if generation.is_some() {
+                        "Core 当前未运行。点击左侧「启动 Core」后将自动恢复 Xray 端口转发监听。"
+                    } else {
+                        "尚未应用配置。点击左侧「选择配置」并应用后，已启用的 Xray 端口转发将随 Core 启动。"
+                    };
+                    ui.label(RichText::new(msg).weak());
                 } else if active_forwards.is_empty() {
                     ui.label(RichText::new("当前运行配置暂无已启用的 Xray 端口转发。").weak());
                 } else {

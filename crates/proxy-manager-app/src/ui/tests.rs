@@ -3500,7 +3500,7 @@ fn port_forward_cross_page_parity_overview_nodes_json_and_diagnostics() {
     app.ui.page = Page::Overview;
     let overview_out = guided_frame(&mut app, &ctx, vec![], 1100.0, 1200.0);
     assert!(overlapping_visible_text(&overview_out).is_empty());
-    let _ = text_bounds(&overview_out, "运行中端口转发清单");
+    let _ = text_bounds(&overview_out, "端口转发与隧道");
     let _ = text_bounds(&overview_out, "内网数据库 (TCP)");
 
     // Profile list, PortForward tab badge, and Outbounds node card reference badge align cleanly.
@@ -4147,30 +4147,53 @@ fn overview_action_buttons_match_standard_control_height() {
     app.ui.workspace.overview_show_activity = true;
     let ctx = egui::Context::default();
     configure(&ctx);
+
+    // 1. Running Core state: Core & profile controls live inside the left card alongside mode pills.
     let output = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
     assert!(overlapping_visible_text(&output).is_empty());
 
-    let expected = [
-        "管理端口转发",
-        "打开路由诊断",
-        "前往管理",
+    let running_expected = [
+        "停止 Core",
+        "重启 Core",
+        "管理配置",
+        "路由诊断",
+        "管理转发",
         "直连",
         "PAC",
         "全局",
         "查看日志",
         "隐藏",
     ];
-    for label in expected {
+    for label in running_expected {
         let rect = enclosing_rect(&output, label, CONTROL_HEIGHT);
         assert!(
             (rect.height() - CONTROL_HEIGHT).abs() < 1.0,
             "overview button {label} height mismatch: {rect:?}"
         );
     }
-    let diag = enclosing_rect(&output, "打开路由诊断", CONTROL_HEIGHT);
-    let global = enclosing_rect(&output, "全局", CONTROL_HEIGHT);
-    assert!(
-        (diag.center().y - global.center().y).abs() < 1.0,
-        "打开路由诊断 should align with segmented mode buttons: diag={diag:?}, global={global:?}"
-    );
+    let stop_rect = enclosing_rect(&output, "停止 Core", CONTROL_HEIGHT);
+    let restart_rect = enclosing_rect(&output, "重启 Core", CONTROL_HEIGHT);
+    let diag_rect = enclosing_rect(&output, "路由诊断", CONTROL_HEIGHT);
+    let mode_rect = enclosing_rect(&output, "全局", CONTROL_HEIGHT);
+    assert!(stop_rect.top() > mode_rect.bottom());
+    assert!((stop_rect.center().y - restart_rect.center().y).abs() < 1.0);
+    assert!((stop_rect.center().y - diag_rect.center().y).abs() < 1.0);
+
+    // 2. Stopped with saved generation: "启动 Core" + "管理配置" + "路由诊断".
+    app.status.as_mut().unwrap().core_state = "Stopped".into();
+    let stopped_gen_out = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    assert!(overlapping_visible_text(&stopped_gen_out).is_empty());
+    for label in ["启动 Core", "管理配置", "路由诊断"] {
+        let rect = enclosing_rect(&stopped_gen_out, label, CONTROL_HEIGHT);
+        assert!((rect.height() - CONTROL_HEIGHT).abs() < 1.0);
+    }
+
+    // 3. Stopped without any generation: "选择配置" + "路由诊断".
+    app.status.as_mut().unwrap().generation = None;
+    let fresh_out = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    assert!(overlapping_visible_text(&fresh_out).is_empty());
+    for label in ["选择配置", "路由诊断"] {
+        let rect = enclosing_rect(&fresh_out, label, CONTROL_HEIGHT);
+        assert!((rect.height() - CONTROL_HEIGHT).abs() < 1.0);
+    }
 }

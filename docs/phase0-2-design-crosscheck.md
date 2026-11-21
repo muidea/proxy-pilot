@@ -183,11 +183,11 @@ git diff --check
 2. 在 F02 / F05 / V08 中继续登记剩余组合与语义级边界，避免“已实现”被理解为覆盖全部设计能力。
 3. N01 / N02 已按当前源码实现并纳入交付说明；后续可把日志级别、保留策略和 WinHTTP 诊断扩展为独立能力项。
 4. 设计 §2.5 的 PAC 阶段口径已按“当前源码支持基础 PAC、完整验收归 V10”更新说明。
-5. （历史基线 `ab08756` / rc.18 已演进至最新 `rc.44`，见第八节。）
+5. （历史基线 `ab08756` / rc.18 已演进至最新 `rc.45`，见第八节。）
 
-## 八、2026-11-20 `v0.1.1-rc.44` 对齐刷新（Proxy Pilot 更名、PAC 联动与 SSH 隧道）
+## 八、2026-11-21 `v0.1.1-rc.45` 对齐刷新（Proxy Pilot 更名、PAC 联动与 SSH 隧道）
 
-相对 `2026-11-12` 核对基线（`ab08756` / rc.18），`rc.19`–`rc.44` 完成以下重要设计演进与缺口收敛：
+相对 `2026-11-12` 核对基线（`ab08756` / rc.18），`rc.19`–`rc.45` 完成以下重要设计演进与缺口收敛：
 
 1. **品牌与工程彻底更名（`Proxy Pilot` / `proxy-*`）**：
    - Workspace crates：`proxy-model`、`proxy-config`、`proxy-pac`、`proxy-runtime`、`proxy-supervisor`、`proxy-manager-app`、`windows-integration`；可执行文件：`proxy-pilot.exe`、`proxy-supervisor.exe`、`proxyctl.exe`；Named Pipe 与计划任务前缀改为 `\\.\pipe\proxy-pilot-*` 与 `ProxyPilot-*`。
@@ -199,7 +199,7 @@ git diff --check
    - 新增独立于 Xray Core 的纯 Rust（`russh`）SSH 凭证管理（`data/ssh/config.json`，Windows DPAPI `CryptProtectData` 加密，IPC/日志零明文回显）、跳板机 SHA256 Host Key 核验与 TCP 本地端口转发，在「总览」支持独立按需启停；核查确认 `proxyctl maintenance` 仅清理 `candidates`/`resources`/`cores`/`runtime/pac`，不会误清 `data/ssh/`，但外部绝对私钥路径暂不自动拷贝冻结（仍归 F02/F06 边界）。
 4. **重启 Core 修订冲突修复**：
    - 修复 `UpdateProfile` 草稿自动保存后执行 `RestartCore` / `SetProxyMode` 时误触发 `ASSET_REVISION_CONFLICT` 并企图回写正式配置的问题（`runtime_flow::restart_core_and_set_proxy_mode_succeed_after_profile_draft_auto_save`）。
-5. **最新本地复测基线（`v0.1.1-rc.44`）**：
-   - 统一全界面操作按钮样式与 `36 px` 高度（消除总览「管理端口转发」「打开路由诊断」及其他页面/弹窗中 `small_button`/`.small()` 零垂直内边距造成的视觉偏差，高密度行统一使用带边框 `compact_button`）；此前已修复 `STARTUP_CONFLICT` 迁移容错与接管解除、Windows `PacServer` 阻塞连接与大脚本响应问题，并完成弹出框 `dialog_frame`、分级宽度与 `18.0` 标题字号、顶栏右上角版本号及 `windows-smoke.ps1 -Gui` 托盘「退出…」交互对齐。
+5. **最新本地复测基线（`v0.1.1-rc.45`）**：
+   - 将总览页「停止 Core」「重启 Core」「启动 Core」「管理配置」「选择配置」「路由诊断」归拢到左侧「连接与系统代理状态」卡片，右侧统一为「端口转发与隧道」及「管理转发」并统一 4 字简洁文案；同时修复 Windows 下 `proxy-model` 无盘符根路径便携判定问题；此前已统一全界面操作按钮样式与 `36 px` 高度、修复 `STARTUP_CONFLICT` 迁移容错与接管解除、Windows `PacServer` 阻塞连接与大脚本响应问题，并完成弹出框 `dialog_frame`、分级宽度与 `18.0` 标题字号、顶栏右上角版本号及 `windows-smoke.ps1 -Gui` 托盘「退出…」交互对齐。
    - `cargo fmt --all -- --check`、`git diff --check`、Linux 与 `x86_64-pc-windows-gnu` 双目标严格 Clippy（`-D warnings`）、`cargo test --offline --workspace --locked -- --test-threads=4` 全部通过（**290 项通过**，7 项需 `XRAY_TEST_CORE` 的用例默认忽略；其中 `proxy-manager-app` **131 项**、`proxy-supervisor` 库 **51 项**、`windows-integration` **11 项**、集成回归 31 项）。
    - V01 / V02 / V04–V10 的真实 Windows 环境与远端 MSVC CI 验收边界继续保留，最新记录见 [遗留清单](phase0-2-backlog.md) 与 [交接文档](handoff.md)。

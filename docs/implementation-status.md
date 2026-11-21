@@ -2,14 +2,14 @@
 
 对应设计：`Xray Windows Manager架构与实现设计.md` V1.2。此文件记录已实现代码和验证边界，不替代设计中的完整验收要求。
 
-当前状态见 [Phase 0–2 遗留项](phase0-2-backlog.md) 与 [2026-11-20 设计对齐刷新](phase0-2-design-crosscheck.md#八2026-11-20-v011-rc44-对齐刷新proxy-pilot-更名pac-联动与-ssh-隧道)：C01–C20 原场景已关闭，F04 的 Core 会话诊断已补齐；C18–C20 的退出保存门槛、设置草稿保护和后台草稿基准持久化见 [本轮收口](phase0-2-c18-20-closeout.md)。后续 `rc.19`–`rc.44` 的最新收口状态以 [开发交接文档](handoff.md) 和 [v0.1.1-rc.44 发布说明](releases/v0.1.1-rc.44.md) 为准。
+当前状态见 [Phase 0–2 遗留项](phase0-2-backlog.md) 与 [2026-11-21 设计对齐刷新](phase0-2-design-crosscheck.md#八2026-11-21-v011-rc45-对齐刷新proxy-pilot-更名pac-联动与-ssh-隧道)：C01–C20 原场景已关闭，F04 的 Core 会话诊断已补齐；C18–C20 的退出保存门槛、设置草稿保护和后台草稿基准持久化见 [本轮收口](phase0-2-c18-20-closeout.md)。后续 `rc.19`–`rc.45` 的最新收口状态以 [开发交接文档](handoff.md) 和 [v0.1.1-rc.45 发布说明](releases/v0.1.1-rc.45.md) 为准。
 
-## `v0.1.1-rc.44` 最新实现对齐（2026-11-20）
+## `v0.1.1-rc.45` 最新实现对齐（2026-11-21）
 
 - **品牌与结构重命名**：全工程由 `Xray Pilot` 重命名为 **`Proxy Pilot`**，workspace crates 为 `proxy-model`、`proxy-config`、`proxy-pac`、`proxy-runtime`、`proxy-supervisor`、`proxy-manager-app`、`windows-integration`，产出程序为 `proxy-pilot.exe`、`proxy-supervisor.exe`、`proxyctl.exe`。
-- **界面、PAC 与配置持久化增强**：顶部导航调整为 `总览 → 配置 → PAC → 日志 → 诊断 → 设置`，版本号移至顶栏右上角，总览默认隐藏「最近活动与版本」（可在「设置 → 外观」切换）；全界面操作按钮统一为 `36 px` 标准控件高度与边框/内边距（密集行采用统一带边框 `compact_button`）；弹出框统一配置 `dialog_frame`（`1.0 px` `border_strong` 边框、`20×16` 内边距）、分级框度（`500` / `580` / `700` / `780`）与 `18 px` 标题字号；支持离线分享链接解析、GeoSite/GeoIP 预设与路由预测、3A 草稿自动保存、方案 A（按配置独立记忆代理模式与 PAC 策略）、PAC 自动联动激活配置与热同步（并修复 Windows `PacServer` 继承非阻塞连接导致 `PAC_SERVICE_UNAVAILABLE`）、Core 日志级别实时调整与会话日志导出、`--background` DWM 防闪烁隐藏、外部代理冲突 `PROXY_LEASE_CONFLICT` 保留解除，以及登录自启 `STARTUP_CONFLICT` 迁移容错与界面/CLI 重新接管解除。
+- **界面、PAC 与配置持久化增强**：顶部导航调整为 `总览 → 配置 → PAC → 日志 → 诊断 → 设置`，版本号移至顶栏右上角，总览将「停止 Core」「重启 Core」「启动 Core」「管理配置」「选择配置」「路由诊断」归拢到左侧「连接与系统代理状态」卡片，右侧「端口转发与隧道」统一「管理转发」并收敛为等长简洁 4 字文案，总览默认隐藏「最近活动与版本」（可在「设置 → 外观」切换）；全界面操作按钮统一为 `36 px` 标准控件高度与边框/内边距（密集行采用统一带边框 `compact_button`）；弹出框统一配置 `dialog_frame`（`1.0 px` `border_strong` 边框、`20×16` 内边距）、分级框度（`500` / `580` / `700` / `780`）与 `18 px` 标题字号；支持离线分享链接解析、GeoSite/GeoIP 预设与路由预测、3A 草稿自动保存、方案 A（按配置独立记忆代理模式与 PAC 策略）、PAC 自动联动激活配置与热同步（并修复 Windows `PacServer` 继承非阻塞连接导致 `PAC_SERVICE_UNAVAILABLE`）、Core 日志级别实时调整与会话日志导出、`--background` DWM 防闪烁隐藏、外部代理冲突 `PROXY_LEASE_CONFLICT` 保留解除，以及登录自启 `STARTUP_CONFLICT` 迁移容错与界面/CLI 重新接管解除；同时修复 Windows 下 `proxy-model` 无盘符根路径便携判定问题。
 - **双轨端口转发与 SSH 凭证管理**：保留原 Xray `dokodemo-door` 端口转发与工作区停用暂存，并新增独立的纯 Rust（`russh`）SSH 凭证管理（Windows DPAPI 加密与永不回显脱敏）、SSH 跳板机 Host Key SHA256 核验与 TCP 本地端口转发，支持在「总览」按需独立启停；同时修复草稿自动保存后 `RestartCore` / `SetProxyMode` 误报 `ASSET_REVISION_CONFLICT` 的问题。
-- **当前验证与保留边界**：当前 `v0.1.1-rc.44` 基线已通过格式校验、Linux/Windows GNU 双目标严格 Clippy 及全工作区 **290 项** `--locked` 常规回归（7 项 `XRAY_TEST_CORE` 环境专项按环境忽略）；真实 WinINet、远端 MSVC CI、F01 容量上限、F02/F03/F05/F06 扩展边界及 TUN / 安装器继续保留。
+- **当前验证与保留边界**：当前 `v0.1.1-rc.45` 基线已通过格式校验、Linux/Windows GNU 双目标严格 Clippy 及全工作区 **290 项** `--locked` 常规回归（7 项 `XRAY_TEST_CORE` 环境专项按环境忽略）；真实 WinINet、远端 MSVC CI、F01 容量上限、F02/F03/F05/F06 扩展边界及 TUN / 安装器继续保留。
 
 *(以下 2026-11-09 至 2026-11-12 分节保留当时历史核对快照)*
 
