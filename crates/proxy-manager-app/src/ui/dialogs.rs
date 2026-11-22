@@ -46,9 +46,8 @@ fn show_modal(
 fn dialog_max_width(dialog: &Dialog) -> f32 {
     match dialog {
         Dialog::Confirm(_) | Dialog::ExitChoice => 500.0,
-        Dialog::PortForward | Dialog::SshCredential | Dialog::SshHost | Dialog::UnsavedExit(_) => {
-            580.0
-        }
+        Dialog::SshCredential | Dialog::SshHost | Dialog::UnsavedExit(_) => 580.0,
+        Dialog::PortForward => 620.0,
         Dialog::HistoryDiff => 700.0,
         Dialog::Create | Dialog::PacBatch => 780.0,
     }
@@ -156,7 +155,7 @@ impl App {
                 },
             );
         if response.inner && !response.should_close() {
-            self.ui.dialog = Some(dialog);
+            self.ui.dialog.get_or_insert(dialog);
         }
     }
     fn unsaved_exit_dialog_contents(&mut self, ui: &mut egui::Ui, kind: ExitKind) -> bool {
@@ -1079,10 +1078,24 @@ impl App {
         keep_open
     }
     fn port_forward_dialog_contents(&mut self, ui: &mut egui::Ui) -> bool {
-        let is_edit =
-            self.ui.pf_form.editing_tag.is_some() || self.ui.pf_form.editing_paused_index.is_some();
+        let is_edit = self.ui.pf_form.editing_tag.is_some()
+            || self.ui.pf_form.editing_paused_index.is_some()
+            || self.ui.pf_form.editing_ssh_id.is_some();
+        let is_clone = self.ui.pf_form.is_clone;
+        let mut parsed_json = serde_json::from_str::<serde_json::Value>(&self.editor).ok();
+
+        if parsed_json.is_none()
+            && self.ui.pf_form.editing_tag.is_none()
+            && self.ui.pf_form.editing_paused_index.is_none()
+        {
+            self.ui.pf_form.outbound_is_ssh = true;
+            self.ui.pf_form.network = "tcp".into();
+        }
+
         let subtitle = if let Some(tag) = &self.ui.pf_form.editing_tag {
             format!("入站 Tag：{tag} · 将自动同步对应 dokodemo-door 入站与置顶 inboundTag 路由规则")
+        } else if self.ui.pf_form.outbound_is_ssh {
+            "直接由后台通过 SSH 跳板机转发本机 TCP 端口，独立于 Xray JSON 与 Core 运行。".into()
         } else {
             "将自动在配置中添加 dokodemo-door 入站，并在分流规则顶部维护对应的 inboundTag 规则。"
                 .into()
@@ -1091,21 +1104,22 @@ impl App {
             ui,
             if is_edit {
                 "编辑端口转发"
+            } else if is_clone {
+                "克隆 SSH 隧道"
             } else {
                 "添加端口转发"
             },
             &subtitle,
         );
 
-        let parsed = serde_json::from_str::<serde_json::Value>(&self.editor);
-        let Ok(mut value) = parsed else {
+        if parsed_json.is_none() && !self.ui.pf_form.outbound_is_ssh {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
                 "当前配置 JSON 语法有误，请先在「更多与源码 → 原始 JSON」中修正。",
             );
             dialog_actions(ui);
             return !ui.button("关闭").clicked();
-        };
+        }
 
         let node_names = self
             .ui
@@ -1114,8 +1128,20 @@ impl App {
             .get(&self.profile_id)
             .cloned()
             .unwrap_or_default();
-        let outbounds = crate::port_forward::available_outbounds(&value, &node_names);
+        let outbounds = parsed_json
+            .as_ref()
+            .map(|v| crate::port_forward::available_outbounds(v, &node_names))
+            .unwrap_or_default();
         let ssh_hosts = self.ui.ssh_state.hosts.clone();
+        let ssh_forwards = self.ui.ssh_state.forwards.clone();
+        let paused_pf = self
+            .ui
+            .workspace
+            .paused_port_forwards
+            .get(&self.profile_id)
+            .cloned()
+            .unwrap_or_default();
+
         if !self.ui.pf_form.outbound_is_ssh
             && self.ui.pf_form.outbound_tag.is_empty()
             && let Some((first, _)) = outbounds.first()
@@ -1126,225 +1152,329 @@ impl App {
             self.ui.pf_form.network = "tcp".into();
         }
 
-        let body_height = (ui.ctx().content_rect().height() - 250.0).max(160.0);
-        let mut open_new_ssh_host = false;
+        let body_height = (ui.ctx().content_rect().height() - 210.0).max(180.0);
+        let mut open_host_modal: Option<Option<crate::port_forward::ParsedSshJumpHint>> = None;
         egui::ScrollArea::vertical()
             .id_salt("port-forward-dialog-body")
             .max_height(body_height)
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
-                ui.label("备注名称（可选，仅保存在工作区界面识别）");
-                crate::widgets::singleline_select_all(
-                    ui,
-                    &mut self.ui.pf_form.name,
-                    ui.available_width(),
-                    "例如：公司内网 MySQL",
-                );
-
-                ui.add_space(6.0);
-                ui.label("本机监听范围");
-                let mut focus_custom_listen = false;
-                ui.horizontal_wrapped(|ui| {
-                    let is_local =
-                        self.ui.pf_form.listen.trim() == crate::port_forward::LISTEN_LOCAL;
-                    let is_lan =
-                        self.ui.pf_form.listen.trim() == crate::port_forward::LISTEN_LAN;
-                    let is_custom = self.ui.pf_form.custom_listen || (!is_local && !is_lan);
-                    if crate::widgets::seg_button(ui, "仅本机 (127.0.0.1)", is_local && !is_custom, true)
-                        .clicked()
-                    {
-                        self.ui.pf_form.listen = crate::port_forward::LISTEN_LOCAL.into();
-                        self.ui.pf_form.custom_listen = false;
-                        self.ui.pf_error = None;
-                    }
-                    if crate::widgets::seg_button(
-                        ui,
-                        "局域网可访问 (0.0.0.0)",
-                        is_lan && !is_custom,
-                        true,
-                    )
-                    .clicked()
-                    {
-                        self.ui.pf_form.listen = crate::port_forward::LISTEN_LAN.into();
-                        self.ui.pf_form.custom_listen = false;
-                        self.ui.pf_error = None;
-                    }
-                    if crate::widgets::seg_button(ui, "自定义 IP", is_custom, true).clicked() {
-                        self.ui.pf_form.custom_listen = true;
-                        focus_custom_listen = true;
-                    }
-                });
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("监听 IP");
-                    let ip_w = (ui.available_width() - 230.0).max(140.0);
-                    let listen_resp = crate::widgets::singleline_select_all(
-                        ui,
-                        &mut self.ui.pf_form.listen,
-                        ip_w,
-                        "127.0.0.1",
-                    );
-                    if focus_custom_listen {
-                        crate::widgets::focus_and_select_all(
-                            ui.ctx(),
-                            &listen_resp,
-                            &self.ui.pf_form.listen,
-                        );
-                    }
-                    if listen_resp.changed() {
-                        let trimmed = self.ui.pf_form.listen.trim();
-                        self.ui.pf_form.custom_listen = trimmed != crate::port_forward::LISTEN_LOCAL
-                            && trimmed != crate::port_forward::LISTEN_LAN;
-                        self.ui.pf_error = None;
-                    }
-                    ui.label("本机端口");
-                    if crate::widgets::singleline_select_all(
-                        ui,
-                        &mut self.ui.pf_form.local_port,
-                        100.0,
-                        "10820",
-                    )
-                    .changed()
-                    {
-                        self.ui.pf_error = None;
-                    }
-                });
-                if !crate::port_forward::is_loopback_listen(&self.ui.pf_form.listen)
-                    && self
-                        .ui
-                        .pf_form
-                        .listen
-                        .trim()
-                        .parse::<std::net::IpAddr>()
-                        .is_ok()
-                {
-                    ui.add_space(4.0);
-                    crate::widgets::banner_box(
-                        ui,
-                        crate::widgets::BadgeTone::Warn,
-                        "dokodemo-door 无认证保护：绑定非回环地址后，局域网内任意设备可直接连接此端口转发。",
-                    );
-                }
-
-                ui.add_space(6.0);
-                ui.label("传输协议");
-                let allow_udp = !self.ui.pf_form.outbound_is_ssh;
-                ui.horizontal_wrapped(|ui| {
-                    for (net, label) in [
-                        ("tcp", "TCP"),
-                        ("udp", "UDP"),
-                        ("tcp,udp", "TCP + UDP"),
-                    ] {
-                        let allowed = net == "tcp" || allow_udp;
+                if !is_edit && !is_clone {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("通道类型");
                         if crate::widgets::seg_button(
                             ui,
-                            label,
-                            self.ui.pf_form.network == net,
-                            allowed,
+                            "SSH 隧道",
+                            self.ui.pf_form.outbound_is_ssh,
+                            true,
                         )
                         .clicked()
                         {
-                            self.ui.pf_form.network = net.into();
+                            self.ui.pf_form.outbound_is_ssh = true;
+                            self.ui.pf_form.network = "tcp".into();
+                            if self.ui.pf_form.ssh_host_id.is_empty()
+                                && let Some(first) = ssh_hosts.first()
+                            {
+                                self.ui.pf_form.ssh_host_id = first.id.clone();
+                            }
+                            if self.ui.pf_form.target_host.trim().is_empty() {
+                                self.ui.pf_form.target_host = "127.0.0.1".into();
+                            }
                             self.ui.pf_error = None;
                         }
-                    }
-                    if self.ui.pf_form.outbound_is_ssh {
-                        ui.label(RichText::new("SSH 隧道仅支持 TCP").small().weak());
-                    }
-                });
-
-                ui.add_space(6.0);
-                ui.label("目标地址与端口（支持直接粘贴 host:port 自动拆分）");
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("目标地址");
-                    let host_w = (ui.available_width() - 230.0).max(150.0);
-                    if crate::widgets::singleline_select_all(
-                        ui,
-                        &mut self.ui.pf_form.target_host,
-                        host_w,
-                        "10.0.0.5 或 db.internal:3306",
-                    )
-                    .changed()
-                    {
-                        if let Some((h, p)) =
-                            crate::port_forward::parse_host_port_paste(&self.ui.pf_form.target_host)
-                        {
-                            self.ui.pf_form.target_host = h;
-                            self.ui.pf_form.target_port = p;
+                        let xray_btn = crate::widgets::seg_button(
+                            ui,
+                            "Xray 转发",
+                            !self.ui.pf_form.outbound_is_ssh,
+                            parsed_json.is_some(),
+                        );
+                        if parsed_json.is_none() {
+                            xray_btn.on_hover_text(
+                                "当前 Xray 草稿存在 JSON 语法错误，暂不可创建 Xray 转发；可直接使用 SSH 隧道",
+                            );
+                        } else if xray_btn.clicked() {
+                            self.ui.pf_form.outbound_is_ssh = false;
+                            if self.ui.pf_form.outbound_tag.is_empty()
+                                && let Some((first, _)) = outbounds.first()
+                            {
+                                self.ui.pf_form.outbound_tag = first.clone();
+                            }
+                            self.ui.pf_error = None;
                         }
-                        self.ui.pf_error = None;
-                    }
-                    ui.label("目标端口");
-                    if crate::widgets::singleline_select_all(
-                        ui,
-                        &mut self.ui.pf_form.target_port,
-                        100.0,
-                        "3306",
-                    )
-                    .changed()
-                    {
-                        self.ui.pf_error = None;
-                    }
-                });
+                    });
+                    ui.add_space(6.0);
+                }
 
-                ui.add_space(6.0);
-                ui.label("转发出口（出站）");
-                let selected_outbound_label = if self.ui.pf_form.outbound_is_ssh {
-                    ssh_hosts
+                if self.ui.pf_form.outbound_is_ssh {
+                    // Quick ssh -L command parser subcard
+                    crate::widgets::subcard(ui, None, true, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new("粘贴 ssh -L 命令自动填入（可选）").small());
+                            if crate::widgets::compact_button(ui, "填入示例").clicked() {
+                                self.ui.pf_form.ssh_cmd_input =
+                                    "ssh -L 15432:10.0.1.8:5432 ops@bastion.corp -p 2222".into();
+                                apply_parsed_ssh_cmd(&mut self.ui.pf_form, &ssh_hosts);
+                            }
+                        });
+                        ui.horizontal_wrapped(|ui| {
+                            let cmd_w = (ui.available_width() - 96.0).max(160.0);
+                            crate::widgets::singleline_select_all(
+                                ui,
+                                &mut self.ui.pf_form.ssh_cmd_input,
+                                cmd_w,
+                                "ssh -L 15432:10.0.1.8:5432 ops@bastion.corp -p 2222",
+                            );
+                            if ui.button("解析填入").clicked() {
+                                apply_parsed_ssh_cmd(&mut self.ui.pf_form, &ssh_hosts);
+                            }
+                        });
+                        if let Some((is_err, ref msg)) = self.ui.pf_form.ssh_cmd_feedback {
+                            crate::widgets::banner_box(
+                                ui,
+                                if is_err {
+                                    crate::widgets::BadgeTone::Warn
+                                } else {
+                                    crate::widgets::BadgeTone::Accent
+                                },
+                                msg,
+                            );
+                        }
+                        if self.ui.pf_form.parsed_ssh_hint.is_some()
+                            && ui.button("按解析结果新建跳板机").clicked()
+                        {
+                            open_host_modal = Some(self.ui.pf_form.parsed_ssh_hint.clone());
+                        }
+                    });
+                    ui.add_space(6.0);
+
+                    // 1. SSH Jump Host
+                    ui.label("1. SSH 跳板机");
+                    let selected_host_label = ssh_hosts
                         .iter()
                         .find(|h| h.id == self.ui.pf_form.ssh_host_id)
-                        .map(|h| format!("SSH 隧道 · {} ({}:{})", h.name, h.host, h.port))
-                        .unwrap_or_else(|| "请选择 SSH 跳板机".into())
+                        .map(|h| format!("{} ({}:{})", h.name, h.host, h.port))
+                        .unwrap_or_else(|| {
+                            if ssh_hosts.is_empty() {
+                                "暂无 SSH 跳板机".into()
+                            } else {
+                                "请选择 SSH 跳板机".into()
+                            }
+                        });
+                    ui.horizontal_wrapped(|ui| {
+                        egui::ComboBox::from_id_salt("pf-ssh-host-select")
+                            .width((ui.available_width() - 140.0).clamp(200.0, 440.0))
+                            .selected_text(selected_host_label)
+                            .show_ui(ui, |ui| {
+                                for host in &ssh_hosts {
+                                    let is_sel = self.ui.pf_form.ssh_host_id == host.id;
+                                    let label =
+                                        format!("{} ({}:{})", host.name, host.host, host.port);
+                                    if ui.selectable_label(is_sel, label).clicked() {
+                                        self.ui.pf_form.ssh_host_id = host.id.clone();
+                                        self.ui.pf_form.parsed_ssh_hint = None;
+                                        self.ui.pf_error = None;
+                                    }
+                                }
+                            });
+                        if ui.button("+ 新建跳板机").clicked() {
+                            open_host_modal = Some(self.ui.pf_form.parsed_ssh_hint.clone());
+                        }
+                    });
+                    if ssh_hosts.is_empty() {
+                        crate::widgets::banner_box(
+                            ui,
+                            crate::widgets::BadgeTone::Accent,
+                            "暂无跳板机，点右侧可在同一弹窗内一并填写凭证并创建，完成后自动回到此处继续。",
+                        );
+                    }
+
+                    // 2. Target Host & Port with Preset Chips
+                    ui.label("2. 目标地址与端口（支持直接粘贴 host:port 自动拆分）");
+                    ui.horizontal_wrapped(|ui| {
+                        let is_local_target = self.ui.pf_form.target_host.trim() == "127.0.0.1";
+                        if crate::widgets::compact_chip(
+                            ui,
+                            "跳板机本机 (127.0.0.1)",
+                            is_local_target,
+                        )
+                        .clicked()
+                        {
+                            self.ui.pf_form.target_host = "127.0.0.1".into();
+                            self.ui.pf_error = None;
+                        }
+                        for (port, _, chip_label) in crate::port_forward::COMMON_TARGET_PORTS {
+                            let port_str = port.to_string();
+                            let active = self.ui.pf_form.target_port.trim() == port_str;
+                            if crate::widgets::compact_chip(ui, chip_label, active).clicked() {
+                                self.ui.pf_form.target_port = port_str;
+                                self.ui.pf_error = None;
+                            }
+                        }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("目标地址");
+                        let host_w = (ui.available_width() - 230.0).max(150.0);
+                        if crate::widgets::singleline_select_all(
+                            ui,
+                            &mut self.ui.pf_form.target_host,
+                            host_w,
+                            "10.0.1.8 或 db.internal:3306",
+                        )
+                        .changed()
+                        {
+                            if let Some((h, p)) = crate::port_forward::parse_host_port_paste(
+                                &self.ui.pf_form.target_host,
+                            ) {
+                                self.ui.pf_form.target_host = h;
+                                self.ui.pf_form.target_port = p;
+                            }
+                            self.ui.pf_error = None;
+                        }
+                        ui.label("目标端口");
+                        if crate::widgets::singleline_select_all(
+                            ui,
+                            &mut self.ui.pf_form.target_port,
+                            100.0,
+                            "5432",
+                        )
+                        .changed()
+                        {
+                            self.ui.pf_error = None;
+                        }
+                    });
+
+                    // 3. Listen Scope & Local Port + Conflict Quick Fix
+                    render_listen_scope_and_port(
+                        ui,
+                        &mut self.ui.pf_form,
+                        &mut self.ui.pf_error,
+                        parsed_json.as_ref(),
+                        &paused_pf,
+                        &ssh_forwards,
+                        "SSH 隧道监听非回环地址后，同局域网设备也可直接访问此本地转发端口，请确认目标服务安全策略。",
+                    );
+
+                    // 4. Optional Remark Name with Dynamic Auto-Name Hint
+                    ui.label("4. 备注名称（可选）");
+                    let t_port = self
+                        .ui
+                        .pf_form
+                        .target_port
+                        .trim()
+                        .parse::<u16>()
+                        .unwrap_or(0);
+                    let name_hint = format!(
+                        "留空自动命名：{}",
+                        crate::port_forward::auto_ssh_forward_name(
+                            &self.ui.pf_form.target_host,
+                            t_port
+                        )
+                    );
+                    crate::widgets::singleline_select_all(
+                        ui,
+                        &mut self.ui.pf_form.name,
+                        ui.available_width(),
+                        &name_hint,
+                    );
                 } else {
-                    outbounds
+                    // Xray Port Forward Mode
+                    ui.label("备注名称（可选，仅保存在工作区界面识别）");
+                    crate::widgets::singleline_select_all(
+                        ui,
+                        &mut self.ui.pf_form.name,
+                        ui.available_width(),
+                        "例如：公司内网 MySQL",
+                    );
+
+                    ui.add_space(6.0);
+                    render_listen_scope_and_port(
+                        ui,
+                        &mut self.ui.pf_form,
+                        &mut self.ui.pf_error,
+                        parsed_json.as_ref(),
+                        &paused_pf,
+                        &ssh_forwards,
+                        "dokodemo-door 无认证保护：绑定非回环地址后，局域网内任意设备可直接连接此端口转发。",
+                    );
+
+                    ui.add_space(6.0);
+                    ui.label("传输协议");
+                    ui.horizontal_wrapped(|ui| {
+                        for (net, label) in
+                            [("tcp", "TCP"), ("udp", "UDP"), ("tcp,udp", "TCP + UDP")]
+                        {
+                            if crate::widgets::seg_button(
+                                ui,
+                                label,
+                                self.ui.pf_form.network == net,
+                                true,
+                            )
+                            .clicked()
+                            {
+                                self.ui.pf_form.network = net.into();
+                                self.ui.pf_error = None;
+                            }
+                        }
+                    });
+
+                    ui.add_space(6.0);
+                    ui.label("目标地址与端口（支持直接粘贴 host:port 自动拆分）");
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("目标地址");
+                        let host_w = (ui.available_width() - 230.0).max(150.0);
+                        if crate::widgets::singleline_select_all(
+                            ui,
+                            &mut self.ui.pf_form.target_host,
+                            host_w,
+                            "10.0.0.5 或 db.internal:3306",
+                        )
+                        .changed()
+                        {
+                            if let Some((h, p)) = crate::port_forward::parse_host_port_paste(
+                                &self.ui.pf_form.target_host,
+                            ) {
+                                self.ui.pf_form.target_host = h;
+                                self.ui.pf_form.target_port = p;
+                            }
+                            self.ui.pf_error = None;
+                        }
+                        ui.label("目标端口");
+                        if crate::widgets::singleline_select_all(
+                            ui,
+                            &mut self.ui.pf_form.target_port,
+                            100.0,
+                            "3306",
+                        )
+                        .changed()
+                        {
+                            self.ui.pf_error = None;
+                        }
+                    });
+
+                    ui.add_space(6.0);
+                    ui.label("Xray 出站节点");
+                    let selected_outbound_label = outbounds
                         .iter()
                         .find(|(tag, _)| *tag == self.ui.pf_form.outbound_tag)
                         .map(|(_, label)| format!("Xray · {label}"))
-                        .unwrap_or_else(|| self.ui.pf_form.outbound_tag.clone())
-                };
-                let mut open_host_click = false;
-                ui.horizontal_wrapped(|ui| {
+                        .unwrap_or_else(|| self.ui.pf_form.outbound_tag.clone());
                     egui::ComboBox::from_id_salt("pf-outbound-select")
-                        .width((ui.available_width() - 140.0).clamp(220.0, 420.0))
+                        .width((ui.available_width() - 16.0).clamp(220.0, 520.0))
                         .selected_text(selected_outbound_label)
                         .show_ui(ui, |ui| {
                             for (tag, label) in &outbounds {
-                                let is_sel = !self.ui.pf_form.outbound_is_ssh
-                                    && self.ui.pf_form.outbound_tag == *tag;
-                                if ui.selectable_label(is_sel, format!("Xray · {label}")).clicked() {
-                                    self.ui.pf_form.outbound_is_ssh = false;
+                                let is_sel = self.ui.pf_form.outbound_tag == *tag;
+                                if ui.selectable_label(is_sel, format!("Xray · {label}")).clicked()
+                                {
                                     self.ui.pf_form.outbound_tag = tag.clone();
                                     self.ui.pf_error = None;
                                 }
                             }
-                            if !ssh_hosts.is_empty() {
-                                ui.separator();
-                            }
-                            for host in &ssh_hosts {
-                                let is_sel = self.ui.pf_form.outbound_is_ssh
-                                    && self.ui.pf_form.ssh_host_id == host.id;
-                                let label = format!(
-                                    "SSH 隧道 · {} ({}:{})",
-                                    host.name, host.host, host.port
-                                );
-                                if ui.selectable_label(is_sel, label).clicked() {
-                                    self.ui.pf_form.outbound_is_ssh = true;
-                                    self.ui.pf_form.ssh_host_id = host.id.clone();
-                                    self.ui.pf_form.network = "tcp".into();
-                                    self.ui.pf_error = None;
-                                }
-                            }
                         });
-                    if ui.button("+ 新建 SSH 跳板机").clicked() {
-                        open_host_click = true;
-                    }
-                });
-                if open_host_click {
-                    open_new_ssh_host = true;
-                }
 
-                let outbound_is_direct = !self.ui.pf_form.outbound_is_ssh
-                    && value
-                        .get("outbounds")
+                    let outbound_is_direct = parsed_json
+                        .as_ref()
+                        .and_then(|v| v.get("outbounds"))
                         .and_then(serde_json::Value::as_array)
                         .is_some_and(|arr| {
                             arr.iter().any(|o| {
@@ -1353,58 +1483,63 @@ impl App {
                                     && o.get("protocol").and_then(|p| p.as_str()) == Some("freedom")
                             })
                         });
-                if self.ui.pf_form.outbound_is_ssh {
-                    ui.add_space(4.0);
-                    crate::widgets::banner_box(
-                        ui,
-                        crate::widgets::BadgeTone::Accent,
-                        "SSH 隧道由后台直接建立并转发 TCP 流量，不写入 Xray JSON；可在「总览」按需单独启停。",
-                    );
-                } else if !outbound_is_direct
-                    && crate::port_forward::is_private_or_loopback_host(&self.ui.pf_form.target_host)
-                {
-                    ui.add_space(4.0);
-                    crate::widgets::banner_box(
-                        ui,
-                        crate::widgets::BadgeTone::Accent,
-                        "目标为内网/回环地址且出口走代理节点：请确认远端 Xray 服务端未拦截 geoip:private。",
-                    );
+                    if !outbound_is_direct
+                        && crate::port_forward::is_private_or_loopback_host(
+                            &self.ui.pf_form.target_host,
+                        )
+                    {
+                        ui.add_space(4.0);
+                        crate::widgets::banner_box(
+                            ui,
+                            crate::widgets::BadgeTone::Accent,
+                            "目标为内网/回环地址且出口走代理节点：请确认远端 Xray 服务端未拦截 geoip:private。",
+                        );
+                    }
                 }
 
-                if let Some(err) = self.ui.pf_error.clone().or_else(|| {
-                    crate::port_forward::check_form_error_with_ssh(
-                        &value,
+                let live_conflict = crate::port_forward::find_local_port_conflict(
+                    parsed_json.as_ref(),
+                    &self.ui.pf_form,
+                    &ssh_forwards,
+                );
+                let form_err = self.ui.pf_error.clone().or_else(|| {
+                    crate::port_forward::check_form_error_with_optional_config(
+                        parsed_json.as_ref(),
                         &self.ui.pf_form,
-                        &self.ui.ssh_state.hosts,
-                        &self.ui.ssh_state.forwards,
+                        &ssh_hosts,
+                        &ssh_forwards,
                     )
-                }) {
+                    .filter(|err| live_conflict.as_ref() != Some(err))
+                });
+                if let Some(err) = form_err {
                     ui.add_space(4.0);
                     crate::widgets::banner_box(ui, crate::widgets::BadgeTone::Danger, &err);
                 }
             });
 
-        if open_new_ssh_host {
-            let default_cred = self
-                .ui
-                .ssh_state
-                .credentials
-                .first()
-                .map(|c| c.id.clone())
-                .unwrap_or_default();
-            self.ui.ssh_host_form = ui::SshHostForm {
-                credential_id: default_cred,
-                return_to_pf: true,
-                ..Default::default()
-            };
+        if let Some(maybe_hint) = open_host_modal {
+            let mut host_form = ui::SshHostForm::for_new(&self.ui.ssh_state.credentials, true);
+            if let Some(hint) = maybe_hint {
+                if !hint.host.is_empty() {
+                    host_form.host = hint.host;
+                }
+                if hint.port > 0 {
+                    host_form.port = hint.port.to_string();
+                }
+                if !hint.user.is_empty() {
+                    host_form.cred_mode = ui::SshHostCredMode::Inline;
+                    host_form.inline_username = hint.user;
+                }
+            }
+            self.ui.ssh_host_form = host_form;
             self.ui.dialog = Some(Dialog::SshHost);
             return true;
         }
 
         dialog_actions(ui);
         let mut keep_open = true;
-        let can_save = crate::port_forward::check_form_error_with_ssh(
-            &value,
+        let can_save = crate::port_forward::check_form_error_with_optional_config(
+            parsed_json.as_ref(),
             &self.ui.pf_form,
             &self.ui.ssh_state.hosts,
             &self.ui.ssh_state.forwards,
@@ -1412,21 +1547,30 @@ impl App {
         .is_none();
         let enter_save = can_save && ui.input(|i| i.key_pressed(egui::Key::Enter));
         ui.horizontal_wrapped(|ui| {
+            if self.ui.pf_form.outbound_is_ssh {
+                ui.checkbox(&mut self.ui.pf_form.start_now, "保存并立即启动");
+            }
             if ui.button("取消").clicked() {
                 self.ui.pf_error = None;
                 keep_open = false;
             }
             let save_label = if self.ui.pf_form.outbound_is_ssh {
-                "保存 SSH 转发"
+                if self.ui.pf_form.start_now {
+                    "保存并启动"
+                } else {
+                    "保存 SSH 隧道"
+                }
             } else {
                 "保存草稿"
             };
             if primary(ui, save_label, can_save) || enter_save {
                 let form = self.ui.pf_form.clone();
                 if form.outbound_is_ssh {
-                    if form.editing_tag.is_some() || form.editing_paused_index.is_some() {
+                    if (form.editing_tag.is_some() || form.editing_paused_index.is_some())
+                        && let Some(ref mut value) = parsed_json
+                    {
                         let entries = crate::port_forward::extract_entries(
-                            &value,
+                            value,
                             &self.ui.workspace,
                             &self.profile_id,
                         );
@@ -1437,25 +1581,28 @@ impl App {
                                     && form.editing_paused_index == e.paused_index)
                         }) {
                             crate::port_forward::remove_entry(
-                                &mut value,
+                                value,
                                 &mut self.ui.workspace,
                                 &self.profile_id,
                                 old,
                             );
                             self.save_workspace();
                             if old.enabled {
-                                self.editor = serde_json::to_string_pretty(&value).unwrap();
+                                self.editor = serde_json::to_string_pretty(value).unwrap();
                                 self.draft_edited();
                             }
                         }
                     }
                     let forward = crate::port_forward::ssh_forward_from_form(&form);
-                    self.send(Command::SaveSshForward { forward });
+                    self.send(Command::SaveSshForward {
+                        forward,
+                        start_now: form.start_now,
+                    });
                     self.ui.pf_error = None;
                     keep_open = false;
-                } else {
+                } else if let Some(ref mut value) = parsed_json {
                     match crate::port_forward::save_entry(
-                        &mut value,
+                        value,
                         &mut self.ui.workspace,
                         &self.profile_id,
                         &form,
@@ -1463,7 +1610,7 @@ impl App {
                         Ok(tag) => {
                             self.save_workspace();
                             if form.editing_paused_index.is_none() {
-                                self.editor = serde_json::to_string_pretty(&value).unwrap();
+                                self.editor = serde_json::to_string_pretty(value).unwrap();
                                 self.draft_edited();
                             }
                             if let Some(old_ssh_id) = form.editing_ssh_id {
@@ -1477,6 +1624,9 @@ impl App {
                             self.ui.pf_error = Some(err);
                         }
                     }
+                } else {
+                    self.ui.pf_error =
+                        Some("当前 Xray 草稿存在 JSON 语法错误，无法保存 Xray 转发。".into());
                 }
             }
         });
@@ -1499,20 +1649,27 @@ impl App {
             .max_height((ui.ctx().content_rect().height() - 250.0).max(160.0))
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
-                ui.label("凭证名称");
-                crate::widgets::singleline_select_all(
-                    ui,
-                    &mut self.ui.ssh_cred_form.name,
-                    ui.available_width(),
-                    "例如：公司运维账号",
-                );
-                ui.add_space(6.0);
                 ui.label("SSH 账号（用户名）");
                 crate::widgets::singleline_select_all(
                     ui,
                     &mut self.ui.ssh_cred_form.username,
                     ui.available_width(),
                     "例如：ops / root / ubuntu",
+                );
+                ui.add_space(6.0);
+                ui.label("凭证名称（可选，留空自动生成）");
+                let auto_cred_hint = format!(
+                    "留空自动命名：{}",
+                    crate::port_forward::auto_ssh_credential_name(
+                        &self.ui.ssh_cred_form.username,
+                        self.ui.ssh_cred_form.auth_kind
+                    )
+                );
+                crate::widgets::singleline_select_all(
+                    ui,
+                    &mut self.ui.ssh_cred_form.name,
+                    ui.available_width(),
+                    &auto_cred_hint,
                 );
                 ui.add_space(6.0);
                 ui.label("认证方式");
@@ -1610,8 +1767,7 @@ impl App {
 
         dialog_actions(ui);
         let f = &self.ui.ssh_cred_form;
-        let valid = !f.name.trim().is_empty()
-            && !f.username.trim().is_empty()
+        let valid = !f.username.trim().is_empty()
             && match f.auth_kind {
                 SshAuthKind::Password => {
                     !f.password.is_empty() || (editing && f.has_existing_password)
@@ -1624,12 +1780,17 @@ impl App {
                 if self.ui.ssh_cred_form.return_to_host {
                     self.ui.ssh_cred_form.return_to_host = false;
                     self.ui.dialog = Some(Dialog::SshHost);
-                    return;
+                } else {
+                    keep_open = false;
                 }
-                keep_open = false;
             }
             if primary(ui, "保存凭证", valid && !self.busy) {
                 let form = &self.ui.ssh_cred_form;
+                let cred_name = if form.name.trim().is_empty() {
+                    crate::port_forward::auto_ssh_credential_name(&form.username, form.auth_kind)
+                } else {
+                    form.name.trim().to_owned()
+                };
                 let password = match form.auth_kind {
                     SshAuthKind::Password => {
                         if form.password.is_empty() {
@@ -1654,7 +1815,7 @@ impl App {
                 self.send(Command::SaveSshCredential {
                     credential: SshCredentialInput {
                         id: form.editing_id.clone().unwrap_or_default(),
-                        name: form.name.trim().to_owned(),
+                        name: cred_name,
                         username: form.username.trim().to_owned(),
                         auth_kind: form.auth_kind,
                         password,
@@ -1679,97 +1840,297 @@ impl App {
             } else {
                 "新建 SSH 跳板机"
             },
-            "配置跳板机地址与关联凭证，并核对服务器 SHA256 Host Key 指纹以防止中间人攻击。",
+            "配置跳板机地址、选择或直接填写登录凭证，并固定服务器 SHA256 Host Key 指纹。",
         );
         let credentials = self.ui.ssh_state.credentials.clone();
-        if self.ui.ssh_host_form.credential_id.is_empty()
+        if self.ui.ssh_host_form.cred_mode == ui::SshHostCredMode::Reuse
+            && self.ui.ssh_host_form.credential_id.is_empty()
             && let Some(first) = credentials.first()
         {
             self.ui.ssh_host_form.credential_id = first.id.clone();
         }
-        let mut open_new_cred = false;
         egui::ScrollArea::vertical()
             .id_salt("ssh-host-dialog-body")
             .max_height((ui.ctx().content_rect().height() - 250.0).max(160.0))
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
-                ui.label("跳板机名称");
-                crate::widgets::singleline_select_all(
-                    ui,
-                    &mut self.ui.ssh_host_form.name,
-                    ui.available_width(),
-                    "例如：生产跳板机",
-                );
-                ui.add_space(6.0);
                 ui.horizontal_wrapped(|ui| {
                     ui.label("服务器地址");
                     let host_w = (ui.available_width() - 210.0).max(160.0);
-                    crate::widgets::singleline_select_all(
+                    let prev_len = self.ui.ssh_host_form.host.len();
+                    let addr_resp = crate::widgets::singleline_select_all(
                         ui,
                         &mut self.ui.ssh_host_form.host,
                         host_w,
-                        "bastion.example.com",
+                        "bastion.example.com 或 ops@bastion.corp:2222",
                     );
+                    if addr_resp.changed() {
+                        self.ui.ssh_host_form.error = None;
+                        self.ui.ssh_host_form.test_result = None;
+                    }
+                    let pasted_or_blurred = (addr_resp.changed()
+                        && self.ui.ssh_host_form.host.len() > prev_len.saturating_add(1))
+                        || addr_resp.lost_focus();
+                    if pasted_or_blurred
+                        && let Some((maybe_user, clean_host, maybe_port)) =
+                            crate::port_forward::parse_ssh_host_paste(&self.ui.ssh_host_form.host)
+                    {
+                        self.ui.ssh_host_form.host = clean_host;
+                        if let Some(port) = maybe_port {
+                            self.ui.ssh_host_form.port = port.to_string();
+                        }
+                        if let Some(user) = maybe_user
+                            && self.ui.ssh_host_form.cred_mode == ui::SshHostCredMode::Inline
+                        {
+                            self.ui.ssh_host_form.inline_username = user;
+                        }
+                    }
                     ui.label("SSH 端口");
-                    crate::widgets::singleline_select_all(
+                    if crate::widgets::singleline_select_all(
                         ui,
                         &mut self.ui.ssh_host_form.port,
                         84.0,
                         "22",
-                    );
-                });
-                ui.add_space(6.0);
-                ui.label("登录凭证");
-                let selected_cred_label = credentials
-                    .iter()
-                    .find(|c| c.id == self.ui.ssh_host_form.credential_id)
-                    .map(|c| format!("{} (账号：{})", c.name, c.username))
-                    .unwrap_or_else(|| "尚未创建 SSH 凭证".into());
-                ui.horizontal_wrapped(|ui| {
-                    egui::ComboBox::from_id_salt("ssh-host-cred-select")
-                        .width((ui.available_width() - 125.0).clamp(200.0, 420.0))
-                        .selected_text(selected_cred_label)
-                        .show_ui(ui, |ui| {
-                            for cred in &credentials {
-                                ui.selectable_value(
-                                    &mut self.ui.ssh_host_form.credential_id,
-                                    cred.id.clone(),
-                                    format!("{} (账号：{})", cred.name, cred.username),
-                                );
-                            }
-                        });
-                    if ui.button("+ 新建凭证").clicked() {
-                        open_new_cred = true;
+                    )
+                    .changed()
+                    {
+                        self.ui.ssh_host_form.error = None;
+                        self.ui.ssh_host_form.test_result = None;
                     }
                 });
                 ui.add_space(6.0);
-                ui.label("服务器 Host Key 指纹（SHA256，首次连接前请探测并核对）");
+                ui.label("跳板机名称（可选，留空自动使用服务器地址）");
+                let host_name_hint = if self.ui.ssh_host_form.host.trim().is_empty() {
+                    "留空自动使用服务器地址".into()
+                } else {
+                    format!("留空自动命名：{}", self.ui.ssh_host_form.host.trim())
+                };
+                crate::widgets::singleline_select_all(
+                    ui,
+                    &mut self.ui.ssh_host_form.name,
+                    ui.available_width(),
+                    &host_name_hint,
+                );
+                ui.add_space(6.0);
                 ui.horizontal_wrapped(|ui| {
-                    let fp_w = (ui.available_width() - 135.0).max(180.0);
-                    crate::widgets::singleline_select_all(
+                    ui.label("SSH 登录凭证");
+                    let has_creds = !credentials.is_empty();
+                    let reuse_resp = crate::widgets::seg_button(
+                        ui,
+                        "复用已有凭证",
+                        self.ui.ssh_host_form.cred_mode == ui::SshHostCredMode::Reuse,
+                        has_creds,
+                    );
+                    if !has_creds {
+                        reuse_resp.on_hover_text("当前暂无已保存凭证，请直接填写新凭证");
+                    } else if reuse_resp.clicked() {
+                        self.ui.ssh_host_form.cred_mode = ui::SshHostCredMode::Reuse;
+                        if self.ui.ssh_host_form.credential_id.is_empty()
+                            && let Some(first) = credentials.first()
+                        {
+                            self.ui.ssh_host_form.credential_id = first.id.clone();
+                        }
+                        self.ui.ssh_host_form.error = None;
+                        self.ui.ssh_host_form.test_result = None;
+                    }
+                    if crate::widgets::seg_button(
+                        ui,
+                        "直接填写新凭证",
+                        self.ui.ssh_host_form.cred_mode == ui::SshHostCredMode::Inline,
+                        true,
+                    )
+                    .clicked()
+                    {
+                        self.ui.ssh_host_form.cred_mode = ui::SshHostCredMode::Inline;
+                        self.ui.ssh_host_form.error = None;
+                        self.ui.ssh_host_form.test_result = None;
+                    }
+                });
+                match self.ui.ssh_host_form.cred_mode {
+                    ui::SshHostCredMode::Reuse => {
+                        let selected_cred_label = credentials
+                            .iter()
+                            .find(|c| c.id == self.ui.ssh_host_form.credential_id)
+                            .map(|c| format!("{} (账号：{})", c.name, c.username))
+                            .unwrap_or_else(|| "请选择 SSH 凭证".into());
+                        egui::ComboBox::from_id_salt("ssh-host-cred-select")
+                            .width((ui.available_width() - 16.0).clamp(200.0, 520.0))
+                            .selected_text(selected_cred_label)
+                            .show_ui(ui, |ui| {
+                                for cred in &credentials {
+                                    ui.selectable_value(
+                                        &mut self.ui.ssh_host_form.credential_id,
+                                        cred.id.clone(),
+                                        format!("{} (账号：{})", cred.name, cred.username),
+                                    );
+                                }
+                            });
+                    }
+                    ui::SshHostCredMode::Inline => {
+                        crate::widgets::subcard(ui, None, true, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new("认证方式").small());
+                                for (kind, label) in [
+                                    (SshAuthKind::Password, "账号密码"),
+                                    (SshAuthKind::PrivateKey, "私钥文件"),
+                                ] {
+                                    if crate::widgets::seg_button(
+                                        ui,
+                                        label,
+                                        self.ui.ssh_host_form.inline_auth_kind == kind,
+                                        true,
+                                    )
+                                    .clicked()
+                                    {
+                                        self.ui.ssh_host_form.inline_auth_kind = kind;
+                                        self.ui.ssh_host_form.error = None;
+                                        self.ui.ssh_host_form.test_result = None;
+                                    }
+                                }
+                            });
+                            ui.add_space(4.0);
+                            ui.label("SSH 账号");
+                            if crate::widgets::singleline_select_all(
+                                ui,
+                                &mut self.ui.ssh_host_form.inline_username,
+                                ui.available_width(),
+                                "例如：ops / root",
+                            )
+                            .changed()
+                            {
+                                self.ui.ssh_host_form.test_result = None;
+                            }
+                            ui.add_space(4.0);
+                            ui.label("凭证名称（可选，留空自动生成）");
+                            let inline_cred_hint = format!(
+                                "留空自动命名：{}",
+                                crate::port_forward::auto_ssh_credential_name(
+                                    &self.ui.ssh_host_form.inline_username,
+                                    self.ui.ssh_host_form.inline_auth_kind
+                                )
+                            );
+                            crate::widgets::singleline_select_all(
+                                ui,
+                                &mut self.ui.ssh_host_form.inline_cred_name,
+                                ui.available_width(),
+                                &inline_cred_hint,
+                            );
+                            ui.add_space(4.0);
+                            match self.ui.ssh_host_form.inline_auth_kind {
+                                SshAuthKind::Password => {
+                                    ui.label("登录密码");
+                                    ui.add_sized(
+                                        [ui.available_width(), crate::widgets::CONTROL_HEIGHT],
+                                        egui::TextEdit::singleline(
+                                            &mut self.ui.ssh_host_form.inline_password,
+                                        )
+                                        .password(!self.ui.ssh_host_form.inline_show_secret)
+                                        .hint_text("仅本机 DPAPI 加密存储，不回显"),
+                                    );
+                                    ui.checkbox(
+                                        &mut self.ui.ssh_host_form.inline_show_secret,
+                                        "临时显示输入字符",
+                                    );
+                                }
+                                SshAuthKind::PrivateKey => {
+                                    ui.label("私钥文件路径（OpenSSH / PEM 格式）");
+                                    ui.horizontal_wrapped(|ui| {
+                                        let path_w = (ui.available_width() - 96.0).max(160.0);
+                                        crate::widgets::singleline_select_all(
+                                            ui,
+                                            &mut self.ui.ssh_host_form.inline_private_key_path,
+                                            path_w,
+                                            "例如：keys/id_ed25519",
+                                        );
+                                        #[cfg(windows)]
+                                        if ui.button("选择文件…").clicked()
+                                            && let Some(path) = rfd::FileDialog::new().pick_file()
+                                        {
+                                            self.ui.ssh_host_form.inline_private_key_path =
+                                                proxy_model::to_portable_string(
+                                                    &self.root,
+                                                    &path.to_string_lossy(),
+                                                );
+                                        }
+                                    });
+                                    ui.add_space(4.0);
+                                    ui.label("私钥口令 Passphrase（无加密可留空）");
+                                    ui.add_sized(
+                                        [ui.available_width(), crate::widgets::CONTROL_HEIGHT],
+                                        egui::TextEdit::singleline(
+                                            &mut self.ui.ssh_host_form.inline_passphrase,
+                                        )
+                                        .password(!self.ui.ssh_host_form.inline_show_secret)
+                                        .hint_text("可选"),
+                                    );
+                                    ui.checkbox(
+                                        &mut self.ui.ssh_host_form.inline_show_secret,
+                                        "临时显示口令",
+                                    );
+                                }
+                            }
+                            ui.label(
+                                RichText::new("保存跳板机时一并 DPAPI 加密落盘，不回显明文。")
+                                    .small()
+                                    .weak(),
+                            );
+                        });
+                    }
+                }
+                ui.add_space(6.0);
+                ui.label("服务器 Host Key 指纹（SHA256，首次连接前请探测并核对）");
+                let port_ok = self
+                    .ui
+                    .ssh_host_form
+                    .port
+                    .trim()
+                    .parse::<u16>()
+                    .ok()
+                    .filter(|p| *p > 0);
+                let inline_ready = match self.ui.ssh_host_form.inline_auth_kind {
+                    SshAuthKind::Password => {
+                        !self.ui.ssh_host_form.inline_username.trim().is_empty()
+                            && !self.ui.ssh_host_form.inline_password.is_empty()
+                    }
+                    SshAuthKind::PrivateKey => {
+                        !self.ui.ssh_host_form.inline_username.trim().is_empty()
+                            && !self
+                                .ui
+                                .ssh_host_form
+                                .inline_private_key_path
+                                .trim()
+                                .is_empty()
+                    }
+                };
+                let cred_ready = match self.ui.ssh_host_form.cred_mode {
+                    ui::SshHostCredMode::Reuse => credentials
+                        .iter()
+                        .any(|c| c.id == self.ui.ssh_host_form.credential_id),
+                    ui::SshHostCredMode::Inline => inline_ready,
+                };
+                let mut trigger_test = false;
+                ui.horizontal_wrapped(|ui| {
+                    let fp_w = (ui.available_width() - 235.0).max(150.0);
+                    if crate::widgets::singleline_select_all(
                         ui,
                         &mut self.ui.ssh_host_form.host_key_fingerprint,
                         fp_w,
                         "SHA256:...",
-                    );
-                    let port_ok = self
-                        .ui
-                        .ssh_host_form
-                        .port
-                        .trim()
-                        .parse::<u16>()
-                        .ok()
-                        .filter(|p| *p > 0);
+                    )
+                    .changed()
+                    {
+                        self.ui.ssh_host_form.test_result = None;
+                    }
                     let can_probe = !self.ui.ssh_host_form.host.trim().is_empty()
                         && port_ok.is_some()
                         && !self.ui.ssh_host_form.probing;
-                    let btn_label = if self.ui.ssh_host_form.probing {
+                    let probe_label = if self.ui.ssh_host_form.probing {
                         "探测中…"
                     } else {
-                        "探测服务器指纹"
+                        "探测指纹"
                     };
                     if ui
-                        .add_enabled(can_probe, egui::Button::new(btn_label))
+                        .add_enabled(can_probe, egui::Button::new(probe_label))
                         .clicked()
                     {
                         self.ui.ssh_host_form.probing = true;
@@ -1780,25 +2141,81 @@ impl App {
                             port: port_ok.unwrap(),
                         });
                     }
+                    let can_test = !self.ui.ssh_host_form.host.trim().is_empty()
+                        && port_ok.is_some()
+                        && cred_ready
+                        && !self.ui.ssh_host_form.testing;
+                    let test_label = if self.ui.ssh_host_form.testing {
+                        "测试中…"
+                    } else {
+                        "测试连接"
+                    };
+                    if ui
+                        .add_enabled(can_test, egui::Button::new(test_label))
+                        .clicked()
+                    {
+                        trigger_test = true;
+                    }
                 });
+                if trigger_test {
+                    let host_addr = self.ui.ssh_host_form.host.trim().to_owned();
+                    let host_name = if self.ui.ssh_host_form.name.trim().is_empty() {
+                        host_addr.clone()
+                    } else {
+                        self.ui.ssh_host_form.name.trim().to_owned()
+                    };
+                    let inline_cred =
+                        if self.ui.ssh_host_form.cred_mode == ui::SshHostCredMode::Inline {
+                            Some(build_inline_cred_input(&self.ui.ssh_host_form))
+                        } else {
+                            None
+                        };
+                    self.ui.ssh_host_form.testing = true;
+                    self.ui.ssh_host_form.test_result = None;
+                    self.ui.ssh_host_form.error = None;
+                    self.send(Command::TestSshHost {
+                        host_id: String::new(),
+                        host: Some(SshHost {
+                            id: String::new(),
+                            name: host_name,
+                            host: host_addr,
+                            port: port_ok.unwrap_or(proxy_model::DEFAULT_SSH_PORT),
+                            credential_id: if inline_cred.is_none() {
+                                self.ui.ssh_host_form.credential_id.clone()
+                            } else {
+                                String::new()
+                            },
+                            host_key_fingerprint: self
+                                .ui
+                                .ssh_host_form
+                                .host_key_fingerprint
+                                .trim()
+                                .to_owned(),
+                        }),
+                        inline_credential: inline_cred,
+                    });
+                }
                 if let Some(note) = &self.ui.ssh_host_form.probe_note {
                     ui.add_space(4.0);
                     crate::widgets::banner_box(ui, crate::widgets::BadgeTone::Success, note);
+                }
+                if let Some((ok, ref msg)) = self.ui.ssh_host_form.test_result {
+                    ui.add_space(4.0);
+                    crate::widgets::banner_box(
+                        ui,
+                        if ok {
+                            crate::widgets::BadgeTone::Success
+                        } else {
+                            crate::widgets::BadgeTone::Danger
+                        },
+                        msg,
+                    );
                 }
                 if let Some(err) = &self.ui.ssh_host_form.error {
                     ui.add_space(4.0);
                     crate::widgets::banner_box(ui, crate::widgets::BadgeTone::Danger, err);
                 }
             });
-
-        if open_new_cred {
-            self.ui.ssh_cred_form = ui::SshCredentialForm {
-                return_to_host: true,
-                ..Default::default()
-            };
-            self.ui.dialog = Some(Dialog::SshCredential);
-            return true;
-        }
 
         dialog_actions(ui);
         let port_num = self
@@ -1809,38 +2226,274 @@ impl App {
             .parse::<u16>()
             .ok()
             .filter(|p| *p > 0);
-        let valid = !self.ui.ssh_host_form.name.trim().is_empty()
-            && !self.ui.ssh_host_form.host.trim().is_empty()
-            && port_num.is_some()
-            && credentials
+        let cred_valid = match self.ui.ssh_host_form.cred_mode {
+            ui::SshHostCredMode::Reuse => credentials
                 .iter()
-                .any(|c| c.id == self.ui.ssh_host_form.credential_id);
+                .any(|c| c.id == self.ui.ssh_host_form.credential_id),
+            ui::SshHostCredMode::Inline => {
+                !self.ui.ssh_host_form.inline_username.trim().is_empty()
+                    && match self.ui.ssh_host_form.inline_auth_kind {
+                        SshAuthKind::Password => !self.ui.ssh_host_form.inline_password.is_empty(),
+                        SshAuthKind::PrivateKey => !self
+                            .ui
+                            .ssh_host_form
+                            .inline_private_key_path
+                            .trim()
+                            .is_empty(),
+                    }
+            }
+        };
+        let valid =
+            !self.ui.ssh_host_form.host.trim().is_empty() && port_num.is_some() && cred_valid;
         let mut keep_open = true;
+        if self.ui.ssh_host_form.return_to_pf {
+            ui.label(
+                RichText::new("保存后将自动返回「端口转发」弹窗并选中此跳板机")
+                    .small()
+                    .weak(),
+            );
+        }
         ui.horizontal_wrapped(|ui| {
             if ui.button("取消").clicked() {
+                self.ui.ssh_host_form.inline_password.clear();
+                self.ui.ssh_host_form.inline_passphrase.clear();
                 if self.ui.ssh_host_form.return_to_pf {
                     self.ui.ssh_host_form.return_to_pf = false;
                     self.ui.dialog = Some(Dialog::PortForward);
-                    return;
+                } else {
+                    keep_open = false;
                 }
-                keep_open = false;
             }
             if primary(ui, "保存跳板机", valid && !self.busy) {
-                let form = &self.ui.ssh_host_form;
+                let host_addr = self.ui.ssh_host_form.host.trim().to_owned();
+                let host_name = if self.ui.ssh_host_form.name.trim().is_empty() {
+                    host_addr.clone()
+                } else {
+                    self.ui.ssh_host_form.name.trim().to_owned()
+                };
+                let inline_credential =
+                    if self.ui.ssh_host_form.cred_mode == ui::SshHostCredMode::Inline {
+                        Some(build_inline_cred_input(&self.ui.ssh_host_form))
+                    } else {
+                        None
+                    };
                 self.send(Command::SaveSshHost {
                     host: SshHost {
-                        id: form.editing_id.clone().unwrap_or_default(),
-                        name: form.name.trim().to_owned(),
-                        host: form.host.trim().to_owned(),
+                        id: self.ui.ssh_host_form.editing_id.clone().unwrap_or_default(),
+                        name: host_name,
+                        host: host_addr,
                         port: port_num.unwrap_or(proxy_model::DEFAULT_SSH_PORT),
-                        credential_id: form.credential_id.clone(),
-                        host_key_fingerprint: form.host_key_fingerprint.trim().to_owned(),
+                        credential_id: if inline_credential.is_none() {
+                            self.ui.ssh_host_form.credential_id.clone()
+                        } else {
+                            String::new()
+                        },
+                        host_key_fingerprint: self
+                            .ui
+                            .ssh_host_form
+                            .host_key_fingerprint
+                            .trim()
+                            .to_owned(),
                     },
+                    inline_credential,
                 });
+                self.ui.ssh_host_form.inline_password.clear();
+                self.ui.ssh_host_form.inline_passphrase.clear();
                 keep_open = false;
             }
         });
         keep_open
+    }
+}
+
+fn build_inline_cred_input(form: &ui::SshHostForm) -> SshCredentialInput {
+    let name = if form.inline_cred_name.trim().is_empty() {
+        crate::port_forward::auto_ssh_credential_name(&form.inline_username, form.inline_auth_kind)
+    } else {
+        form.inline_cred_name.trim().to_owned()
+    };
+    let password = match form.inline_auth_kind {
+        SshAuthKind::Password => {
+            (!form.inline_password.is_empty()).then(|| form.inline_password.clone())
+        }
+        SshAuthKind::PrivateKey => None,
+    };
+    let passphrase = match form.inline_auth_kind {
+        SshAuthKind::PrivateKey => {
+            (!form.inline_passphrase.is_empty()).then(|| form.inline_passphrase.clone())
+        }
+        SshAuthKind::Password => None,
+    };
+    SshCredentialInput {
+        id: String::new(),
+        name,
+        username: form.inline_username.trim().to_owned(),
+        auth_kind: form.inline_auth_kind,
+        password,
+        private_key_path: if form.inline_auth_kind == SshAuthKind::PrivateKey {
+            form.inline_private_key_path.trim().into()
+        } else {
+            PathBuf::new()
+        },
+        passphrase,
+    }
+}
+
+fn apply_parsed_ssh_cmd(form: &mut crate::port_forward::PortForwardForm, ssh_hosts: &[SshHost]) {
+    match crate::port_forward::parse_ssh_l_command(&form.ssh_cmd_input) {
+        Ok(parsed) => {
+            form.listen = parsed.listen.clone();
+            form.custom_listen = parsed.listen != crate::port_forward::LISTEN_LOCAL
+                && parsed.listen != crate::port_forward::LISTEN_LAN;
+            form.local_port = parsed.local_port.to_string();
+            form.target_host = parsed.target_host.clone();
+            form.target_port = parsed.target_port.to_string();
+            form.outbound_is_ssh = true;
+            form.network = "tcp".into();
+
+            if let Some(ref jump_host) = parsed.jump_host {
+                if let Some(matched_id) =
+                    crate::port_forward::match_ssh_host_id(ssh_hosts, jump_host, parsed.ssh_port)
+                {
+                    let matched_name = ssh_hosts
+                        .iter()
+                        .find(|h| h.id == matched_id)
+                        .map(|h| h.name.as_str())
+                        .unwrap_or(jump_host.as_str());
+                    form.ssh_host_id = matched_id;
+                    form.parsed_ssh_hint = None;
+                    form.ssh_cmd_feedback = Some((
+                        false,
+                        format!("已填入地址端口，并自动匹配跳板机「{matched_name}」。"),
+                    ));
+                } else {
+                    let user_prefix = parsed
+                        .user
+                        .as_deref()
+                        .map(|u| format!("{u}@"))
+                        .unwrap_or_default();
+                    form.parsed_ssh_hint = Some(crate::port_forward::ParsedSshJumpHint {
+                        user: parsed.user.unwrap_or_default(),
+                        host: jump_host.clone(),
+                        port: parsed.ssh_port,
+                    });
+                    form.ssh_cmd_feedback = Some((
+                        false,
+                        format!(
+                            "已填入地址端口；跳板机 {user_prefix}{jump_host}:{} 尚未登记，可点下方按钮一键新建。",
+                            parsed.ssh_port
+                        ),
+                    ));
+                }
+            } else {
+                form.parsed_ssh_hint = None;
+                form.ssh_cmd_feedback = Some((
+                    false,
+                    "已填入本地端口与目标地址端口，请选择 SSH 跳板机。".into(),
+                ));
+            }
+        }
+        Err(err) => {
+            form.parsed_ssh_hint = None;
+            form.ssh_cmd_feedback = Some((true, err));
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_listen_scope_and_port(
+    ui: &mut egui::Ui,
+    form: &mut crate::port_forward::PortForwardForm,
+    pf_error: &mut Option<String>,
+    parsed_json: Option<&serde_json::Value>,
+    paused_pf: &[crate::workspace::PausedPortForward],
+    ssh_forwards: &[SshForward],
+    lan_warn_text: &str,
+) {
+    ui.label("本机监听范围与端口");
+    let mut focus_custom_listen = false;
+    ui.horizontal_wrapped(|ui| {
+        let is_local = form.listen.trim() == crate::port_forward::LISTEN_LOCAL;
+        let is_lan = form.listen.trim() == crate::port_forward::LISTEN_LAN;
+        let is_custom = form.custom_listen || (!is_local && !is_lan);
+        if crate::widgets::seg_button(ui, "仅本机 (127.0.0.1)", is_local && !is_custom, true)
+            .clicked()
+        {
+            form.listen = crate::port_forward::LISTEN_LOCAL.into();
+            form.custom_listen = false;
+            *pf_error = None;
+        }
+        if crate::widgets::seg_button(ui, "局域网可访问 (0.0.0.0)", is_lan && !is_custom, true)
+            .clicked()
+        {
+            form.listen = crate::port_forward::LISTEN_LAN.into();
+            form.custom_listen = false;
+            *pf_error = None;
+        }
+        if crate::widgets::seg_button(ui, "自定义 IP", is_custom, true).clicked() {
+            form.custom_listen = true;
+            focus_custom_listen = true;
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.label("监听 IP");
+        let ip_w = (ui.available_width() - 315.0).max(120.0);
+        let listen_resp =
+            crate::widgets::singleline_select_all(ui, &mut form.listen, ip_w, "127.0.0.1");
+        if focus_custom_listen {
+            crate::widgets::focus_and_select_all(ui.ctx(), &listen_resp, &form.listen);
+        }
+        if listen_resp.changed() {
+            let trimmed = form.listen.trim();
+            form.custom_listen = trimmed != crate::port_forward::LISTEN_LOCAL
+                && trimmed != crate::port_forward::LISTEN_LAN;
+            *pf_error = None;
+        }
+        ui.label("本机端口");
+        if crate::widgets::singleline_select_all(ui, &mut form.local_port, 90.0, "15432").changed()
+        {
+            *pf_error = None;
+        }
+        let target_port_ok = form
+            .target_port
+            .trim()
+            .parse::<u16>()
+            .ok()
+            .filter(|p| *p > 0);
+        if ui
+            .add_enabled(target_port_ok.is_some(), egui::Button::new("同目标端口"))
+            .clicked()
+            && let Some(tp) = target_port_ok
+        {
+            form.local_port = tp.to_string();
+            *pf_error = None;
+        }
+    });
+    if !crate::port_forward::is_loopback_listen(&form.listen)
+        && form.listen.trim().parse::<std::net::IpAddr>().is_ok()
+    {
+        ui.add_space(4.0);
+        crate::widgets::banner_box(ui, crate::widgets::BadgeTone::Warn, lan_warn_text);
+    }
+    if let Some(conflict_msg) =
+        crate::port_forward::find_local_port_conflict(parsed_json, form, ssh_forwards)
+    {
+        let cur = form.local_port.trim().parse::<u16>().unwrap_or(15432);
+        let free_port = crate::port_forward::next_free_port_all(
+            cur.saturating_add(1),
+            parsed_json,
+            paused_pf,
+            ssh_forwards,
+            form.editing_tag.as_deref(),
+            form.editing_ssh_id.as_deref(),
+        );
+        ui.add_space(4.0);
+        crate::widgets::banner_box(ui, crate::widgets::BadgeTone::Danger, &conflict_msg);
+        if crate::widgets::compact_chip(ui, &format!("改用空闲端口 ({free_port})"), true).clicked()
+        {
+            form.local_port = free_port.to_string();
+            *pf_error = None;
+        }
     }
 }
 

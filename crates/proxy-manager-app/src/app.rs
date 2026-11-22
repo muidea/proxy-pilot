@@ -965,7 +965,20 @@ impl App {
                     if error.code == "CONNECTION_LOST" {
                         self.ui.connected = false;
                     }
-                    self.fail_command(&command, error.clone(), response.request_id.clone());
+                    if matches!(
+                        command,
+                        Command::TestSshHost { .. } | Command::ProbeSshHostKey { .. }
+                    ) {
+                        let action_label = ui::command_name(&command);
+                        self.message = format!("{action_label}失败：{}", error.message);
+                        self.add_event(
+                            "错误",
+                            format!("{action_label} · {error}"),
+                            response.request_id.clone(),
+                        );
+                    } else {
+                        self.fail_command(&command, error.clone(), response.request_id.clone());
+                    }
                     if matches!(command, Command::UpdateProfile { .. })
                         && error.code == "ASSET_REVISION_CONFLICT"
                         && pending.context.profile == self.profile_id
@@ -988,6 +1001,18 @@ impl App {
                         self.ui.ssh_host_form.probing = false;
                         self.ui.ssh_host_form.probe_note = None;
                         self.ui.ssh_host_form.error = Some(error.message.clone());
+                    }
+                    if let Command::TestSshHost { ref host_id, .. } = command {
+                        if !host_id.is_empty() {
+                            self.ui.ssh_host_tests.insert(
+                                host_id.clone(),
+                                ui::SshHostTestStatus::Error(error.message.clone()),
+                            );
+                        } else {
+                            self.ui.ssh_host_form.testing = false;
+                            self.ui.ssh_host_form.test_result =
+                                Some((false, error.message.clone()));
+                        }
                     }
                     self.message = format!("{} 请求：{}", self.message, response.request_id);
                     if command.is_write() {
@@ -1185,6 +1210,25 @@ impl App {
                             self.message = "已探测 SSH 服务器 Host Key 指纹。".into();
                         }
                     }
+                    Command::TestSshHost { ref host_id, .. } => {
+                        if let Ok(res) = serde_json::from_value::<SshHostTestResult>(value) {
+                            let msg = format!(
+                                "握手与身份校验通过（账号 {}，RTT {} ms）",
+                                res.username, res.latency_ms
+                            );
+                            if !host_id.is_empty() {
+                                self.ui.ssh_host_tests.insert(
+                                    host_id.clone(),
+                                    ui::SshHostTestStatus::Ok(msg.clone()),
+                                );
+                            } else {
+                                self.ui.ssh_host_form.testing = false;
+                                self.ui.ssh_host_form.test_result = Some((true, msg.clone()));
+                            }
+                            self.message = format!("跳板机「{}:{}」{msg}", res.host, res.port);
+                            self.add_event("信息", self.message.clone(), response.request_id);
+                        }
+                    }
                     Command::GetSshState => {
                         if let Ok(state) = serde_json::from_value::<SshState>(value) {
                             self.ui.ssh_state = state;
@@ -1210,6 +1254,7 @@ impl App {
                             if self.ui.ssh_cred_form.return_to_host {
                                 self.ui.ssh_cred_form.return_to_host = false;
                                 if let Some(cid) = matched_id {
+                                    self.ui.ssh_host_form.cred_mode = ui::SshHostCredMode::Reuse;
                                     self.ui.ssh_host_form.credential_id = cid;
                                 }
                                 self.ui.dialog = Some(ui::Dialog::SshHost);
@@ -1219,7 +1264,7 @@ impl App {
                             self.add_event("信息", "已保存 SSH 凭证", response.request_id);
                         }
                     }
-                    Command::SaveSshHost { ref host } => {
+                    Command::SaveSshHost { ref host, .. } => {
                         if let Ok(state) = serde_json::from_value::<SshState>(value) {
                             let target_name = host.name.trim().to_owned();
                             let target_addr = host.host.trim().to_owned();
@@ -1233,6 +1278,9 @@ impl App {
                                     .find(|h| h.name == target_name && h.host == target_addr)
                                     .map(|h| h.id.clone())
                             };
+                            if let Some(ref hid) = matched_id {
+                                self.ui.ssh_host_tests.remove(hid);
+                            }
                             self.ui.ssh_state = state;
                             self.ui.ssh_loaded = true;
                             if self.ui.ssh_host_form.return_to_pf {
@@ -1241,6 +1289,7 @@ impl App {
                                     self.ui.pf_form.outbound_is_ssh = true;
                                     self.ui.pf_form.ssh_host_id = hid;
                                     self.ui.pf_form.network = "tcp".into();
+                                    self.ui.pf_form.parsed_ssh_hint = None;
                                 }
                                 self.ui.dialog = Some(ui::Dialog::PortForward);
                             }
@@ -1249,9 +1298,54 @@ impl App {
                             self.add_event("信息", "已保存 SSH 跳板机", response.request_id);
                         }
                     }
+                    Command::SaveSshForward { start_now, .. } => {
+                        if let Ok(state) = serde_json::from_value::<SshState>(value) {
+                            self.ui.ssh_state = state;
+                            self.ui.ssh_loaded = true;
+                            self.clear_request_failure();
+                            let msg = if start_now {
+                                "SSH 隧道已保存并启动。"
+                            } else {
+                                "已保存 SSH 端口转发。"
+                            };
+                            self.message = msg.into();
+                            self.add_event("信息", msg, response.request_id);
+                        }
+                    }
+                    Command::StartAllSshForwards => {
+                        if let Ok(state) = serde_json::from_value::<SshState>(value) {
+                            let running = state
+                                .runtime
+                                .iter()
+                                .filter(|r| r.state == SshForwardState::Running)
+                                .count();
+                            let err_count = state
+                                .runtime
+                                .iter()
+                                .filter(|r| r.state == SshForwardState::Error)
+                                .count();
+                            self.ui.ssh_state = state;
+                            self.ui.ssh_loaded = true;
+                            self.clear_request_failure();
+                            self.message = if err_count > 0 {
+                                format!("批量启动完成：运行中 {running} 条，{err_count} 条启动失败")
+                            } else {
+                                format!("已启动全部 SSH 隧道（运行中 {running} 条）")
+                            };
+                            self.add_event("信息", self.message.clone(), response.request_id);
+                        }
+                    }
+                    Command::StopAllSshForwards => {
+                        if let Ok(state) = serde_json::from_value::<SshState>(value) {
+                            self.ui.ssh_state = state;
+                            self.ui.ssh_loaded = true;
+                            self.clear_request_failure();
+                            self.message = "已停止全部 SSH 隧道。".into();
+                            self.add_event("信息", "已停止全部 SSH 隧道", response.request_id);
+                        }
+                    }
                     Command::DeleteSshCredential { .. }
                     | Command::DeleteSshHost { .. }
-                    | Command::SaveSshForward { .. }
                     | Command::DeleteSshForward { .. }
                     | Command::StartSshForward { .. }
                     | Command::StopSshForward { .. } => {
@@ -1677,6 +1771,13 @@ impl eframe::App for App {
             self.send(Command::GetStatus);
             if self.ui.page == Page::Logs && !self.ui.logs_paused {
                 self.send(Command::GetLogs);
+            }
+            if !self.ui.ssh_state.forwards.is_empty()
+                && (self.ui.page == Page::Overview
+                    || (self.ui.page == Page::Profiles
+                        && self.ui.profile_tab == ui::ProfileTab::PortForward))
+            {
+                self.send(Command::GetSshState);
             }
             self.last_poll = Instant::now();
         }

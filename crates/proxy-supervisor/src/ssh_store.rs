@@ -101,7 +101,7 @@ impl SshStore {
         &self.data.forwards
     }
 
-    pub fn save_credential(&mut self, input: SshCredentialInput) -> Result<SshCredentialSummary> {
+    fn build_stored_credential(&self, input: SshCredentialInput) -> Result<StoredCredential> {
         let name = input.name.trim().to_owned();
         if name.is_empty() {
             return Err(Error::new("SSH_CREDENTIAL_INVALID", "凭证名称不能为空"));
@@ -176,15 +176,20 @@ impl SshStore {
         } else {
             input.id.trim().to_owned()
         };
-        let stored = StoredCredential {
-            id: id_val.clone(),
+        Ok(StoredCredential {
+            id: id_val,
             name,
             username,
             auth_kind: input.auth_kind,
             encrypted_password,
             private_key_path,
             encrypted_passphrase,
-        };
+        })
+    }
+
+    pub fn save_credential(&mut self, input: SshCredentialInput) -> Result<SshCredentialSummary> {
+        let stored = self.build_stored_credential(input)?;
+        let id_val = stored.id.clone();
         let summary = stored.summary();
         if let Some(slot) = self.data.credentials.iter_mut().find(|c| c.id == id_val) {
             *slot = stored;
@@ -214,7 +219,16 @@ impl SshStore {
         self.persist()
     }
 
-    pub fn save_host(&mut self, mut host: SshHost) -> Result<SshHost> {
+    #[cfg(test)]
+    pub fn save_host(&mut self, host: SshHost) -> Result<SshHost> {
+        self.save_host_with_inline_credential(host, None)
+    }
+
+    pub fn save_host_with_inline_credential(
+        &mut self,
+        mut host: SshHost,
+        inline_cred: Option<SshCredentialInput>,
+    ) -> Result<SshHost> {
         host.name = host.name.trim().to_owned();
         if host.name.is_empty() {
             return Err(Error::new("SSH_HOST_INVALID", "跳板机名称不能为空"));
@@ -235,19 +249,32 @@ impl SshStore {
         if host.port == 0 {
             host.port = DEFAULT_SSH_PORT;
         }
-        if !self
-            .data
-            .credentials
-            .iter()
-            .any(|c| c.id == host.credential_id)
-        {
-            return Err(Error::new("SSH_HOST_INVALID", "请选择有效的 SSH 凭证"));
-        }
+
+        let new_stored_cred = if let Some(mut cred_input) = inline_cred {
+            cred_input.id = String::new();
+            let stored = self.build_stored_credential(cred_input)?;
+            host.credential_id = stored.id.clone();
+            Some(stored)
+        } else {
+            if !self
+                .data
+                .credentials
+                .iter()
+                .any(|c| c.id == host.credential_id)
+            {
+                return Err(Error::new("SSH_HOST_INVALID", "请选择有效的 SSH 凭证"));
+            }
+            None
+        };
+
         host.host_key_fingerprint = host.host_key_fingerprint.trim().to_owned();
         if host.id.trim().is_empty() {
             host.id = id();
         } else {
             host.id = host.id.trim().to_owned();
+        }
+        if let Some(stored) = new_stored_cred {
+            self.data.credentials.push(stored);
         }
         if let Some(slot) = self.data.hosts.iter_mut().find(|h| h.id == host.id) {
             *slot = host.clone();
@@ -354,29 +381,12 @@ impl SshStore {
         self.persist()
     }
 
-    pub fn resolve_for_forward(
-        &self,
-        forward_id: &str,
-    ) -> Result<(SshForward, SshHost, ResolvedCredential)> {
-        let forward = self
-            .data
-            .forwards
-            .iter()
-            .find(|f| f.id == forward_id)
-            .cloned()
-            .ok_or_else(|| Error::new("SSH_NOT_FOUND", "未找到指定的 SSH 端口转发"))?;
-        let host = self
-            .data
-            .hosts
-            .iter()
-            .find(|h| h.id == forward.ssh_host_id)
-            .cloned()
-            .ok_or_else(|| Error::new("SSH_NOT_FOUND", "未找到关联的 SSH 跳板机"))?;
+    pub fn resolve_credential_by_id(&self, cred_id: &str) -> Result<ResolvedCredential> {
         let cred = self
             .data
             .credentials
             .iter()
-            .find(|c| c.id == host.credential_id)
+            .find(|c| c.id == cred_id)
             .ok_or_else(|| Error::new("SSH_NOT_FOUND", "未找到关联的 SSH 凭证"))?;
         let password = cred
             .encrypted_password
@@ -393,17 +403,97 @@ impl SshStore {
         } else {
             resolve_path(&self.root, &cred.private_key_path)
         };
-        Ok((
-            forward,
-            host,
-            ResolvedCredential {
-                username: cred.username.clone(),
-                auth_kind: cred.auth_kind,
-                password,
-                private_key_path,
-                passphrase,
-            },
-        ))
+        Ok(ResolvedCredential {
+            username: cred.username.clone(),
+            auth_kind: cred.auth_kind,
+            password,
+            private_key_path,
+            passphrase,
+        })
+    }
+
+    pub fn resolve_host(&self, host_id: &str) -> Result<(SshHost, ResolvedCredential)> {
+        let host = self
+            .data
+            .hosts
+            .iter()
+            .find(|h| h.id == host_id.trim())
+            .cloned()
+            .ok_or_else(|| Error::new("SSH_NOT_FOUND", "未找到指定的 SSH 跳板机"))?;
+        let cred = self.resolve_credential_by_id(&host.credential_id)?;
+        Ok((host, cred))
+    }
+
+    pub fn resolve_inline_credential(
+        &self,
+        input: &SshCredentialInput,
+    ) -> Result<ResolvedCredential> {
+        let username = input.username.trim().to_owned();
+        if username.is_empty() || username.chars().any(char::is_control) {
+            return Err(Error::new("SSH_CREDENTIAL_INVALID", "SSH 账号不能为空"));
+        }
+        match input.auth_kind {
+            SshAuthKind::Password => {
+                let password = input
+                    .password
+                    .as_deref()
+                    .filter(|p| !p.is_empty())
+                    .ok_or_else(|| Error::new("SSH_CREDENTIAL_INVALID", "密码不能为空"))?
+                    .to_owned();
+                Ok(ResolvedCredential {
+                    username,
+                    auth_kind: SshAuthKind::Password,
+                    password: Some(password),
+                    private_key_path: PathBuf::new(),
+                    passphrase: None,
+                })
+            }
+            SshAuthKind::PrivateKey => {
+                if input.private_key_path.as_os_str().is_empty() {
+                    return Err(Error::new(
+                        "SSH_CREDENTIAL_INVALID",
+                        "请选择或填写私钥文件路径",
+                    ));
+                }
+                let resolved_key = resolve_path(&self.root, &input.private_key_path);
+                let key_text = fs::read_to_string(&resolved_key).map_err(|e| {
+                    Error::new(
+                        "SSH_KEY_UNREADABLE",
+                        format!("无法读取私钥文件 {}: {e}", resolved_key.display()),
+                    )
+                })?;
+                let passphrase = input
+                    .passphrase
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned);
+                russh::keys::decode_secret_key(&key_text, passphrase.as_deref()).map_err(|e| {
+                    Error::new("SSH_KEY_INVALID", format!("私钥解析或口令校验失败：{e}"))
+                })?;
+                Ok(ResolvedCredential {
+                    username,
+                    auth_kind: SshAuthKind::PrivateKey,
+                    password: None,
+                    private_key_path: resolved_key,
+                    passphrase,
+                })
+            }
+        }
+    }
+
+    pub fn resolve_for_forward(
+        &self,
+        forward_id: &str,
+    ) -> Result<(SshForward, SshHost, ResolvedCredential)> {
+        let forward = self
+            .data
+            .forwards
+            .iter()
+            .find(|f| f.id == forward_id)
+            .cloned()
+            .ok_or_else(|| Error::new("SSH_NOT_FOUND", "未找到指定的 SSH 端口转发"))?;
+        let (host, cred) = self.resolve_host(&forward.ssh_host_id)?;
+        Ok((forward, host, cred))
     }
 
     fn persist(&self) -> Result<()> {
@@ -630,5 +720,71 @@ mod tests {
         store.delete_forward(&fwd.id).unwrap();
         store.delete_host(&host.id).unwrap();
         store.delete_credential(&summary.id).unwrap();
+    }
+
+    #[test]
+    fn inline_credential_saves_atomically_with_host_and_resolves_in_memory() {
+        let dir = tempdir().unwrap();
+        let mut store = SshStore::load(dir.path()).unwrap();
+
+        // Failing host validation must not leave an orphan inline credential behind.
+        let bad_inline = SshCredentialInput {
+            id: String::new(),
+            name: "inline-op".into(),
+            username: "ops".into(),
+            auth_kind: SshAuthKind::Password,
+            password: Some("secret-1".into()),
+            private_key_path: PathBuf::new(),
+            passphrase: None,
+        };
+        assert!(
+            store
+                .save_host_with_inline_credential(
+                    SshHost {
+                        id: String::new(),
+                        name: "bad-host".into(),
+                        host: "   ".into(),
+                        port: 22,
+                        credential_id: String::new(),
+                        host_key_fingerprint: String::new(),
+                    },
+                    Some(bad_inline.clone()),
+                )
+                .is_err()
+        );
+        assert!(store.summaries().is_empty());
+
+        let saved_host = store
+            .save_host_with_inline_credential(
+                SshHost {
+                    id: String::new(),
+                    name: "bastion.corp".into(),
+                    host: "bastion.corp".into(),
+                    port: 2222,
+                    credential_id: String::new(),
+                    host_key_fingerprint: "SHA256:xyz".into(),
+                },
+                Some(bad_inline),
+            )
+            .unwrap();
+        assert_eq!(store.summaries().len(), 1);
+        assert_eq!(store.hosts().len(), 1);
+        assert_eq!(saved_host.credential_id, store.summaries()[0].id);
+
+        // In-memory resolution supports password without mutating store.
+        let mem = store
+            .resolve_inline_credential(&SshCredentialInput {
+                id: String::new(),
+                name: String::new(),
+                username: "temp-user".into(),
+                auth_kind: SshAuthKind::Password,
+                password: Some("mem-secret".into()),
+                private_key_path: PathBuf::new(),
+                passphrase: None,
+            })
+            .unwrap();
+        assert_eq!(mem.username, "temp-user");
+        assert_eq!(mem.password.as_deref(), Some("mem-secret"));
+        assert_eq!(store.summaries().len(), 1);
     }
 }

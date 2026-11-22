@@ -35,6 +35,14 @@ impl App {
         } else {
             0
         };
+        let running_ssh_count = self
+            .ui
+            .ssh_state
+            .runtime
+            .iter()
+            .filter(|r| r.state == SshForwardState::Running)
+            .count();
+        let total_running_pf = running_pf_count + running_ssh_count;
         let running_profile_name = self
             .status
             .as_ref()
@@ -83,12 +91,18 @@ impl App {
                         } else {
                             format!("{running_profile_name} ({mode_short})")
                         };
-                        let status_text = if running_pf_count > 0 {
-                            format!("Core 运行中 · {prof_part} · {running_pf_count} 条转发监听")
+                        let status_text = if total_running_pf > 0 {
+                            format!("Core 运行中 · {prof_part} · {total_running_pf} 条转发监听")
                         } else {
                             format!("Core 运行中 · {prof_part}")
                         };
                         crate::widgets::badge(ui, &status_text, crate::widgets::BadgeTone::Success);
+                    } else if running_ssh_count > 0 {
+                        crate::widgets::badge(
+                            ui,
+                            &format!("Core 已停止 · {running_ssh_count} 条 SSH 隧道独立运行中"),
+                            crate::widgets::BadgeTone::Accent,
+                        );
                     } else {
                         crate::widgets::badge(
                             ui,
@@ -539,12 +553,33 @@ impl App {
             });
         };
         let render_forwards_card = |app: &mut App, ui: &mut egui::Ui| {
+            let ssh_ctl = app.ui.connected && !app.busy && app.ui.uncertain.is_none();
             card(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new("端口转发与隧道").strong().size(16.0));
+                    if primary(ui, "+ SSH 隧道", ssh_ctl) {
+                        let parsed = serde_json::from_str::<serde_json::Value>(&app.editor).ok();
+                        let paused = app
+                            .ui
+                            .workspace
+                            .paused_port_forwards
+                            .get(&app.profile_id)
+                            .cloned()
+                            .unwrap_or_default();
+                        let default_host = app.ui.ssh_state.hosts.first().map(|h| h.id.as_str());
+                        app.ui.pf_form = crate::port_forward::PortForwardForm::from_new_ssh(
+                            parsed.as_ref(),
+                            &paused,
+                            &app.ui.ssh_state.forwards,
+                            default_host,
+                        );
+                        app.ui.pf_error = None;
+                        app.ui.dialog = Some(Dialog::PortForward);
+                    }
                     if ui.button("管理转发").clicked() {
                         app.ui.page = Page::Profiles;
                         app.ui.profile_tab = ProfileTab::PortForward;
+                        app.ui.pf_subtab = PortForwardSubTab::Forwards;
                     }
                 });
                 ui.add_space(4.0);
@@ -584,17 +619,57 @@ impl App {
                     }
                 }
                 let ssh_forwards = app.ui.ssh_state.forwards.clone();
-                if !ssh_forwards.is_empty() {
-                    ui.add_space(6.0);
-                    ui.separator();
+                ui.add_space(6.0);
+                ui.separator();
+                if ssh_forwards.is_empty() {
                     ui.label(
                         RichText::new("SSH 隧道按需转发（独立于 Core）")
                             .strong()
                             .small(),
                     );
+                    ui.label(
+                        RichText::new(
+                            "暂无 SSH 隧道；点击上方「+ SSH 隧道」可快速新建并按需启停。",
+                        )
+                        .small()
+                        .weak(),
+                    );
+                } else {
                     let ssh_hosts = app.ui.ssh_state.hosts.clone();
                     let ssh_runtime = app.ui.ssh_state.runtime.clone();
-                    let ssh_ctl = app.ui.connected && !app.busy && app.ui.uncertain.is_none();
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new("SSH 隧道按需转发（独立于 Core）")
+                                .strong()
+                                .small(),
+                        );
+                        if ssh_forwards.len() >= 2 {
+                            let all_running = ssh_forwards.iter().all(|f| {
+                                ssh_runtime
+                                    .iter()
+                                    .find(|r| r.forward_id == f.id)
+                                    .is_some_and(|r| r.state == SshForwardState::Running)
+                            });
+                            let any_active = ssh_runtime.iter().any(|r| {
+                                matches!(
+                                    r.state,
+                                    SshForwardState::Running | SshForwardState::Connecting
+                                )
+                            });
+                            if ui
+                                .add_enabled(ssh_ctl && !all_running, egui::Button::new("全部启动"))
+                                .clicked()
+                            {
+                                app.send(Command::StartAllSshForwards);
+                            }
+                            if ui
+                                .add_enabled(ssh_ctl && any_active, egui::Button::new("全部停止"))
+                                .clicked()
+                            {
+                                app.send(Command::StopAllSshForwards);
+                            }
+                        }
+                    });
                     for fwd in &ssh_forwards {
                         ui.push_id(("ov-ssh-fwd", &fwd.id), |ui| {
                             let rt = ssh_runtime.iter().find(|r| r.forward_id == fwd.id);
@@ -604,6 +679,12 @@ impl App {
                                 .find(|h| h.id == fwd.ssh_host_id)
                                 .map(|h| h.name.as_str())
                                 .unwrap_or("未知跳板机");
+                            let copy_ip = if fwd.listen == crate::port_forward::LISTEN_LAN {
+                                crate::port_forward::LISTEN_LOCAL
+                            } else {
+                                fwd.listen.as_str()
+                            };
+                            let copy_addr = format!("{copy_ip}:{}", fwd.port);
                             ui.horizontal_wrapped(|ui| {
                                 ui.label(
                                     RichText::new(format!("{} (TCP · SSH)", fwd.name)).strong(),
@@ -637,6 +718,17 @@ impl App {
                                         "已停止",
                                         crate::widgets::BadgeTone::Muted,
                                     ),
+                                }
+                                if !crate::port_forward::is_loopback_listen(&fwd.listen) {
+                                    crate::widgets::badge(
+                                        ui,
+                                        "局域网",
+                                        crate::widgets::BadgeTone::Warn,
+                                    );
+                                }
+                                if ui.button("复制").on_hover_text(&copy_addr).clicked() {
+                                    ui.ctx().copy_text(copy_addr.clone());
+                                    app.message = format!("已复制监听地址：{copy_addr}");
                                 }
                                 if state == SshForwardState::Running {
                                     if ui.add_enabled(ssh_ctl, egui::Button::new("停止")).clicked()

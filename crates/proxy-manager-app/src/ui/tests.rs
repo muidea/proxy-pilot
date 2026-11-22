@@ -3389,8 +3389,8 @@ fn port_forward_tab_creates_links_routing_skips_sniffing_and_pauses_cleanly() {
     let output = guided_frame(&mut app, &ctx, vec![], 1100.0, 860.0);
     assert!(overlapping_visible_text(&output).is_empty());
 
-    // Open Add Port Forward modal, fill fields, and save.
-    guided_click(&mut app, &ctx, "+ 添加端口转发", 1100.0, 860.0);
+    // Open Add Xray Port Forward modal, fill fields, and save.
+    guided_click(&mut app, &ctx, "+ Xray 转发", 1100.0, 860.0);
     assert!(matches!(app.ui.dialog, Some(Dialog::PortForward)));
     app.ui.pf_form.name = "内网 MySQL".into();
     app.ui.pf_form.local_port = "13306".into();
@@ -3913,6 +3913,434 @@ fn ssh_credentials_hosts_forwards_and_overview_on_demand_start_stop() {
         )
         .is_some()
     );
+}
+
+#[test]
+fn ssh_tunnels_work_when_xray_json_is_broken() {
+    let mut app = app();
+    let (tx, requests) = mpsc::sync_channel(MAX_PENDING);
+    app.tx = tx;
+    app.pending.clear();
+    app.editor = "{ invalid json".into();
+    app.ui.ssh_loaded = true;
+    app.ui.ssh_state = SshState {
+        credentials: vec![SshCredentialSummary {
+            id: "cred-1".into(),
+            name: "ops · 密码".into(),
+            username: "ops".into(),
+            auth_kind: SshAuthKind::Password,
+            has_password: true,
+            private_key_path: PathBuf::new(),
+            has_passphrase: false,
+        }],
+        hosts: vec![SshHost {
+            id: "host-1".into(),
+            name: "跳板机 A".into(),
+            host: "10.0.0.2".into(),
+            port: 22,
+            credential_id: "cred-1".into(),
+            host_key_fingerprint: "SHA256:abcdef".into(),
+        }],
+        forwards: vec![SshForward {
+            id: "fwd-ssh-1".into(),
+            name: "PG (10.0.1.8:5432)".into(),
+            listen: "127.0.0.1".into(),
+            port: 15432,
+            target_host: "10.0.1.8".into(),
+            target_port: 5432,
+            ssh_host_id: "host-1".into(),
+        }],
+        runtime: vec![SshForwardRuntime {
+            forward_id: "fwd-ssh-1".into(),
+            state: SshForwardState::Stopped,
+            last_error: None,
+        }],
+    };
+
+    let ctx = egui::Context::default();
+    configure(&ctx);
+    app.ui.page = Page::Profiles;
+    app.ui.profile_tab = ProfileTab::PortForward;
+    app.ui.pf_subtab = PortForwardSubTab::Forwards;
+
+    let out = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    assert!(overlapping_visible_text(&out).is_empty());
+    let has_text = |o: &egui::FullOutput, needle: &str| {
+        o.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text().contains(needle))
+        })
+    };
+    assert!(has_text(&out, "当前 Xray 草稿存在 JSON 语法错误"));
+    let _ = text_bounds(&out, "+ Xray 转发");
+    // Clicking "+ Xray 转发" must be disabled when JSON is broken.
+    guided_click(&mut app, &ctx, "+ Xray 转发", 1100.0, 900.0);
+    assert!(app.ui.dialog.is_none());
+
+    // Starting an existing SSH tunnel works even with broken Xray JSON.
+    guided_click(&mut app, &ctx, "启动", 1100.0, 900.0);
+    assert!(matches!(
+        requests.try_recv().unwrap().command,
+        Command::StartSshForward { ref id } if id == "fwd-ssh-1"
+    ));
+    app.busy = false;
+    app.pending.clear();
+
+    // Opening "+ SSH 隧道" works and creates with start_now = true.
+    guided_click(&mut app, &ctx, "+ SSH 隧道", 1100.0, 900.0);
+    assert!(matches!(app.ui.dialog, Some(Dialog::PortForward)));
+    app.ui.pf_form.target_host = "10.0.1.9".into();
+    app.ui.pf_form.target_port = "6379".into();
+    guided_click(&mut app, &ctx, "保存并启动", 1100.0, 900.0);
+    assert!(matches!(
+        requests.try_recv().unwrap().command,
+        Command::SaveSshForward { ref forward, start_now: true } if forward.name == "Redis (10.0.1.9:6379)"
+    ));
+    assert!(app.ui.dialog.is_none());
+}
+
+#[test]
+fn ssh_port_forward_dialog_parses_ssh_l_presets_conflict_and_autoname() {
+    let (tx, requests) = mpsc::sync_channel(MAX_PENDING);
+    let (responses, rx) = mpsc::channel();
+    let mut app = App::with_channels("unused-ui-test".into(), tx, rx);
+    app.ui.connected = true;
+    app.ui.setup_initialized = true;
+    app.ui.onboarding = false;
+    app.ui.settings_loaded = true;
+    app.ui.profiles_loaded = true;
+    let json = default_config();
+    let rev = hash(json.as_bytes());
+    app.load(Profile {
+        id: "work".into(),
+        json,
+        revision: rev,
+    });
+    app.pending.clear();
+    while requests.try_recv().is_ok() {}
+    app.ui.ssh_loaded = true;
+    app.ui.ssh_state = SshState {
+        credentials: vec![],
+        hosts: vec![],
+        forwards: vec![SshForward {
+            id: "existing-ssh".into(),
+            name: "Existing".into(),
+            listen: "127.0.0.1".into(),
+            port: 15432,
+            target_host: "10.0.1.2".into(),
+            target_port: 5432,
+            ssh_host_id: "other".into(),
+        }],
+        runtime: vec![],
+    };
+
+    let ctx = egui::Context::default();
+    configure(&ctx);
+    app.ui.page = Page::Overview;
+    guided_click(&mut app, &ctx, "+ SSH 隧道", 1100.0, 900.0);
+    assert!(matches!(app.ui.dialog, Some(Dialog::PortForward)));
+
+    // 1. Parse ssh -L command into form fields and jump to inline host creation.
+    app.ui.pf_form.ssh_cmd_input = "ssh -L 15432:10.0.1.8:5432 ops@bastion.corp -p 2222".into();
+    guided_click(&mut app, &ctx, "解析填入", 1100.0, 900.0);
+    assert_eq!(app.ui.pf_form.local_port, "15432");
+    assert_eq!(app.ui.pf_form.target_host, "10.0.1.8");
+    assert_eq!(app.ui.pf_form.target_port, "5432");
+    assert!(app.ui.pf_form.parsed_ssh_hint.is_some());
+
+    guided_click(&mut app, &ctx, "按解析结果新建跳板机", 1100.0, 900.0);
+    assert!(matches!(app.ui.dialog, Some(Dialog::SshHost)));
+    assert_eq!(app.ui.ssh_host_form.host, "bastion.corp");
+    assert_eq!(app.ui.ssh_host_form.port, "2222");
+    assert_eq!(app.ui.ssh_host_form.cred_mode, SshHostCredMode::Inline);
+    assert_eq!(app.ui.ssh_host_form.inline_username, "ops");
+    assert!(app.ui.ssh_host_form.return_to_pf);
+
+    // Save inline host + credential with blank host name & cred name -> auto-named.
+    app.ui.ssh_host_form.inline_password = "pw-123".into();
+    app.ui.ssh_host_form.host_key_fingerprint = "SHA256:testfp".into();
+    guided_click(&mut app, &ctx, "保存跳板机", 1100.0, 900.0);
+    let host_req = requests.try_recv().unwrap();
+    let new_state = match &host_req.command {
+        Command::SaveSshHost {
+            host,
+            inline_credential: Some(cred),
+        } => {
+            assert_eq!(host.name, "bastion.corp");
+            assert_eq!(cred.name, "ops · 密码");
+            assert_eq!(cred.username, "ops");
+            SshState {
+                credentials: vec![SshCredentialSummary {
+                    id: "cred-new".into(),
+                    name: cred.name.clone(),
+                    username: cred.username.clone(),
+                    auth_kind: SshAuthKind::Password,
+                    has_password: true,
+                    private_key_path: PathBuf::new(),
+                    has_passphrase: false,
+                }],
+                hosts: vec![SshHost {
+                    id: "host-new".into(),
+                    name: host.name.clone(),
+                    host: host.host.clone(),
+                    port: host.port,
+                    credential_id: "cred-new".into(),
+                    host_key_fingerprint: host.host_key_fingerprint.clone(),
+                }],
+                forwards: app.ui.ssh_state.forwards.clone(),
+                runtime: vec![],
+            }
+        }
+        other => panic!("unexpected command: {other:?}"),
+    };
+    responses
+        .send((
+            host_req.command,
+            Response {
+                request_id: host_req.request_id,
+                result: Ok(serde_json::to_value(new_state).unwrap()),
+            },
+        ))
+        .unwrap();
+    app.receive();
+    assert!(matches!(app.ui.dialog, Some(Dialog::PortForward)));
+    assert_eq!(app.ui.pf_form.ssh_host_id, "host-new");
+
+    // 2. Port 15432 conflicts with existing-ssh -> fix via "改用空闲端口 (15433)", switch preset to 3306 MySQL, leave name blank.
+    guided_click(&mut app, &ctx, "改用空闲端口 (15433)", 1100.0, 900.0);
+    assert_eq!(app.ui.pf_form.local_port, "15433");
+    guided_click(&mut app, &ctx, "3306 MySQL", 1100.0, 900.0);
+    assert_eq!(app.ui.pf_form.target_port, "3306");
+    guided_click(&mut app, &ctx, "保存并启动", 1100.0, 900.0);
+    assert!(matches!(
+        requests.try_recv().unwrap().command,
+        Command::SaveSshForward { ref forward, start_now: true }
+            if forward.name == "MySQL (10.0.1.8:3306)" && forward.port == 15433 && forward.ssh_host_id == "host-new"
+    ));
+}
+
+#[test]
+fn ssh_host_inline_paste_quick_forward_and_test_connection() {
+    let (tx, requests) = mpsc::sync_channel(MAX_PENDING);
+    let (responses, rx) = mpsc::channel();
+    let mut app = App::with_channels("unused-ui-test".into(), tx, rx);
+    app.ui.connected = true;
+    app.ui.setup_initialized = true;
+    app.ui.onboarding = false;
+    app.ui.settings_loaded = true;
+    app.ui.profiles_loaded = true;
+    let json = default_config();
+    let rev = hash(json.as_bytes());
+    app.load(Profile {
+        id: "work".into(),
+        json,
+        revision: rev,
+    });
+    app.pending.clear();
+    while requests.try_recv().is_ok() {}
+    app.ui.ssh_loaded = true;
+
+    let ctx = egui::Context::default();
+    configure(&ctx);
+    app.ui.page = Page::Profiles;
+    app.ui.profile_tab = ProfileTab::PortForward;
+    app.ui.pf_subtab = PortForwardSubTab::SshHosts;
+
+    // With 0 credentials, opening "+ 新增 SSH 跳板机" defaults to Inline credential mode.
+    guided_click(&mut app, &ctx, "+ 新增 SSH 跳板机", 1100.0, 900.0);
+    assert!(matches!(app.ui.dialog, Some(Dialog::SshHost)));
+    assert_eq!(app.ui.ssh_host_form.cred_mode, SshHostCredMode::Inline);
+
+    // Pasting user@host:port into server address and blurring splits host, port, and inline username.
+    let modal_out = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    let addr_pos = text_bounds(&modal_out, "bastion.example.com 或 ops@bastion.corp:2222").center();
+    guided_frame(&mut app, &ctx, pointer_click(addr_pos), 1100.0, 900.0);
+    guided_frame(
+        &mut app,
+        &ctx,
+        vec![egui::Event::Text("alice@jump.internal:2202".into())],
+        1100.0,
+        900.0,
+    );
+    let port_pos = text_bounds(&modal_out, "SSH 端口").center();
+    guided_frame(&mut app, &ctx, pointer_click(port_pos), 1100.0, 900.0);
+    assert_eq!(app.ui.ssh_host_form.host, "jump.internal");
+    assert_eq!(app.ui.ssh_host_form.port, "2202");
+    assert_eq!(app.ui.ssh_host_form.inline_username, "alice");
+    app.ui.dialog = None;
+
+    // Populate a host and exercise "+ 转发" and "测试连接".
+    app.ui.ssh_state = SshState {
+        credentials: vec![SshCredentialSummary {
+            id: "cred-1".into(),
+            name: "alice · 密码".into(),
+            username: "alice".into(),
+            auth_kind: SshAuthKind::Password,
+            has_password: true,
+            private_key_path: PathBuf::new(),
+            has_passphrase: false,
+        }],
+        hosts: vec![SshHost {
+            id: "host-1".into(),
+            name: "跳板机 1".into(),
+            host: "jump.internal".into(),
+            port: 2202,
+            credential_id: "cred-1".into(),
+            host_key_fingerprint: "SHA256:fp1".into(),
+        }],
+        forwards: vec![],
+        runtime: vec![],
+    };
+
+    guided_click(&mut app, &ctx, "+ 转发", 1100.0, 900.0);
+    assert!(matches!(app.ui.dialog, Some(Dialog::PortForward)));
+    assert!(app.ui.pf_form.outbound_is_ssh);
+    assert_eq!(app.ui.pf_form.ssh_host_id, "host-1");
+    app.ui.dialog = None;
+
+    guided_click(&mut app, &ctx, "测试连接", 1100.0, 900.0);
+    let test_req = requests.try_recv().unwrap();
+    assert!(matches!(
+        test_req.command,
+        Command::TestSshHost { ref host_id, .. } if host_id == "host-1"
+    ));
+    assert!(!app.busy);
+    responses
+        .send((
+            test_req.command,
+            Response {
+                request_id: test_req.request_id,
+                result: Ok(serde_json::to_value(SshHostTestResult {
+                    host: "jump.internal".into(),
+                    port: 2202,
+                    username: "alice".into(),
+                    latency_ms: 19,
+                })
+                .unwrap()),
+            },
+        ))
+        .unwrap();
+    app.receive();
+    let tested_out = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    assert!(overlapping_visible_text(&tested_out).is_empty());
+    assert!(tested_out.shapes.iter().any(|s| {
+        matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().contains("握手与身份校验通过"))
+    }));
+}
+
+#[test]
+fn overview_and_forwards_batch_controls_copy_clone_and_theme_layout() {
+    let mut app = app();
+    let (tx, requests) = mpsc::sync_channel(MAX_PENDING);
+    app.tx = tx;
+    app.pending.clear();
+    app.ui.ssh_loaded = true;
+    app.ui.ssh_state = SshState {
+        credentials: vec![SshCredentialSummary {
+            id: "cred-1".into(),
+            name: "ops · 密码".into(),
+            username: "ops".into(),
+            auth_kind: SshAuthKind::Password,
+            has_password: true,
+            private_key_path: PathBuf::new(),
+            has_passphrase: false,
+        }],
+        hosts: vec![SshHost {
+            id: "host-1".into(),
+            name: "生产跳板机".into(),
+            host: "10.0.0.2".into(),
+            port: DEFAULT_SSH_PORT,
+            credential_id: "cred-1".into(),
+            host_key_fingerprint: "SHA256:fp".into(),
+        }],
+        forwards: vec![
+            SshForward {
+                id: "sf-1".into(),
+                name: "PG (10.0.1.8:5432)".into(),
+                listen: "127.0.0.1".into(),
+                port: 15432,
+                target_host: "10.0.1.8".into(),
+                target_port: 5432,
+                ssh_host_id: "host-1".into(),
+            },
+            SshForward {
+                id: "sf-2".into(),
+                name: "MySQL (10.0.1.9:3306)".into(),
+                listen: "0.0.0.0".into(),
+                port: 13306,
+                target_host: "10.0.1.9".into(),
+                target_port: 3306,
+                ssh_host_id: "host-1".into(),
+            },
+        ],
+        runtime: vec![
+            SshForwardRuntime {
+                forward_id: "sf-1".into(),
+                state: SshForwardState::Running,
+                last_error: None,
+            },
+            SshForwardRuntime {
+                forward_id: "sf-2".into(),
+                state: SshForwardState::Stopped,
+                last_error: None,
+            },
+        ],
+    };
+
+    let ctx = egui::Context::default();
+    configure(&ctx);
+
+    for appearance in [Appearance::Light, Appearance::Dark] {
+        appearance.apply(&ctx);
+        for (w, h) in [(1100.0, 900.0), (760.0, 500.0)] {
+            app.ui.page = Page::Overview;
+            let ov = guided_frame(&mut app, &ctx, vec![], w, h);
+            assert!(overlapping_visible_text(&ov).is_empty());
+            if w >= 1000.0 {
+                let _ = text_bounds(&ov, "全部启动");
+                let _ = text_bounds(&ov, "全部停止");
+                let _ = text_bounds(&ov, "复制");
+            }
+
+            app.ui.page = Page::Profiles;
+            app.ui.profile_tab = ProfileTab::PortForward;
+            app.ui.pf_subtab = PortForwardSubTab::Forwards;
+            let pf = guided_frame(&mut app, &ctx, vec![], w, h);
+            assert!(overlapping_visible_text(&pf).is_empty());
+            if w >= 1000.0 {
+                let _ = text_bounds(&pf, "全部启动");
+                let _ = text_bounds(&pf, "全部停止");
+                let _ = text_bounds(&pf, "复制地址");
+                let _ = text_bounds(&pf, "克隆");
+            }
+        }
+    }
+
+    // Batch actions send StartAllSshForwards / StopAllSshForwards, and Clone opens free port.
+    app.ui.page = Page::Overview;
+    guided_click(&mut app, &ctx, "全部启动", 1100.0, 760.0);
+    assert!(matches!(
+        requests.try_recv().unwrap().command,
+        Command::StartAllSshForwards
+    ));
+    app.busy = false;
+    app.pending.clear();
+
+    guided_click(&mut app, &ctx, "全部停止", 1100.0, 760.0);
+    assert!(matches!(
+        requests.try_recv().unwrap().command,
+        Command::StopAllSshForwards
+    ));
+    app.busy = false;
+    app.pending.clear();
+
+    app.ui.page = Page::Profiles;
+    app.ui.profile_tab = ProfileTab::PortForward;
+    app.ui.pf_subtab = PortForwardSubTab::Forwards;
+    guided_click(&mut app, &ctx, "克隆", 1100.0, 900.0);
+    assert!(matches!(app.ui.dialog, Some(Dialog::PortForward)));
+    assert!(app.ui.pf_form.is_clone);
+    assert!(app.ui.pf_form.start_now);
+    assert_eq!(app.ui.pf_form.local_port, "15433");
 }
 
 #[test]

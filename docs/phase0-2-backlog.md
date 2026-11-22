@@ -1,10 +1,10 @@
 # Phase 0–2 遗留项核对
 
-最新核对：2026-11-21（`Proxy Pilot v0.1.1-rc.45`），基于 V1.2 设计文档、当前 `proxy-*` 工作区源码、Linux 全量回归与 Windows GNU 交叉验证产物。范围覆盖 Phase 0–2 首版及已并入的 PAC 基础链路、离线分享链接导入、`dokodemo-door` 端口转发与独立 SSH 凭证/SSH 隧道转发；历史 `2026-11-12` / `ab08756` 分节保留原证据语境，新增能力与未登记设计项同步见 [设计文档核对](phase0-2-design-crosscheck.md)。
+最新核对：2026-11-22（`Proxy Pilot v0.1.1-rc.46`），基于 V1.2 设计文档、当前 `proxy-*` 工作区源码、Linux 全量回归与 Windows GNU 交叉验证产物。范围覆盖 Phase 0–2 首版及已并入的 PAC 基础链路、离线分享链接导入、`dokodemo-door` 端口转发与独立 SSH 凭证/SSH 隧道转发；历史 `2026-11-12` / `ab08756` 分节保留原证据语境，新增能力与未登记设计项同步见 [设计文档核对](phase0-2-design-crosscheck.md)。
 
-**当前结论：C01–C20 各自确认场景保持关闭，F04 已完善；另外在 `rc.19`–`rc.45` 期间已关闭多项实际交互与运行期边界缺陷（含开机冷启动 IPC 就绪、DWM 首帧防闪烁隐藏、`PROXY_LEASE_CONFLICT` 外部冲突保留解除、登录自启 `STARTUP_CONFLICT` 迁移容错与重新接管解除、按配置独立代理模式与 PAC 热同步、Windows `PacServer` 接受连接阻塞模式修复以消除 `PAC_SERVICE_UNAVAILABLE` 回滚失败、`UpdateProfile` 草稿自动保存后 `RestartCore`/`SetProxyMode` 误报 `ASSET_REVISION_CONFLICT`、Windows 下 `proxy-model` 无盘符根路径便携判定修复，全工程更名为 `Proxy Pilot` 并增加独立 SSH 凭证管理与 `russh` TCP 端口转发，弹出框边框框度与标题字号协调优化、全界面操作按钮统一风格与 `36 px` 高度收口、总览卡片操作归拢与简洁 4 字文案统一、`windows-smoke.ps1 -Gui` 托盘交互对齐以及顶栏版本信息右上角对齐）。真实 Windows 系统验收缺口 V01 / V02 / V04–V10，以及能力边界 F01 / F02 / F03 / F05 / F06 继续保留。**
+**当前结论：C01–C20 各自确认场景保持关闭，F04 已完善；另外在 `rc.19`–`rc.46` 期间已关闭多项实际交互与运行期边界缺陷（含开机冷启动 IPC 就绪、DWM 首帧防闪烁隐藏、`PROXY_LEASE_CONFLICT` 外部冲突保留解除、登录自启 `STARTUP_CONFLICT` 迁移容错与重新接管解除、按配置独立代理模式与 PAC 热同步、Windows `PacServer` 接受连接阻塞模式修复以消除 `PAC_SERVICE_UNAVAILABLE` 回滚失败、`UpdateProfile` 草稿自动保存后 `RestartCore`/`SetProxyMode` 误报 `ASSET_REVISION_CONFLICT`、Windows 下 `proxy-model` 无盘符根路径便携判定修复，全工程更名为 `Proxy Pilot` 并增加独立 SSH 凭证管理与 `russh` TCP 端口转发，并在 `rc.46` 完成 `ssh -L` 命令解析、一站式跳板机内联新建凭证、`TestSshHost` 只读握手测试、端口预设/冲突一键修复/自动命名、Xray JSON 异常解耦、隧道克隆与批量启停及「保存并立即启动」优化）。真实 Windows 系统验收缺口 V01 / V02 / V04–V10，以及能力边界 F01 / F02 / F03 / F05 / F06 继续保留。**
 
-本轮核对依据的已验证基线为 `v0.1.1-rc.45`：`cargo fmt --all -- --check`、`git diff --check`、Linux 与 `x86_64-pc-windows-gnu` 双目标严格 Clippy（`-D warnings`）、全工作区 `--locked` **290 项**测试通过（7 项需 `XRAY_TEST_CORE` 的官方 Core 用例按环境忽略；含 `proxy-manager-app` **131 项**、`proxy-supervisor` 库 **51 项**、`windows-integration` **11 项**及 SSH DPAPI/脱敏/Mock SSH `direct-tcpip` 端到端、`PacServer` 延迟请求与大脚本响应、自启冲突诊断/重置、总览卡片操作归拢与全界面按钮高度对齐、弹窗边框/标题与顶栏右上角版本布局回归及 `RestartCore` 修订兼容测试），Windows GNU release 交叉构建及 `proxy-pilot-0.1.1-rc.45-windows-x64.zip` 打包校验已生成。尚未执行真实 WinINet、远端 GitHub Actions MSVC CI 及真实 Windows 桌面人工完整走查，因此不能把这些常规/交叉结果替代真实环境验收。下文带历史日期的段落保留其原验证范围，不替代当前源码验收。
+本轮核对依据的已验证基线为 `v0.1.1-rc.46`：`cargo fmt --all -- --check`、`git diff --check`、Linux 与 `x86_64-pc-windows-gnu` 双目标严格 Clippy（`-D warnings`）、全工作区 `--locked` **296 项**测试通过（7 项需 `XRAY_TEST_CORE` 的官方 Core 用例按环境忽略；含 `proxy-manager-app` **136 项**、`proxy-supervisor` 库 **52 项**、`windows-integration` **11 项**及 SSH DPAPI/内联原子凭证/握手测试/Mock SSH `direct-tcpip` 端到端、`ssh -L` 解析与 UX 交互、`PacServer` 延迟请求与大脚本响应、自启冲突诊断/重置、总览卡片操作归拢与全界面按钮高度对齐、弹窗边框/标题与顶栏右上角版本布局回归及 `RestartCore` 修订兼容测试），Windows GNU release 交叉构建及 `proxy-pilot-0.1.1-rc.46-windows-x64.zip` 打包校验已生成。尚未执行真实 WinINet、远端 GitHub Actions MSVC CI 及真实 Windows 桌面人工完整走查，因此不能把这些常规/交叉结果替代真实环境验收。下文带历史日期的段落保留其原验证范围，不替代当前源码验收。
 
 状态含义：
 
@@ -140,8 +140,8 @@ C04：以下配置通过真实官方 Xray v26.11.9 的 `run -test`，但在空�
 | V05 | P1 / 部分通过 | Windows 文件系统原子发布 | 已用真实 Windows 文件句柄禁止替换正式 Profile，验证应用失败后旧资产、代次、真实 Core HTTP 端点和模拟代理联合恢复；仍缺磁盘满、安全软件干扰及断电后的恢复判定 |
 | V06 | P1 / 部分通过 | 当前用户 Named Pipe 访问控制 | Windows 已通过超长帧、非法 JSON、截断帧、无请求头超时后的后续正常连接，两个同时连接客户端的响应身份，以及已占用管道端点拒绝接管；已更名为 `\\.\pipe\proxy-pilot-*`。管道 ACL 只授予当前登录用户 SID，明确不支持 SYSTEM/服务账户；C11/C15 并发与分页限制已补；仍缺不同 SID 拒绝和更高压力验证，远端访问由管道策略直接拒绝 |
 | V07 | P1 / 部分通过 | 自动重连与历史回滚 | 常规回归覆盖 connect_on_start=true、退出前代理连接方式恢复、新代次、历史预览/重新应用、冻结 geo 缺失时停止连接与草稿保存后重启兼容。Linux/Windows 真实 Core 的 Direct 异常退出后新代次/实例恢复已通过；文件占用覆盖 Global 失败后的旧端点/模拟代理恢复。仍缺更多失败/完整性/停止取消组合与真实 Global 联测；C09 的慢启动/超时/提前退出回归保留 |
-| V08 | P2 / 部分通过 | GUI 与托盘全交互 | 源码已实现六页按优先级重排界面（`总览 → 配置 → PAC → 日志 → 诊断 → 设置`）、顶栏版本右上角显示、总览卡片操作归拢与简洁 4 字文案统一、总览默认隐藏「最近活动与版本」、按配置独立记忆代理模式、PAC 自动跟随与热同步、离线分享链接导入、`dokodemo-door` 与 SSH 凭证/隧道界面及总览按需启停、日志级别与复制导出、全界面统一按钮样式与高度、统一弹窗边框/分级框度与 `18 px` 标题层级、`--background` DWM 防闪烁及单实例唤醒；Linux 无窗口渲染与状态回归 131 项通过。仍缺 `rc.45` 在真实 Windows 桌面的逐项人工交互检查（含 DPAPI 跨重启解密、SSH 实连握手与耗时/断连期间交互）；F05/F06 的扩展边界继续保留 |
-| V09 | P2 / 部分通过 | 远端 CI 与交付复测 | 已完成当前源码 `rc.45` 的 Linux 全量测试、双目标 Clippy、Windows GNU release 交叉构建及 `package-windows.py --validation` CRC/指纹校验，并已对齐 `windows-smoke.ps1 -Gui` 的托盘“退出…”弹窗流程；当前基线的远端 GitHub Actions MSVC CI、Windows 实机 smoke 与正式签名发布复测仍待执行 |
+| V08 | P2 / 部分通过 | GUI 与托盘全交互 | 源码已实现六页按优先级重排界面（`总览 → 配置 → PAC → 日志 → 诊断 → 设置`）、顶栏版本右上角显示、总览卡片操作归拢与简洁 4 字文案统一、总览默认隐藏「最近活动与版本」、按配置独立记忆代理模式、PAC 自动跟随与热同步、离线分享链接导入、`dokodemo-door` 与 SSH 凭证/隧道全链路优化交互（`ssh -L` 解析、一站式内联建凭证、测试连接、端口预设与自动命名、克隆与批量启停、Xray JSON 异常解耦）、日志级别与复制导出、全界面统一按钮样式与高度、统一弹窗边框/分级框度与 `18 px` 标题层级、`--background` DWM 防闪烁及单实例唤醒；Linux 无窗口渲染与状态回归 136 项通过。仍缺 `rc.46` 在真实 Windows 桌面的逐项人工交互检查（含 DPAPI 跨重启解密、SSH 实连握手与耗时/断连期间交互）；F05/F06 的扩展边界继续保留 |
+| V09 | P2 / 部分通过 | 远端 CI 与交付复测 | 已完成当前源码 `rc.46` 的 Linux 全量测试、双目标 Clippy、Windows GNU release 交叉构建及 `package-windows.py --validation` CRC/指纹校验，并已对齐 `windows-smoke.ps1 -Gui` 的托盘“退出…”弹窗流程；当前基线的远端 GitHub Actions MSVC CI、Windows 实机 smoke 与正式签名发布复测仍待执行 |
 | V10 | P1 / 部分通过 | PAC 自动代理 | `GeoSite`/`GeoIP` 原生解析、母域折叠、5,000 域/2,000 虚拟滚动、`AutoRules`/清单模板、自动随激活配置联动热同步、不可变发布、`AUTO_PROXY_URL` + `DIRECT` 租约目标、端口切换与补偿恢复均已覆盖常规测试。仍缺真实 Windows WinINet PAC URL 往返、浏览器/客户端缓存差异、公网出口、完整 JScript 兼容及 PAC 不可达回退 |
 
 ## 三、尚未完成的能力及已声明限制
@@ -153,17 +153,17 @@ C04：以下配置通过真实官方 Xray v26.11.9 的 `run -test`，但在空�
 | F03 | 部分实现 | Direct / Global / PAC 启动均等待常见回环 HTTP / SOCKS5 / Mixed 握手及认证，带期限、取消和提前退出监测；状态新增 `listener_state` / `pac_state` 分层。无入站、特殊协议 / 传输、非回环地址、Proxy Protocol 和非数值端口仍未覆盖协议就绪；本地握手不证明远端出口 |
 | F04 | 已完善 | Core `-test` 失败原始 stdout / stderr 各最多 16 KiB，分块进入有界会话日志；错误和持久操作结果只保留摘要。Linux fixture 与 Windows 官方 Core 诊断回归通过，见 [收口记录](phase0-2-c18-20-closeout.md) |
 | F05 | 部分完善 | GUI 已限制最多 32 个待完成请求，并合并状态/日志在途轮询；读取及候选一致性 C14 已关闭。当前源码已补节点独立显示名称、协议模板、离线分享链接解析/批量导入、GeoSite 预设、独立卡片式 `dokodemo-door` 端口转发与停用暂存、按配置独立 `ProxyMode`、Core 日志级别切换与会话日志复制导出、草稿级撤销/重做、路由上下文与冲突提示、TCP 延迟探测等。全部高级/冷门协议组合、语义级撤销与远程 HTTP 订阅拉取仍保留；真实桌面交互验收继续归 V08 |
-| F06 | 部分实现 | 已实现独立于 Xray Core 的纯 Rust（`russh`）SSH 凭证管理（账号密码/私钥文件+口令，Windows DPAPI 加密与永不回显脱敏）、SSH 跳板机与 Host Key SHA256 指纹核验/篡改拦截、TCP 本地端口转发与统一端口冲突检查，以及总览按需独立启停。当前限定 TCP 转发（禁止 UDP），暂不含 `ProxyJump` 串联、`ssh-agent` / 硬件密钥，且 SSH 转发需在总览按需启动（进程重启后不自动恢复 SSH 会话）；非 Windows 开发平台落盘使用 `0600` 权限与 base64 编码而非 DPAPI |
+| F06 | 部分实现 | 已实现独立于 Xray Core 的纯 Rust（`russh`）SSH 凭证管理（账号密码/私钥文件+口令，Windows DPAPI 加密与永不回显脱敏）、SSH 跳板机与 Host Key SHA256 指纹核验/篡改拦截、只读连接测试、一站式内联创建凭证、`ssh -L` 命令解析、TCP 本地端口转发与统一端口冲突检查，以及总览/配置页按需单条/批量启停与克隆。当前限定 TCP 转发（禁止 UDP），暂不含 `ProxyJump` 串联、`ssh-agent` / 硬件密钥，且 SSH 转发需在总览或新建「保存并立即启动」触发（进程重启后不自动恢复 SSH 会话）；非 Windows 开发平台落盘使用 `0600` 权限与 base64 编码而非 DPAPI |
 
 PAC 基础链路已实现，完整 Phase 3 验收归 V10；应用安装器/升级/自动更新和长期运维产品化属于 Phase 4；TUN/Helper/路由/DNS 特权恢复属于 Phase 5。后两者仍未实现，但不计入本轮 Phase 0–2 的缺陷关闭清单。
 
 ## 四、后续顺序
 
 1. 完成 V01 真实 WinINet（含 PAC URL 往返 `V10`）与 V02 实际注销/登录及权限拒绝验证，补齐 V04–V07 的系统故障、安全与重连矩阵。
-2. 完成 `rc.45` 的 V08 全流程真实 Windows 桌面验收（含 SSH 凭证 DPAPI 加解密、真实 SSH 跳板机转发、总览按需启停、PAC 热同步与草稿自动保存后重启 Core）以及 V09 远端 CI / MSVC 构建签核；当前已本地提交并打包，尚未公开发布正式版。
+2. 完成 `rc.46` 的 V08 全流程真实 Windows 桌面验收（含 SSH 凭证 DPAPI 加解密、内联新建凭证、`ssh -L` 解析、只读 `测试连接`、真实 SSH 跳板机转发、总览/配置页批量启停、PAC 热同步与草稿自动保存后重启 Core）以及 V09 远端 CI / MSVC 构建签核；当前已本地提交并打包，尚未公开发布正式版。
 3. 根据使用反馈继续扩展 F01 历史容量策略、F02 / F03 原生能力覆盖、F05 高级表单，以及 F06 规划中的 `ProxyJump` / `ssh-agent` 等能力，保持明确的受限交付说明。
 
-既有历史收口记录保留其原验证范围；当前遗留以此清单、[2026-11-21 核对刷新](phase0-2-design-crosscheck.md#八2026-11-21-v011-rc45-对齐刷新proxy-pilot-更名pac-联动与-ssh-隧道) 和 [开发交接文档](handoff.md) 为准。
+既有历史收口记录保留其原验证范围；当前遗留以此清单、[2026-11-22 核对刷新](phase0-2-design-crosscheck.md#八2026-11-22-v011-rc46-对齐刷新proxy-pilot-更名pac-联动与-ssh-隧道) 和 [开发交接文档](handoff.md) 为准。
 
 ## 五、2026-11-12 设计文档核对补充
 

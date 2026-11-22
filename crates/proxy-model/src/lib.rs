@@ -141,6 +141,14 @@ pub struct SshHostKeyProbe {
     pub algorithm: String,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SshHostTestResult {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub latency_ms: u64,
+}
+
 /// Standalone local TCP forward executed directly over SSH `direct-tcpip` by the supervisor.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SshForward {
@@ -468,6 +476,14 @@ pub enum Command {
         host: String,
         port: u16,
     },
+    TestSshHost {
+        #[serde(default)]
+        host_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        host: Option<SshHost>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inline_credential: Option<SshCredentialInput>,
+    },
     SaveSshCredential {
         credential: SshCredentialInput,
     },
@@ -476,12 +492,16 @@ pub enum Command {
     },
     SaveSshHost {
         host: SshHost,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inline_credential: Option<SshCredentialInput>,
     },
     DeleteSshHost {
         id: String,
     },
     SaveSshForward {
         forward: SshForward,
+        #[serde(default)]
+        start_now: bool,
     },
     DeleteSshForward {
         id: String,
@@ -492,6 +512,8 @@ pub enum Command {
     StopSshForward {
         id: String,
     },
+    StartAllSshForwards,
+    StopAllSshForwards,
     Shutdown,
 }
 impl Command {
@@ -514,6 +536,7 @@ impl Command {
                 | Self::TestLatency { .. }
                 | Self::GetSshState
                 | Self::ProbeSshHostKey { .. }
+                | Self::TestSshHost { .. }
         )
     }
 
@@ -522,6 +545,7 @@ impl Command {
             self,
             Self::GetSshState
                 | Self::ProbeSshHostKey { .. }
+                | Self::TestSshHost { .. }
                 | Self::SaveSshCredential { .. }
                 | Self::DeleteSshCredential { .. }
                 | Self::SaveSshHost { .. }
@@ -530,6 +554,8 @@ impl Command {
                 | Self::DeleteSshForward { .. }
                 | Self::StartSshForward { .. }
                 | Self::StopSshForward { .. }
+                | Self::StartAllSshForwards
+                | Self::StopAllSshForwards
         )
     }
 }

@@ -1105,6 +1105,77 @@ impl<B: ProxyBackend> Supervisor<B> {
                     Err(err) => Err(err),
                 }
             }
+            Command::TestSshHost {
+                host_id,
+                host,
+                inline_credential,
+            } => {
+                let resolved: Result<(SshHost, ssh_store::ResolvedCredential)> =
+                    if !host_id.trim().is_empty() && host.is_none() {
+                        self.ssh_store.resolve_host(host_id)
+                    } else if let Some(mut h) = host.clone() {
+                        h.host = h.host.trim().to_owned();
+                        if h.host.is_empty()
+                            || h.host.len() > 255
+                            || h.host.chars().any(|c| c.is_whitespace() || c.is_control())
+                        {
+                            Err(Error::new(
+                                "SSH_HOST_INVALID",
+                                "跳板机地址不能为空或包含空白",
+                            ))
+                        } else if h.port == 0 {
+                            Err(Error::new(
+                                "SSH_HOST_INVALID",
+                                "SSH 端口必须在 1–65535 之间",
+                            ))
+                        } else {
+                            if h.name.trim().is_empty() {
+                                h.name = h.host.clone();
+                            }
+                            let cred_res = if let Some(inline) = inline_credential.as_ref() {
+                                self.ssh_store.resolve_inline_credential(inline)
+                            } else {
+                                self.ssh_store.resolve_credential_by_id(&h.credential_id)
+                            };
+                            cred_res.map(|cred| (h, cred))
+                        }
+                    } else {
+                        Err(Error::new(
+                            "SSH_HOST_INVALID",
+                            "请提供待测试的 SSH 跳板机参数",
+                        ))
+                    };
+                match resolved {
+                    Ok((target_host, resolved_cred)) => {
+                        match ssh_tunnel::test_host_connection(&target_host, &resolved_cred).await {
+                            Ok(test_res) => {
+                                proxy_runtime::log(
+                                    &self.logs,
+                                    format!(
+                                        "SSH 跳板机连接测试通过：{}:{}（账号：{}，RTT {} ms）",
+                                        test_res.host,
+                                        test_res.port,
+                                        test_res.username,
+                                        test_res.latency_ms
+                                    ),
+                                );
+                                serde_json::to_value(test_res).map_err(Into::into)
+                            }
+                            Err(err) => {
+                                proxy_runtime::log(
+                                    &self.logs,
+                                    format!(
+                                        "SSH 跳板机连接测试失败：{}:{}（{}）",
+                                        target_host.host, target_host.port, err.code
+                                    ),
+                                );
+                                Err(err)
+                            }
+                        }
+                    }
+                    Err(err) => Err(err),
+                }
+            }
             Command::SaveSshCredential { credential } => {
                 match self.ssh_store.save_credential(credential.clone()) {
                     Ok(saved) => {
@@ -1124,7 +1195,10 @@ impl<B: ProxyBackend> Supervisor<B> {
                 Ok(()) => serde_json::to_value(self.ssh_state()).map_err(Into::into),
                 Err(err) => Err(err),
             },
-            Command::SaveSshHost { host } => {
+            Command::SaveSshHost {
+                host,
+                inline_credential,
+            } => {
                 if !host.id.trim().is_empty() {
                     let running_ids: Vec<String> = self
                         .ssh_store
@@ -1137,8 +1211,23 @@ impl<B: ProxyBackend> Supervisor<B> {
                         self.ssh_tunnels.stop_forward(&fwd_id).await;
                     }
                 }
-                match self.ssh_store.save_host(host.clone()) {
-                    Ok(_) => serde_json::to_value(self.ssh_state()).map_err(Into::into),
+                match self
+                    .ssh_store
+                    .save_host_with_inline_credential(host.clone(), inline_credential.clone())
+                {
+                    Ok(saved) => {
+                        if let Some(inline) = inline_credential {
+                            proxy_runtime::log(
+                                &self.logs,
+                                format!(
+                                    "已保存 SSH 跳板机「{}」并新建凭证（账号：{}）",
+                                    saved.name,
+                                    inline.username.trim()
+                                ),
+                            );
+                        }
+                        serde_json::to_value(self.ssh_state()).map_err(Into::into)
+                    }
                     Err(err) => Err(err),
                 }
             }
@@ -1146,12 +1235,30 @@ impl<B: ProxyBackend> Supervisor<B> {
                 Ok(()) => serde_json::to_value(self.ssh_state()).map_err(Into::into),
                 Err(err) => Err(err),
             },
-            Command::SaveSshForward { forward } => {
+            Command::SaveSshForward { forward, start_now } => {
                 if !forward.id.trim().is_empty() && self.ssh_tunnels.is_running(&forward.id) {
                     self.ssh_tunnels.stop_forward(&forward.id).await;
                 }
                 match self.ssh_store.save_forward(forward.clone()) {
-                    Ok(_) => serde_json::to_value(self.ssh_state()).map_err(Into::into),
+                    Ok(saved) => {
+                        if *start_now {
+                            let start_res = match self.ssh_store.resolve_for_forward(&saved.id) {
+                                Ok((fwd, host, cred)) => {
+                                    self.ssh_tunnels
+                                        .start_forward(&fwd, &host, cred, &self.logs)
+                                        .await
+                                }
+                                Err(err) => Err(err),
+                            };
+                            if let Err(err) = start_res {
+                                return Some(Err(Error::new(
+                                    &err.code,
+                                    format!("SSH 隧道已保存，但立即启动失败：{}", err.message),
+                                )));
+                            }
+                        }
+                        serde_json::to_value(self.ssh_state()).map_err(Into::into)
+                    }
                     Err(err) => Err(err),
                 }
             }
@@ -1178,6 +1285,31 @@ impl<B: ProxyBackend> Supervisor<B> {
             Command::StopSshForward { id } => {
                 self.ssh_tunnels.stop_forward(id).await;
                 proxy_runtime::log(&self.logs, format!("已停止 SSH 端口转发（id={id}）"));
+                serde_json::to_value(self.ssh_state()).map_err(Into::into)
+            }
+            Command::StartAllSshForwards => {
+                let forwards = self.ssh_store.forwards().to_vec();
+                for fwd in forwards {
+                    if self.ssh_tunnels.is_running(&fwd.id) {
+                        continue;
+                    }
+                    match self.ssh_store.resolve_for_forward(&fwd.id) {
+                        Ok((fwd, host, cred)) => {
+                            let _ = self
+                                .ssh_tunnels
+                                .start_forward(&fwd, &host, cred, &self.logs)
+                                .await;
+                        }
+                        Err(err) => {
+                            self.ssh_tunnels.record_error(&fwd.id, &err.message);
+                        }
+                    }
+                }
+                serde_json::to_value(self.ssh_state()).map_err(Into::into)
+            }
+            Command::StopAllSshForwards => {
+                self.ssh_tunnels.stop_all().await;
+                proxy_runtime::log(&self.logs, "已停止全部 SSH 端口转发");
                 serde_json::to_value(self.ssh_state()).map_err(Into::into)
             }
             _ => return None,

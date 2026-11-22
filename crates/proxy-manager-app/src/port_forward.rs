@@ -1,12 +1,71 @@
 //! Guided port-forwarding (`dokodemo-door`) model, JSON sync, and validation helpers.
 use crate::workspace::{PausedPortForward, Workspace};
-use proxy_model::{SshForward, SshHost};
+use proxy_model::{DEFAULT_SSH_PORT, SshAuthKind, SshForward, SshHost};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashSet};
 use std::net::IpAddr;
 
 pub const LISTEN_LOCAL: &str = "127.0.0.1";
 pub const LISTEN_LAN: &str = "0.0.0.0";
+
+pub const COMMON_TARGET_PORTS: &[(u16, &str, &str)] = &[
+    (22, "SSH", "22 SSH"),
+    (3306, "MySQL", "3306 MySQL"),
+    (5432, "PG", "5432 PG"),
+    (6379, "Redis", "6379 Redis"),
+    (8080, "Web", "8080 Web"),
+    (3389, "RDP", "3389 RDP"),
+];
+
+pub fn auto_ssh_forward_name(target_host: &str, target_port: u16) -> String {
+    let host = {
+        let trimmed = target_host.trim();
+        if trimmed.is_empty() {
+            LISTEN_LOCAL
+        } else {
+            trimmed
+        }
+    };
+    let svc = COMMON_TARGET_PORTS
+        .iter()
+        .find(|(p, _, _)| *p == target_port)
+        .map(|(_, label, _)| *label);
+    match (svc, target_port) {
+        (Some(label), port) if port > 0 => format!("{label} ({host}:{port})"),
+        (_, port) if port > 0 => format!("{host}:{port}"),
+        _ => host.to_owned(),
+    }
+}
+
+pub fn auto_ssh_credential_name(username: &str, auth_kind: SshAuthKind) -> String {
+    let user = {
+        let trimmed = username.trim();
+        if trimmed.is_empty() { "user" } else { trimmed }
+    };
+    let kind = match auth_kind {
+        SshAuthKind::PrivateKey => "私钥",
+        SshAuthKind::Password => "密码",
+    };
+    format!("{user} · {kind}")
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ParsedSshJumpHint {
+    pub user: String,
+    pub host: String,
+    pub port: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParsedSshLCommand {
+    pub listen: String,
+    pub local_port: u16,
+    pub target_host: String,
+    pub target_port: u16,
+    pub user: Option<String>,
+    pub jump_host: Option<String>,
+    pub ssh_port: u16,
+}
 
 const OTHER_MATCH_KEYS: &[&str] = &[
     "domain",
@@ -42,6 +101,11 @@ pub struct PortForwardForm {
     pub editing_tag: Option<String>,
     pub editing_paused_index: Option<usize>,
     pub editing_ssh_id: Option<String>,
+    pub is_clone: bool,
+    pub start_now: bool,
+    pub ssh_cmd_input: String,
+    pub ssh_cmd_feedback: Option<(bool, String)>,
+    pub parsed_ssh_hint: Option<ParsedSshJumpHint>,
     pub name: String,
     pub listen: String,
     pub custom_listen: bool,
@@ -70,14 +134,16 @@ impl PortForwardForm {
             .and_then(Value::as_str)
             .unwrap_or("direct")
             .to_owned();
-        let mut port = next_free_port(config, paused);
-        while ssh_forwards.iter().any(|f| f.port == port) && port < u16::MAX {
-            port += 1;
-        }
+        let port = next_free_port_all(10820, Some(config), paused, ssh_forwards, None, None);
         Self {
             editing_tag: None,
             editing_paused_index: None,
             editing_ssh_id: None,
+            is_clone: false,
+            start_now: true,
+            ssh_cmd_input: String::new(),
+            ssh_cmd_feedback: None,
+            parsed_ssh_hint: None,
             name: String::new(),
             listen: LISTEN_LOCAL.into(),
             custom_listen: false,
@@ -91,6 +157,40 @@ impl PortForwardForm {
         }
     }
 
+    pub fn from_new_ssh(
+        config: Option<&Value>,
+        paused: &[PausedPortForward],
+        ssh_forwards: &[SshForward],
+        preselect_host_id: Option<&str>,
+    ) -> Self {
+        let default_outbound = config
+            .and_then(|c| c.pointer("/outbounds/0/tag"))
+            .and_then(Value::as_str)
+            .unwrap_or("direct")
+            .to_owned();
+        let port = next_free_port_all(15432, config, paused, ssh_forwards, None, None);
+        Self {
+            editing_tag: None,
+            editing_paused_index: None,
+            editing_ssh_id: None,
+            is_clone: false,
+            start_now: true,
+            ssh_cmd_input: String::new(),
+            ssh_cmd_feedback: None,
+            parsed_ssh_hint: None,
+            name: String::new(),
+            listen: LISTEN_LOCAL.into(),
+            custom_listen: false,
+            local_port: port.to_string(),
+            network: "tcp".into(),
+            target_host: "127.0.0.1".into(),
+            target_port: String::new(),
+            outbound_is_ssh: true,
+            outbound_tag: default_outbound,
+            ssh_host_id: preselect_host_id.unwrap_or_default().to_owned(),
+        }
+    }
+
     pub fn from_entry(entry: &PortForwardEntry) -> Self {
         let custom_listen =
             entry.listen.trim() != LISTEN_LOCAL && entry.listen.trim() != LISTEN_LAN;
@@ -98,6 +198,11 @@ impl PortForwardForm {
             editing_tag: entry.enabled.then(|| entry.tag.clone()),
             editing_paused_index: entry.paused_index,
             editing_ssh_id: None,
+            is_clone: false,
+            start_now: true,
+            ssh_cmd_input: String::new(),
+            ssh_cmd_feedback: None,
+            parsed_ssh_hint: None,
             name: entry.name.clone(),
             listen: entry.listen.clone(),
             custom_listen,
@@ -115,16 +220,63 @@ impl PortForwardForm {
         }
     }
 
-    pub fn from_ssh_forward(fwd: &SshForward) -> Self {
+    pub fn from_ssh_forward_with_running(fwd: &SshForward, running: bool) -> Self {
         let custom_listen = fwd.listen.trim() != LISTEN_LOCAL && fwd.listen.trim() != LISTEN_LAN;
         Self {
             editing_tag: None,
             editing_paused_index: None,
             editing_ssh_id: Some(fwd.id.clone()),
+            is_clone: false,
+            start_now: running,
+            ssh_cmd_input: String::new(),
+            ssh_cmd_feedback: None,
+            parsed_ssh_hint: None,
             name: fwd.name.clone(),
             listen: fwd.listen.clone(),
             custom_listen,
             local_port: fwd.port.to_string(),
+            network: "tcp".into(),
+            target_host: fwd.target_host.clone(),
+            target_port: fwd.target_port.to_string(),
+            outbound_is_ssh: true,
+            outbound_tag: String::new(),
+            ssh_host_id: fwd.ssh_host_id.clone(),
+        }
+    }
+
+    pub fn from_clone_ssh(
+        fwd: &SshForward,
+        config: Option<&Value>,
+        paused: &[PausedPortForward],
+        ssh_forwards: &[SshForward],
+    ) -> Self {
+        let custom_listen = fwd.listen.trim() != LISTEN_LOCAL && fwd.listen.trim() != LISTEN_LAN;
+        let next_port = next_free_port_all(
+            fwd.port.saturating_add(1),
+            config,
+            paused,
+            ssh_forwards,
+            None,
+            None,
+        );
+        let cloned_name = if fwd.name.trim().is_empty() {
+            String::new()
+        } else {
+            format!("{} - 副本", fwd.name.trim())
+        };
+        Self {
+            editing_tag: None,
+            editing_paused_index: None,
+            editing_ssh_id: None,
+            is_clone: true,
+            start_now: true,
+            ssh_cmd_input: String::new(),
+            ssh_cmd_feedback: None,
+            parsed_ssh_hint: None,
+            name: cloned_name,
+            listen: fwd.listen.clone(),
+            custom_listen,
+            local_port: next_port.to_string(),
             network: "tcp".into(),
             target_host: fwd.target_host.clone(),
             target_port: fwd.target_port.to_string(),
@@ -170,6 +322,273 @@ pub fn parse_host_port_paste(input: &str) -> Option<(String, String)> {
     }
     let port = port_part.parse::<u16>().ok().filter(|p| *p > 0)?;
     Some((host.trim().to_owned(), port.to_string()))
+}
+
+/// Parses pasted `[user@]host[:port]` or `[user@][ipv6][:port]` jump-host text.
+/// Returns `None` when neither `@` nor a valid `:port` suffix is present.
+pub fn parse_ssh_host_paste(input: &str) -> Option<(Option<String>, String, Option<u16>)> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() || trimmed.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let (user, rest) = if let Some((u, after)) = trimmed.split_once('@') {
+        let u_trim = u.trim();
+        if u_trim.is_empty() || after.trim().is_empty() {
+            return None;
+        }
+        (Some(u_trim.to_owned()), after.trim())
+    } else {
+        (None, trimmed)
+    };
+
+    if let Some(inner) = rest.strip_prefix('[') {
+        if let Some((host, port_part)) = inner.split_once("]:") {
+            let port = port_part.parse::<u16>().ok().filter(|p| *p > 0)?;
+            let host = host.trim();
+            if host.is_empty() {
+                return None;
+            }
+            return Some((user, host.to_owned(), Some(port)));
+        }
+        if let Some(host) = inner.strip_suffix(']') {
+            let host = host.trim();
+            if user.is_none() || host.is_empty() {
+                return None;
+            }
+            return Some((user, host.to_owned(), None));
+        }
+        return None;
+    }
+
+    let colon_count = rest.bytes().filter(|b| *b == b':').count();
+    if colon_count == 1 {
+        let (host, port_part) = rest.rsplit_once(':')?;
+        let port = port_part.parse::<u16>().ok().filter(|p| *p > 0)?;
+        let host = host.trim();
+        if host.is_empty() {
+            return None;
+        }
+        return Some((user, host.to_owned(), Some(port)));
+    }
+    if colon_count > 1 && user.is_some() {
+        return Some((user, rest.to_owned(), None));
+    }
+    if colon_count == 0 && user.is_some() {
+        return Some((user, rest.to_owned(), None));
+    }
+    None
+}
+
+fn tokenize_shell_words(raw: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    for ch in raw.chars() {
+        match quote {
+            Some(q) if ch == q => {
+                quote = None;
+            }
+            Some(_) => cur.push(ch),
+            None if ch == '"' || ch == '\'' => {
+                quote = Some(ch);
+            }
+            None if ch.is_whitespace() => {
+                if !cur.is_empty() {
+                    tokens.push(std::mem::take(&mut cur));
+                }
+            }
+            None => cur.push(ch),
+        }
+    }
+    if !cur.is_empty() {
+        tokens.push(cur);
+    }
+    tokens
+}
+
+fn split_l_spec_segments(spec: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut depth = 0usize;
+    for ch in spec.chars() {
+        match ch {
+            '[' => {
+                depth += 1;
+                cur.push(ch);
+            }
+            ']' => {
+                depth = depth.saturating_sub(1);
+                cur.push(ch);
+            }
+            ':' if depth == 0 => {
+                out.push(std::mem::take(&mut cur));
+            }
+            _ => cur.push(ch),
+        }
+    }
+    out.push(cur);
+    out
+}
+
+fn strip_brackets(host: &str) -> String {
+    let t = host.trim();
+    t.strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(t)
+        .trim()
+        .to_owned()
+}
+
+pub fn parse_ssh_l_command(raw: &str) -> Result<ParsedSshLCommand, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("请先粘贴 ssh -L 命令".into());
+    }
+    let tokens = tokenize_shell_words(trimmed);
+    let mut l_spec: Option<String> = None;
+    let mut ssh_port: u16 = DEFAULT_SSH_PORT;
+    let mut user: Option<String> = None;
+    let mut jump_host: Option<String> = None;
+
+    let mut i = 0;
+    while i < tokens.len() {
+        let tok = tokens[i].as_str();
+        if i == 0 && tok.eq_ignore_ascii_case("ssh") {
+            i += 1;
+            continue;
+        }
+        if tok == "-L" {
+            if let Some(next) = tokens.get(i + 1) {
+                l_spec = Some(next.clone());
+                i += 2;
+                continue;
+            }
+        } else if let Some(rest) = tok.strip_prefix("-L")
+            && !rest.is_empty()
+        {
+            l_spec = Some(rest.to_owned());
+            i += 1;
+            continue;
+        } else if tok == "-p" {
+            if let Some(next) = tokens.get(i + 1) {
+                if let Ok(p) = next.parse::<u16>()
+                    && p > 0
+                {
+                    ssh_port = p;
+                }
+                i += 2;
+                continue;
+            }
+        } else if let Some(rest) = tok.strip_prefix("-p")
+            && !rest.is_empty()
+            && rest.chars().all(|c| c.is_ascii_digit())
+        {
+            if let Ok(p) = rest.parse::<u16>()
+                && p > 0
+            {
+                ssh_port = p;
+            }
+            i += 1;
+            continue;
+        } else if tok == "-l" {
+            if let Some(next) = tokens.get(i + 1)
+                && !next.trim().is_empty()
+            {
+                user = Some(next.trim().to_owned());
+                i += 2;
+                continue;
+            }
+        } else if matches!(
+            tok,
+            "-i" | "-F"
+                | "-o"
+                | "-J"
+                | "-W"
+                | "-b"
+                | "-c"
+                | "-D"
+                | "-R"
+                | "-E"
+                | "-I"
+                | "-m"
+                | "-S"
+                | "-w"
+        ) {
+            i += 2;
+            continue;
+        } else if tok.starts_with('-') {
+            i += 1;
+            continue;
+        } else if let Some((u, h)) = tok.split_once('@') {
+            if !u.trim().is_empty() {
+                user = Some(u.trim().to_owned());
+            }
+            if !h.trim().is_empty() {
+                jump_host = Some(strip_brackets(h));
+            }
+        } else if jump_host.is_none() && !tok.contains(':') {
+            jump_host = Some(strip_brackets(tok));
+        }
+        i += 1;
+    }
+
+    let Some(spec) = l_spec else {
+        return Err("未检测到 -L 本地转发参数（格式示例：-L 15432:10.0.1.8:5432）".into());
+    };
+    let segs = split_l_spec_segments(&spec);
+    let (listen, lport_str, thost_raw, tport_str) = match segs.as_slice() {
+        [lp, th, tp] => (
+            LISTEN_LOCAL.to_owned(),
+            lp.as_str(),
+            th.as_str(),
+            tp.as_str(),
+        ),
+        [bind, lp, th, tp] => {
+            let clean_bind = strip_brackets(bind);
+            let listen = if clean_bind.is_empty() || clean_bind.eq_ignore_ascii_case("localhost") {
+                LISTEN_LOCAL.to_owned()
+            } else {
+                clean_bind
+            };
+            (listen, lp.as_str(), th.as_str(), tp.as_str())
+        }
+        _ => {
+            return Err("-L 参数段数异常，应为 [绑定IP:]本地端口:目标主机:目标端口".into());
+        }
+    };
+
+    let Some(local_port) = lport_str.trim().parse::<u16>().ok().filter(|p| *p > 0) else {
+        return Err("-L 中的本地端口无效（应为 1–65535）".into());
+    };
+    let target_host = strip_brackets(thost_raw);
+    if target_host.is_empty() || target_host.chars().any(char::is_whitespace) {
+        return Err("-L 中的目标地址不能为空".into());
+    }
+    let Some(target_port) = tport_str.trim().parse::<u16>().ok().filter(|p| *p > 0) else {
+        return Err("-L 中的目标端口无效（应为 1–65535）".into());
+    };
+
+    Ok(ParsedSshLCommand {
+        listen,
+        local_port,
+        target_host,
+        target_port,
+        user,
+        jump_host,
+        ssh_port,
+    })
+}
+
+pub fn match_ssh_host_id(hosts: &[SshHost], jump_host: &str, ssh_port: u16) -> Option<String> {
+    let target = jump_host.trim();
+    if target.is_empty() {
+        return None;
+    }
+    hosts
+        .iter()
+        .find(|h| h.host.eq_ignore_ascii_case(target) && h.port == ssh_port)
+        .or_else(|| hosts.iter().find(|h| h.host.eq_ignore_ascii_case(target)))
+        .map(|h| h.id.clone())
 }
 
 pub fn is_loopback_listen(listen: &str) -> bool {
@@ -405,18 +824,38 @@ pub fn extract_entries(
 }
 
 pub fn next_free_port(config: &Value, paused: &[PausedPortForward]) -> u16 {
+    next_free_port_all(10820, Some(config), paused, &[], None, None)
+}
+
+pub fn next_free_port_all(
+    preferred_start: u16,
+    config: Option<&Value>,
+    paused: &[PausedPortForward],
+    ssh_forwards: &[SshForward],
+    exclude_tag: Option<&str>,
+    exclude_ssh_id: Option<&str>,
+) -> u16 {
     let mut used: HashSet<u16> = config
-        .get("inbounds")
+        .and_then(|c| c.get("inbounds"))
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
+        .filter(|i| exclude_tag.is_none_or(|ex| i.get("tag").and_then(Value::as_str) != Some(ex)))
         .filter_map(|i| i.get("port").and_then(Value::as_u64))
         .filter_map(|p| u16::try_from(p).ok())
         .collect();
     used.extend(paused.iter().map(|p| p.port));
-    (10820..=u16::MAX)
+    used.extend(
+        ssh_forwards
+            .iter()
+            .filter(|f| exclude_ssh_id.is_none_or(|ex| f.id != ex))
+            .map(|f| f.port),
+    );
+    let start = preferred_start.max(1);
+    (start..=u16::MAX)
+        .chain(10820..start)
         .find(|port| !used.contains(port))
-        .unwrap_or(10820)
+        .unwrap_or(start)
 }
 
 pub fn next_free_tag(config: &Value, paused: &[PausedPortForward]) -> String {
@@ -478,19 +917,91 @@ pub fn check_form_error_with_ssh(
     ssh_hosts: &[SshHost],
     ssh_forwards: &[SshForward],
 ) -> Option<String> {
+    check_form_error_with_optional_config(Some(config), form, ssh_hosts, ssh_forwards)
+}
+
+pub fn find_local_port_conflict(
+    config: Option<&Value>,
+    form: &PortForwardForm,
+    ssh_forwards: &[SshForward],
+) -> Option<String> {
+    let listen = form.listen.trim();
+    if listen.parse::<IpAddr>().is_err() {
+        return None;
+    }
+    let local_port = form
+        .local_port
+        .trim()
+        .parse::<u16>()
+        .ok()
+        .filter(|p| *p > 0)?;
+
+    if let Some(config) = config {
+        let mut simulated = config
+            .get("inbounds")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let candidate_tag = form
+            .editing_tag
+            .as_deref()
+            .unwrap_or("__pf-preview-candidate__");
+        if let Some(existing_tag) = form.editing_tag.as_deref() {
+            simulated.retain(|item| item.get("tag").and_then(Value::as_str) != Some(existing_tag));
+        }
+        let candidate_inbound = json!({
+            "tag": candidate_tag,
+            "listen": listen,
+            "port": local_port,
+            "protocol": "dokodemo-door",
+            "settings": {"network": if form.outbound_is_ssh { "tcp".to_owned() } else { normalize_network(Some(&form.network)) }}
+        });
+        let candidate_idx = simulated.len();
+        simulated.push(candidate_inbound);
+        if let Some((_, msg)) = proxy_config::inbound_port_conflicts(&simulated)
+            .into_iter()
+            .find(|(idx, _)| *idx == candidate_idx)
+        {
+            return Some(msg);
+        }
+    }
+
+    if let Some(other) = ssh_forwards.iter().find(|f| {
+        form.editing_ssh_id.as_deref() != Some(f.id.as_str())
+            && f.port == local_port
+            && listens_overlap(&f.listen, listen)
+    }) {
+        return Some(format!(
+            "端口 {local_port} 与 SSH 隧道「{}」冲突。",
+            other.name
+        ));
+    }
+    None
+}
+
+pub fn check_form_error_with_optional_config(
+    config: Option<&Value>,
+    form: &PortForwardForm,
+    ssh_hosts: &[SshHost],
+    ssh_forwards: &[SshForward],
+) -> Option<String> {
+    if !form.outbound_is_ssh && config.is_none() {
+        return Some("当前 Xray 配置 JSON 存在语法错误，请先修正 JSON 或切换为 SSH 隧道。".into());
+    }
     let listen = form.listen.trim();
     if listen.parse::<IpAddr>().is_err() {
         return Some("监听 IP 格式无效（例如 127.0.0.1 或 0.0.0.0）。".into());
     }
-    let Some(local_port) = form
+    if form
         .local_port
         .trim()
         .parse::<u16>()
         .ok()
         .filter(|p| *p > 0)
-    else {
+        .is_none()
+    {
         return Some("本地端口应为 1–65535 的整数。".into());
-    };
+    }
     if form.target_host.trim().is_empty() {
         return Some("请填写目标域名或 IP。".into());
     }
@@ -505,66 +1016,26 @@ pub fn check_form_error_with_ssh(
         return Some("目标端口应为 1–65535 的整数。".into());
     }
     if form.outbound_is_ssh {
-        if form.name.trim().is_empty() {
-            return Some("请填写 SSH 端口转发名称。".into());
-        }
         if normalize_network(Some(&form.network)) != "tcp" {
             return Some("SSH 隧道仅支持 TCP 端口转发，请切换为 TCP。".into());
         }
         if !ssh_hosts.iter().any(|h| h.id == form.ssh_host_id) {
             return Some("请选择或新建一个 SSH 跳板机。".into());
         }
-    } else {
-        let valid_outbound = config
-            .get("outbounds")
-            .and_then(Value::as_array)
-            .is_some_and(|outbounds| {
-                outbounds.iter().any(|o| {
-                    o.get("tag").and_then(Value::as_str) == Some(form.outbound_tag.as_str())
-                })
-            });
+    } else if let Some(cfg) = config {
+        let valid_outbound =
+            cfg.get("outbounds")
+                .and_then(Value::as_array)
+                .is_some_and(|outbounds| {
+                    outbounds.iter().any(|o| {
+                        o.get("tag").and_then(Value::as_str) == Some(form.outbound_tag.as_str())
+                    })
+                });
         if !valid_outbound {
             return Some("请选择有效的转发出口节点。".into());
         }
     }
-    let mut simulated = config
-        .get("inbounds")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let candidate_tag = form
-        .editing_tag
-        .as_deref()
-        .unwrap_or("__pf-preview-candidate__");
-    if let Some(existing_tag) = form.editing_tag.as_deref() {
-        simulated.retain(|item| item.get("tag").and_then(Value::as_str) != Some(existing_tag));
-    }
-    let candidate_inbound = json!({
-        "tag": candidate_tag,
-        "listen": listen,
-        "port": local_port,
-        "protocol": "dokodemo-door",
-        "settings": {"network": if form.outbound_is_ssh { "tcp".to_owned() } else { normalize_network(Some(&form.network)) }}
-    });
-    let candidate_idx = simulated.len();
-    simulated.push(candidate_inbound);
-    if let Some((_, msg)) = proxy_config::inbound_port_conflicts(&simulated)
-        .into_iter()
-        .find(|(idx, _)| *idx == candidate_idx)
-    {
-        return Some(msg);
-    }
-    if let Some(other) = ssh_forwards.iter().find(|f| {
-        form.editing_ssh_id.as_deref() != Some(f.id.as_str())
-            && f.port == local_port
-            && listens_overlap(&f.listen, listen)
-    }) {
-        return Some(format!(
-            "端口 {local_port} 与 SSH 端口转发「{}」冲突。",
-            other.name
-        ));
-    }
-    None
+    find_local_port_conflict(config, form, ssh_forwards)
 }
 
 fn listens_overlap(a: &str, b: &str) -> bool {
@@ -578,13 +1049,20 @@ fn listens_overlap(a: &str, b: &str) -> bool {
 }
 
 pub fn ssh_forward_from_form(form: &PortForwardForm) -> SshForward {
+    let target_host = form.target_host.trim().to_owned();
+    let target_port = form.target_port.trim().parse::<u16>().unwrap_or(0);
+    let name = if form.name.trim().is_empty() {
+        auto_ssh_forward_name(&target_host, target_port)
+    } else {
+        form.name.trim().to_owned()
+    };
     SshForward {
         id: form.editing_ssh_id.clone().unwrap_or_default(),
-        name: form.name.trim().to_owned(),
+        name,
         listen: form.listen.trim().to_owned(),
         port: form.local_port.trim().parse::<u16>().unwrap_or(0),
-        target_host: form.target_host.trim().to_owned(),
-        target_port: form.target_port.trim().parse::<u16>().unwrap_or(0),
+        target_host,
+        target_port,
         ssh_host_id: form.ssh_host_id.clone(),
     }
 }
@@ -976,5 +1454,96 @@ mod tests {
         bad.target_host = "10.0.0.5".into();
         bad.target_port = "3306".into();
         assert!(check_form_error(&config, &bad).is_some());
+    }
+
+    #[test]
+    fn ssh_l_command_and_host_paste_parsers_and_auto_naming_work() {
+        let parsed =
+            parse_ssh_l_command("ssh -L 15432:10.0.1.8:5432 ops@bastion.corp -p 2222").unwrap();
+        assert_eq!(parsed.listen, "127.0.0.1");
+        assert_eq!(parsed.local_port, 15432);
+        assert_eq!(parsed.target_host, "10.0.1.8");
+        assert_eq!(parsed.target_port, 5432);
+        assert_eq!(parsed.user.as_deref(), Some("ops"));
+        assert_eq!(parsed.jump_host.as_deref(), Some("bastion.corp"));
+        assert_eq!(parsed.ssh_port, 2222);
+
+        let lan_parsed =
+            parse_ssh_l_command("ssh -p2200 -L 0.0.0.0:16379:[::1]:6379 bastion.internal").unwrap();
+        assert_eq!(lan_parsed.listen, "0.0.0.0");
+        assert_eq!(lan_parsed.local_port, 16379);
+        assert_eq!(lan_parsed.target_host, "::1");
+        assert_eq!(lan_parsed.target_port, 6379);
+        assert_eq!(lan_parsed.jump_host.as_deref(), Some("bastion.internal"));
+        assert_eq!(lan_parsed.ssh_port, 2200);
+        assert!(parse_ssh_l_command("ssh ops@bastion.corp").is_err());
+
+        assert_eq!(
+            parse_ssh_host_paste("ops@bastion.corp:2222"),
+            Some((Some("ops".into()), "bastion.corp".into(), Some(2222)))
+        );
+        assert_eq!(
+            parse_ssh_host_paste("bastion.corp:2222"),
+            Some((None, "bastion.corp".into(), Some(2222)))
+        );
+        assert_eq!(
+            parse_ssh_host_paste("ops@bastion.corp"),
+            Some((Some("ops".into()), "bastion.corp".into(), None))
+        );
+        assert_eq!(parse_ssh_host_paste("bastion.corp"), None);
+
+        assert_eq!(
+            auto_ssh_forward_name("10.0.1.8", 3306),
+            "MySQL (10.0.1.8:3306)"
+        );
+        assert_eq!(auto_ssh_forward_name("10.0.1.8", 8443), "10.0.1.8:8443");
+        assert_eq!(
+            auto_ssh_credential_name("ops", SshAuthKind::PrivateKey),
+            "ops · 私钥"
+        );
+        assert_eq!(
+            auto_ssh_credential_name("ops", SshAuthKind::Password),
+            "ops · 密码"
+        );
+
+        let config = sample_config();
+        let ssh_fwds = vec![SshForward {
+            id: "sf-1".into(),
+            name: "PG".into(),
+            listen: "127.0.0.1".into(),
+            port: 15432,
+            target_host: "10.0.1.8".into(),
+            target_port: 5432,
+            ssh_host_id: "h-1".into(),
+        }];
+        let hosts = vec![SshHost {
+            id: "h-1".into(),
+            name: "堡垒".into(),
+            host: "bastion.corp".into(),
+            port: 2222,
+            credential_id: "c-1".into(),
+            host_key_fingerprint: "SHA256:abc".into(),
+        }];
+        assert_eq!(
+            match_ssh_host_id(&hosts, "BASTION.CORP", 2222).as_deref(),
+            Some("h-1")
+        );
+        assert_eq!(
+            next_free_port_all(15432, Some(&config), &[], &ssh_fwds, None, None),
+            15433
+        );
+
+        // Blank SSH name passes optional-config validation (even when JSON is None) and auto-names.
+        let mut form = PortForwardForm::from_new_ssh(None, &[], &ssh_fwds, Some("h-1"));
+        form.target_host = "10.0.1.9".into();
+        form.target_port = "6379".into();
+        form.local_port = "16379".into();
+        assert!(check_form_error_with_optional_config(None, &form, &hosts, &ssh_fwds).is_none());
+        let saved_fwd = ssh_forward_from_form(&form);
+        assert_eq!(saved_fwd.name, "Redis (10.0.1.9:6379)");
+
+        // Same port conflicting with existing SSH forward is caught.
+        form.local_port = "15432".into();
+        assert!(find_local_port_conflict(None, &form, &ssh_fwds).is_some());
     }
 }

@@ -46,7 +46,7 @@ pub(super) enum Page {
     Settings,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum ProfileTab {
+pub(super) enum ProfileTab {
     #[default]
     Outbounds,
     Routing,
@@ -134,17 +134,41 @@ pub(super) struct SshCredentialForm {
     pub return_to_host: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum SshHostCredMode {
+    #[default]
+    Reuse,
+    Inline,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum SshHostTestStatus {
+    Testing,
+    Ok(String),
+    Error(String),
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct SshHostForm {
     pub editing_id: Option<String>,
     pub name: String,
     pub host: String,
     pub port: String,
+    pub cred_mode: SshHostCredMode,
     pub credential_id: String,
+    pub inline_cred_name: String,
+    pub inline_username: String,
+    pub inline_auth_kind: proxy_model::SshAuthKind,
+    pub inline_password: String,
+    pub inline_private_key_path: String,
+    pub inline_passphrase: String,
+    pub inline_show_secret: bool,
     pub host_key_fingerprint: String,
     pub error: Option<String>,
     pub probe_note: Option<String>,
     pub probing: bool,
+    pub testing: bool,
+    pub test_result: Option<(bool, String)>,
     pub return_to_pf: bool,
 }
 
@@ -155,12 +179,41 @@ impl Default for SshHostForm {
             name: String::new(),
             host: String::new(),
             port: "22".into(),
+            cred_mode: SshHostCredMode::Reuse,
             credential_id: String::new(),
+            inline_cred_name: String::new(),
+            inline_username: String::new(),
+            inline_auth_kind: proxy_model::SshAuthKind::Password,
+            inline_password: String::new(),
+            inline_private_key_path: String::new(),
+            inline_passphrase: String::new(),
+            inline_show_secret: false,
             host_key_fingerprint: String::new(),
             error: None,
             probe_note: None,
             probing: false,
+            testing: false,
+            test_result: None,
             return_to_pf: false,
+        }
+    }
+}
+
+impl SshHostForm {
+    pub fn for_new(credentials: &[proxy_model::SshCredentialSummary], return_to_pf: bool) -> Self {
+        let cred_mode = if credentials.is_empty() {
+            SshHostCredMode::Inline
+        } else {
+            SshHostCredMode::Reuse
+        };
+        Self {
+            cred_mode,
+            credential_id: credentials
+                .first()
+                .map(|c| c.id.clone())
+                .unwrap_or_default(),
+            return_to_pf,
+            ..Default::default()
         }
     }
 }
@@ -203,7 +256,7 @@ struct Event {
 }
 pub(super) struct UiState {
     pub page: Page,
-    profile_tab: ProfileTab,
+    pub(super) profile_tab: ProfileTab,
     advanced_tab: AdvancedTab,
     settings_tab: SettingsTab,
     pub workspace: Workspace,
@@ -260,6 +313,7 @@ pub(super) struct UiState {
     pub(super) ssh_loaded: bool,
     pub(super) ssh_cred_form: SshCredentialForm,
     pub(super) ssh_host_form: SshHostForm,
+    pub(super) ssh_host_tests: HashMap<String, SshHostTestStatus>,
     pub(super) inbounds_native: bool,
     pub(super) inline_rename: Option<String>,
     pub(super) guided: crate::guided_config::State,
@@ -370,6 +424,7 @@ impl Default for UiState {
             ssh_loaded: false,
             ssh_cred_form: Default::default(),
             ssh_host_form: Default::default(),
+            ssh_host_tests: Default::default(),
             inbounds_native: false,
             inline_rename: None,
             guided: Default::default(),
@@ -623,6 +678,7 @@ pub(super) fn command_name(command: &Command) -> &'static str {
         Command::GetOperation { .. } | Command::GetOperationDetails { .. } => "查询操作结果",
         Command::GetSshState => "读取 SSH 隧道状态",
         Command::ProbeSshHostKey { .. } => "探测 SSH 服务器指纹",
+        Command::TestSshHost { .. } => "测试 SSH 跳板机连接",
         Command::SaveSshCredential { .. } => "保存 SSH 凭证",
         Command::DeleteSshCredential { .. } => "删除 SSH 凭证",
         Command::SaveSshHost { .. } => "保存 SSH 跳板机",
@@ -631,6 +687,8 @@ pub(super) fn command_name(command: &Command) -> &'static str {
         Command::DeleteSshForward { .. } => "删除 SSH 端口转发",
         Command::StartSshForward { .. } => "启动 SSH 端口转发",
         Command::StopSshForward { .. } => "停止 SSH 端口转发",
+        Command::StartAllSshForwards => "批量启动 SSH 隧道",
+        Command::StopAllSshForwards => "批量停止 SSH 隧道",
         _ => "读取后台状态",
     }
 }

@@ -1,0 +1,3724 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Proxy Pilot · SSH 隧道交互优化预览 (v0.1.1-rc.45)</title>
+  <style>
+    :root {
+      --bg-canvas: #F1F4F9;
+      --bg-surface: #FFFFFF;
+      --bg-panel-alt: #F8FAFD;
+      --bg-chip: #EEF3FB;
+      --bg-proto: #E7EEF9;
+      --accent: #1D6FE8;
+      --accent-hover: #175EC7;
+      --accent-soft: rgba(29, 111, 232, 0.10);
+      --border: #DFE5EF;
+      --border-strong: #C5D0E0;
+      --ink: #17202E;
+      --ink-weak: #5B6678;
+      --success: #15803D;
+      --success-soft: rgba(21, 128, 61, 0.11);
+      --warn: #B45309;
+      --warn-soft: rgba(180, 83, 9, 0.11);
+      --danger: #B91C1C;
+      --danger-soft: rgba(185, 28, 28, 0.10);
+      --shadow-card: 0 2px 8px rgba(15, 23, 42, 0.04);
+      --shadow-modal: 0 18px 42px rgba(15, 23, 42, 0.22);
+      --ctrl-h: 36px;
+      --r-ctrl: 8px;
+      --r-seg: 7px;
+      --r-card: 10px;
+      --r-modal: 12px;
+      --r-pill: 999px;
+      --font-sans: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      --font-mono: "Cascadia Code", "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    [data-theme="dark"] {
+      --bg-canvas: #0F151E;
+      --bg-surface: #18202C;
+      --bg-panel-alt: #1E2837;
+      --bg-chip: #253244;
+      --bg-proto: #131B26;
+      --accent: #4D97FF;
+      --accent-hover: #6BA9FF;
+      --accent-soft: rgba(77, 151, 255, 0.15);
+      --border: #2B3749;
+      --border-strong: #3C4C63;
+      --ink: #E7EDF6;
+      --ink-weak: #9AA7BA;
+      --success: #4ADE80;
+      --success-soft: rgba(74, 222, 128, 0.14);
+      --warn: #FBBF24;
+      --warn-soft: rgba(251, 191, 36, 0.14);
+      --danger: #F87171;
+      --danger-soft: rgba(248, 113, 113, 0.14);
+      --shadow-card: 0 2px 10px rgba(0, 0, 0, 0.28);
+      --shadow-modal: 0 20px 48px rgba(0, 0, 0, 0.56);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      min-height: 100%;
+      background: var(--bg-canvas);
+      color: var(--ink);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      line-height: 1.45;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    button, input, select, textarea {
+      font-family: inherit;
+      font-size: 13px;
+      color: var(--ink);
+    }
+
+    .mono {
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .weak {
+      color: var(--ink-weak);
+    }
+
+    /* Prototype Toolbar */
+    .proto-bar {
+      background: var(--bg-proto);
+      border-bottom: 1px solid var(--border-strong);
+      padding: 8px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .proto-title-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .proto-tag {
+      display: inline-flex;
+      align-items: center;
+      height: 22px;
+      padding: 0 9px;
+      border-radius: var(--r-pill);
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 600;
+      border: 1px solid rgba(29, 111, 232, 0.25);
+    }
+
+    .proto-title {
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--ink);
+    }
+
+    .proto-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .proto-label {
+      font-size: 12px;
+      color: var(--ink-weak);
+    }
+
+    /* Controls: 36px height, 8px radius, 1px solid strong border */
+    .btn, .input, .select {
+      height: var(--ctrl-h);
+      border-radius: var(--r-ctrl);
+      border: 1px solid var(--border-strong);
+      background: var(--bg-surface);
+      color: var(--ink);
+      transition: background-color 0.14s ease, border-color 0.14s ease, color 0.14s ease, opacity 0.14s ease;
+    }
+
+    .input, .select {
+      padding: 0 11px;
+      outline: none;
+      width: 100%;
+    }
+
+    .select.inline-select {
+      width: auto;
+      min-width: 196px;
+    }
+
+    .input:focus, .select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px var(--accent-soft);
+    }
+
+    .input[readonly] {
+      background: var(--bg-panel-alt);
+      color: var(--ink-weak);
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 0 13px;
+      font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
+      user-select: none;
+    }
+
+    .btn:hover:not(:disabled) {
+      background: var(--bg-panel-alt);
+      border-color: var(--accent);
+    }
+
+    .btn:disabled {
+      opacity: 0.48;
+      cursor: not-allowed;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #FFFFFF;
+      font-weight: 600;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
+      color: #FFFFFF;
+    }
+
+    .btn-danger {
+      color: var(--danger);
+      border-color: rgba(185, 28, 28, 0.35);
+      background: var(--bg-surface);
+    }
+
+    .btn-danger:hover:not(:disabled) {
+      background: var(--danger-soft);
+      border-color: var(--danger);
+    }
+
+    .btn-success {
+      color: var(--success);
+      border-color: rgba(21, 128, 61, 0.38);
+      background: var(--bg-surface);
+    }
+
+    .btn-success:hover:not(:disabled) {
+      background: var(--success-soft);
+      border-color: var(--success);
+    }
+
+    .btn-sm {
+      height: 30px;
+      padding: 0 10px;
+      font-size: 12px;
+      border-radius: 7px;
+    }
+
+    .btn-xs {
+      height: 26px;
+      padding: 0 8px;
+      font-size: 11.5px;
+      border-radius: 6px;
+    }
+
+    .btn-4c {
+      min-width: 84px;
+    }
+
+    /* Segmented Controls */
+    .seg {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px;
+      border-radius: var(--r-ctrl);
+      background: var(--bg-panel-alt);
+      border: 1px solid var(--border-strong);
+      gap: 3px;
+    }
+
+    .seg-btn {
+      height: 28px;
+      padding: 0 12px;
+      border: none;
+      border-radius: var(--r-seg);
+      background: transparent;
+      color: var(--ink-weak);
+      font-size: 12.5px;
+      font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background-color 0.14s ease, color 0.14s ease;
+    }
+
+    .seg-btn:hover:not(:disabled):not(.active) {
+      color: var(--ink);
+      background: var(--bg-chip);
+    }
+
+    .seg-btn.active {
+      background: var(--bg-surface);
+      color: var(--accent);
+      font-weight: 600;
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+    }
+
+    .seg-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    /* App Shell */
+    .app-shell {
+      max-width: 1220px;
+      margin: 14px auto 24px;
+      padding: 0 16px;
+    }
+
+    .app-window {
+      background: var(--bg-canvas);
+      border: 1px solid var(--border-strong);
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: var(--shadow-card);
+      display: flex;
+      flex-direction: column;
+      min-height: 700px;
+    }
+
+    /* Top Bar */
+    .app-topbar {
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+
+    .brand-block {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .brand-name {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+
+    .status-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 0 3px var(--success-soft);
+      flex-shrink: 0;
+    }
+
+    .status-dot.stopped {
+      background: var(--warn);
+      box-shadow: 0 0 0 3px var(--warn-soft);
+    }
+
+    .status-dot.error {
+      background: var(--danger);
+      box-shadow: 0 0 0 3px var(--danger-soft);
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 10px;
+      border-radius: var(--r-pill);
+      font-size: 11.5px;
+      font-weight: 600;
+      border: 1px solid transparent;
+      white-space: nowrap;
+    }
+
+    .pill-neutral {
+      background: var(--bg-panel-alt);
+      border-color: var(--border);
+      color: var(--ink-weak);
+    }
+
+    .pill-accent {
+      background: var(--accent-soft);
+      border-color: rgba(29, 111, 232, 0.25);
+      color: var(--accent);
+    }
+
+    .pill-success {
+      background: var(--success-soft);
+      border-color: rgba(21, 128, 61, 0.25);
+      color: var(--success);
+    }
+
+    .pill-warn {
+      background: var(--warn-soft);
+      border-color: rgba(180, 83, 9, 0.28);
+      color: var(--warn);
+    }
+
+    .pill-danger {
+      background: var(--danger-soft);
+      border-color: rgba(185, 28, 28, 0.28);
+      color: var(--danger);
+    }
+
+    .nav-tabs {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+
+    .nav-tab {
+      height: 32px;
+      padding: 0 13px;
+      border-radius: var(--r-ctrl);
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--ink-weak);
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .nav-tab:hover {
+      background: var(--bg-panel-alt);
+      color: var(--ink);
+    }
+
+    .nav-tab.active {
+      background: var(--accent-soft);
+      border-color: rgba(29, 111, 232, 0.28);
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .version-label {
+      font-size: 12px;
+      color: var(--ink-weak);
+      font-family: var(--font-mono);
+    }
+
+    /* Main Workspace */
+    .app-main {
+      flex: 1;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--r-card);
+      padding: 16px;
+      box-shadow: var(--shadow-card);
+    }
+
+    .subcard {
+      background: var(--bg-panel-alt);
+      border: 1px solid var(--border);
+      border-radius: var(--r-card);
+      padding: 13px 14px;
+    }
+
+    .card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+
+    .card-title {
+      font-size: 15px;
+      font-weight: 700;
+      margin: 0;
+    }
+
+    .section-title {
+      font-size: 13.5px;
+      font-weight: 700;
+      margin: 0;
+    }
+
+    /* Overview Grid */
+    .overview-grid {
+      display: grid;
+      grid-template-columns: 1fr 1.18fr;
+      gap: 14px;
+      align-items: start;
+    }
+
+    .kv-list {
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+    }
+
+    .kv-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding-bottom: 8px;
+      border-bottom: 1px dashed var(--border);
+    }
+
+    .kv-row:last-child {
+      border-bottom: none;
+      padding-bottom: 0;
+    }
+
+    .kv-key {
+      color: var(--ink-weak);
+      font-size: 12.5px;
+    }
+
+    .kv-val {
+      font-weight: 600;
+      text-align: right;
+    }
+
+    .action-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+
+    .overview-subsection {
+      margin-top: 12px;
+    }
+
+    .overview-subhead {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+
+    .overview-subhead-title {
+      font-size: 12.5px;
+      font-weight: 700;
+      color: var(--ink-weak);
+    }
+
+    .compact-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .compact-row {
+      background: var(--bg-panel-alt);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      padding: 10px 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .compact-row-main {
+      min-width: 0;
+      flex: 1 1 240px;
+    }
+
+    .compact-row-title {
+      font-weight: 600;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .compact-row-route {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--ink-weak);
+      margin-top: 3px;
+      word-break: break-all;
+    }
+
+    .compact-row-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    /* Config Split Layout */
+    .config-layout {
+      display: grid;
+      grid-template-columns: 220px 1fr;
+      gap: 14px;
+      align-items: start;
+    }
+
+    .profile-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .profile-item {
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      padding: 10px 12px;
+      background: var(--bg-panel-alt);
+      cursor: pointer;
+      text-align: left;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .profile-item.active {
+      background: var(--accent-soft);
+      border-color: var(--accent);
+    }
+
+    .profile-item-name {
+      font-weight: 700;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+    }
+
+    .config-tabs {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 10px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+
+    .config-tab {
+      height: 32px;
+      padding: 0 12px;
+      border-radius: var(--r-ctrl);
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--ink-weak);
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .config-tab.active {
+      background: var(--bg-panel-alt);
+      border-color: var(--border-strong);
+      color: var(--ink);
+      font-weight: 700;
+    }
+
+    .subtabs {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+
+    .subtab {
+      height: 32px;
+      padding: 0 13px;
+      border-radius: var(--r-ctrl);
+      border: 1px solid var(--border-strong);
+      background: var(--bg-surface);
+      color: var(--ink-weak);
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .subtab.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #FFFFFF;
+    }
+
+    /* Summary & Section Cards */
+    .summary-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+
+    .summary-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .summary-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .block-section {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    .block-section:last-child {
+      margin-bottom: 0;
+    }
+
+    .block-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .entity-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .entity-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--r-card);
+      padding: 13px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .entity-card.running {
+      border-color: rgba(21, 128, 61, 0.45);
+    }
+
+    [data-theme="dark"] .entity-card.running {
+      border-color: rgba(74, 222, 128, 0.40);
+    }
+
+    .entity-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .entity-title-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .entity-title {
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .entity-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    /* Flow Strip */
+    .flow-strip {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 9px 11px;
+      border-radius: 8px;
+      background: var(--bg-panel-alt);
+      border: 1px solid var(--border);
+      font-size: 12px;
+    }
+
+    .flow-node {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .flow-node.hop {
+      background: var(--accent-soft);
+      border-color: rgba(29, 111, 232, 0.25);
+      color: var(--accent);
+      font-family: var(--font-sans);
+    }
+
+    .flow-arrow {
+      color: var(--ink-weak);
+      font-weight: 700;
+    }
+
+    /* Banners */
+    .banner {
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      font-size: 12.5px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .banner-warn {
+      background: var(--warn-soft);
+      border-color: rgba(180, 83, 9, 0.30);
+      color: var(--warn);
+    }
+
+    .banner-danger {
+      background: var(--danger-soft);
+      border-color: rgba(185, 28, 28, 0.30);
+      color: var(--danger);
+    }
+
+    .banner-success {
+      background: var(--success-soft);
+      border-color: rgba(21, 128, 61, 0.28);
+      color: var(--success);
+    }
+
+    .banner-info {
+      background: var(--accent-soft);
+      border-color: rgba(29, 111, 232, 0.26);
+      color: var(--accent);
+    }
+
+    /* Empty State */
+    .empty-box {
+      border: 1px dashed var(--border-strong);
+      background: var(--bg-panel-alt);
+      border-radius: var(--r-card);
+      padding: 20px 16px;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .empty-title {
+      font-weight: 700;
+      font-size: 13.5px;
+    }
+
+    .empty-desc {
+      color: var(--ink-weak);
+      max-width: 520px;
+      font-size: 12.5px;
+    }
+
+    /* Bottom Status Strip */
+    .status-strip {
+      background: var(--bg-surface);
+      border-top: 1px solid var(--border);
+      padding: 8px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      font-size: 12px;
+      color: var(--ink-weak);
+    }
+
+    .status-strip-left, .status-strip-right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    /* Modals */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(10, 16, 26, 0.56);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      z-index: 90;
+    }
+
+    .modal-card {
+      width: 100%;
+      max-width: 670px;
+      max-height: calc(100vh - 32px);
+      overflow-y: auto;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--r-modal);
+      padding: 20px 16px;
+      box-shadow: var(--shadow-modal);
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .modal-card.wide {
+      max-width: 720px;
+    }
+
+    .modal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .modal-title {
+      font-size: 18px;
+      font-weight: 700;
+      margin: 0;
+    }
+
+    .modal-body {
+      display: flex;
+      flex-direction: column;
+      gap: 13px;
+    }
+
+    .modal-foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+
+    .modal-foot-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-left: auto;
+    }
+
+    .field-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .field-label {
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--ink);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .field-hint {
+      font-size: 12px;
+      color: var(--ink-weak);
+    }
+
+    .row-flex {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .grid-target {
+      display: grid;
+      grid-template-columns: 1.55fr 1fr;
+      gap: 10px;
+    }
+
+    .grid-listen {
+      display: grid;
+      grid-template-columns: 1.35fr 0.9fr auto;
+      gap: 8px;
+      align-items: end;
+    }
+
+    .chip-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .chip {
+      height: 27px;
+      padding: 0 9px;
+      border-radius: var(--r-pill);
+      border: 1px solid var(--border-strong);
+      background: var(--bg-panel-alt);
+      color: var(--ink-weak);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .chip:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .chip.active {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: var(--accent-soft);
+      font-weight: 600;
+    }
+
+    .check-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .check-label input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    .inline-cred-box {
+      background: var(--bg-panel-alt);
+      border: 1px solid var(--border-strong);
+      border-radius: 9px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    /* Toast */
+    .toast-host {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 200;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      pointer-events: none;
+      max-width: min(420px, calc(100vw - 36px));
+    }
+
+    .toast {
+      background: var(--ink);
+      color: var(--bg-surface);
+      padding: 9px 13px;
+      border-radius: 8px;
+      font-size: 12.5px;
+      font-weight: 500;
+      box-shadow: var(--shadow-modal);
+      pointer-events: auto;
+    }
+
+    .toast.success {
+      background: var(--success);
+      color: #FFFFFF;
+    }
+
+    .toast.warn {
+      background: var(--warn);
+      color: #FFFFFF;
+    }
+
+    .toast.danger {
+      background: var(--danger);
+      color: #FFFFFF;
+    }
+
+    /* Highlights List */
+    .highlights-list {
+      margin: 0;
+      padding-left: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .highlights-list li {
+      line-height: 1.5;
+    }
+
+    /* Responsive Breakpoints (1100px & 760px, zero horizontal overflow) */
+    @media (max-width: 1100px) {
+      .overview-grid {
+        grid-template-columns: 1fr;
+      }
+      .config-layout {
+        grid-template-columns: 190px 1fr;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .app-shell {
+        padding: 0 8px;
+        margin: 8px auto 16px;
+      }
+      .app-main {
+        padding: 12px;
+      }
+      .config-layout {
+        grid-template-columns: 1fr;
+      }
+      .grid-2, .grid-target, .grid-listen {
+        grid-template-columns: 1fr;
+      }
+      .proto-bar {
+        padding: 8px 10px;
+      }
+      .app-topbar {
+        padding: 10px 12px;
+      }
+      .select.inline-select {
+        min-width: 0;
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- Prototype Bar -->
+  <header class="proto-bar">
+    <div class="proto-title-group">
+      <span class="proto-tag">交互原型</span>
+      <span class="proto-title">SSH 隧道交互优化预览 · 模拟数据，不操作真实系统</span>
+    </div>
+    <div class="proto-controls">
+      <label class="proto-label" for="scenarioSelect">演示场景</label>
+      <select id="scenarioSelect" class="select inline-select">
+        <option value="daily">日常多隧道场景</option>
+        <option value="first">首次配置 SSH 隧道（空状态）</option>
+        <option value="broken_json">Xray 草稿 JSON 语法错误</option>
+      </select>
+      <button type="button" id="themeToggleBtn" class="btn btn-sm">切换深色</button>
+      <button type="button" id="resetScenarioBtn" class="btn btn-sm">重置场景</button>
+      <button type="button" id="highlightsBtn" class="btn btn-sm btn-primary">优化亮点说明</button>
+    </div>
+  </header>
+
+  <!-- Main Simulated App -->
+  <main class="app-shell">
+    <section class="app-window" aria-label="Proxy Pilot 模拟窗口">
+      <div id="appTopBar"></div>
+      <div id="appMain" class="app-main"></div>
+      <div id="appStatusStrip"></div>
+    </section>
+  </main>
+
+  <div id="modalRoot"></div>
+  <div id="toastHost" class="toast-host" aria-live="polite"></div>
+
+  <script>
+    (function () {
+      "use strict";
+
+      function esc(str) {
+        return String(str == null ? "" : str)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function cloneData(obj) {
+        return JSON.parse(JSON.stringify(obj));
+      }
+
+      var COMMON_TARGET_PORTS = [
+        { port: 22, label: "SSH", short: "22 SSH" },
+        { port: 3306, label: "MySQL", short: "3306 MySQL" },
+        { port: 5432, label: "PG", short: "5432 PG" },
+        { port: 6379, label: "Redis", short: "6379 Redis" },
+        { port: 8080, label: "Web", short: "8080 Web" },
+        { port: 3389, label: "RDP", short: "3389 RDP" }
+      ];
+
+      function inferServiceLabel(port) {
+        var p = Number(port);
+        for (var i = 0; i < COMMON_TARGET_PORTS.length; i++) {
+          if (COMMON_TARGET_PORTS[i].port === p) {
+            return COMMON_TARGET_PORTS[i].label;
+          }
+        }
+        return "";
+      }
+
+      function buildAutoTunnelName(targetHost, targetPort) {
+        var host = (targetHost || "").trim() || "127.0.0.1";
+        var port = Number(targetPort) || 0;
+        var svc = inferServiceLabel(port);
+        if (svc && port > 0) {
+          return svc + " (" + host + ":" + port + ")";
+        }
+        if (port > 0) {
+          return host + ":" + port;
+        }
+        return host;
+      }
+
+      function buildAutoCredName(username, authKind) {
+        var u = (username || "").trim() || "user";
+        return u + " · " + (authKind === "private_key" ? "私钥" : "密码");
+      }
+
+      function createScenarioData(kind) {
+        if (kind === "first") {
+          return {
+            scenario: "first",
+            coreRunning: true,
+            proxyMode: "pac",
+            activeProfileId: "prod",
+            brokenXrayJson: false,
+            activeNav: "config",
+            activeConfigTab: "forwards",
+            activeForwardSubtab: "rules",
+            nextId: 100,
+            xrayForwards: [
+              {
+                id: "xf-1",
+                name: "内部测试站代理转发",
+                protocol: "tcp",
+                listenIp: "127.0.0.1",
+                listenPort: 18080,
+                targetHost: "10.20.0.15",
+                targetPort: 80,
+                outboundTag: "proxy-sg-01"
+              }
+            ],
+            sshCredentials: [],
+            sshHosts: [],
+            sshForwards: []
+          };
+        }
+
+        if (kind === "broken_json") {
+          var base = createScenarioData("daily");
+          base.scenario = "broken_json";
+          base.coreRunning = false;
+          base.brokenXrayJson = true;
+          base.activeNav = "config";
+          base.activeConfigTab = "forwards";
+          base.activeForwardSubtab = "rules";
+          base.sshForwards[0].state = "running";
+          return base;
+        }
+
+        return {
+          scenario: "daily",
+          coreRunning: true,
+          proxyMode: "pac",
+          activeProfileId: "prod",
+          brokenXrayJson: false,
+          activeNav: "overview",
+          activeConfigTab: "forwards",
+          activeForwardSubtab: "rules",
+          nextId: 100,
+          xrayForwards: [
+            {
+              id: "xf-1",
+              name: "海外 API 出口映射",
+              protocol: "tcp",
+              listenIp: "127.0.0.1",
+              listenPort: 18443,
+              targetHost: "api.partner.internal",
+              targetPort: 443,
+              outboundTag: "proxy-sg-01"
+            }
+          ],
+          sshCredentials: [
+            {
+              id: "cred-1",
+              name: "ops 运维私钥",
+              username: "ops",
+              authKind: "private_key",
+              keyPath: "C:\\Users\\demo\\.ssh\\id_ed25519_ops",
+              hasPassphrase: true,
+              dpapiEncrypted: true
+            },
+            {
+              id: "cred-2",
+              name: "readonly 账号密码",
+              username: "readonly",
+              authKind: "password",
+              keyPath: "",
+              hasPassphrase: false,
+              dpapiEncrypted: true
+            }
+          ],
+          sshHosts: [
+            {
+              id: "host-1",
+              name: "生产跳板机 · 华东",
+              address: "bastion-hz.corp.example",
+              port: 2222,
+              credentialId: "cred-1",
+              fingerprint: "SHA256:8Kp3mYv1qZ7rN4xL0wC9dT2bF6hJ5sA3eM8uG1pQ4",
+              lastTestStatus: "ok",
+              lastTestMsg: "握手成功 (RTT 24 ms)"
+            },
+            {
+              id: "host-2",
+              name: "预发堡垒机",
+              address: "192.168.50.10",
+              port: 22,
+              credentialId: "cred-2",
+              fingerprint: "",
+              lastTestStatus: "",
+              lastTestMsg: ""
+            }
+          ],
+          sshForwards: [
+            {
+              id: "sf-1",
+              name: "PG (10.0.1.8:5432)",
+              sshHostId: "host-1",
+              listenScope: "loopback",
+              listenIp: "127.0.0.1",
+              listenPort: 15432,
+              targetHost: "10.0.1.8",
+              targetPort: 5432,
+              state: "running",
+              lastError: ""
+            },
+            {
+              id: "sf-2",
+              name: "Redis (10.0.1.12:6379)",
+              sshHostId: "host-1",
+              listenScope: "loopback",
+              listenIp: "127.0.0.1",
+              listenPort: 16379,
+              targetHost: "10.0.1.12",
+              targetPort: 6379,
+              state: "stopped",
+              lastError: ""
+            },
+            {
+              id: "sf-3",
+              name: "MySQL (10.0.2.21:3306)",
+              sshHostId: "host-2",
+              listenScope: "lan",
+              listenIp: "0.0.0.0",
+              listenPort: 13306,
+              targetHost: "10.0.2.21",
+              targetPort: 3306,
+              state: "stopped",
+              lastError: ""
+            }
+          ]
+        };
+      }
+
+      var state = createScenarioData("daily");
+      var theme = "light";
+      var modalStack = [];
+      var toastTimer = null;
+
+      function nextUid(prefix) {
+        state.nextId += 1;
+        return prefix + "-" + state.nextId;
+      }
+
+      function getHostById(id) {
+        for (var i = 0; i < state.sshHosts.length; i++) {
+          if (state.sshHosts[i].id === id) return state.sshHosts[i];
+        }
+        return null;
+      }
+
+      function getCredById(id) {
+        for (var i = 0; i < state.sshCredentials.length; i++) {
+          if (state.sshCredentials[i].id === id) return state.sshCredentials[i];
+        }
+        return null;
+      }
+
+      function getForwardById(id) {
+        for (var i = 0; i < state.sshForwards.length; i++) {
+          if (state.sshForwards[i].id === id) return state.sshForwards[i];
+        }
+        return null;
+      }
+
+      function countHostRefs(hostId) {
+        var n = 0;
+        for (var i = 0; i < state.sshForwards.length; i++) {
+          if (state.sshForwards[i].sshHostId === hostId) n += 1;
+        }
+        return n;
+      }
+
+      function countCredRefs(credId) {
+        var n = 0;
+        for (var i = 0; i < state.sshHosts.length; i++) {
+          if (state.sshHosts[i].credentialId === credId) n += 1;
+        }
+        return n;
+      }
+
+      function isLoopbackIp(ip) {
+        var v = (ip || "").trim();
+        return v === "127.0.0.1" || v === "::1" || v === "localhost";
+      }
+
+      function isLanExposed(fwd) {
+        return fwd.listenScope !== "loopback" && !isLoopbackIp(fwd.listenIp);
+      }
+
+      function getCopyAddress(fwd) {
+        var ip = (fwd.listenIp || "").trim();
+        if (!ip || ip === "0.0.0.0" || ip === "::" || ip === "127.0.0.1") {
+          return "127.0.0.1:" + fwd.listenPort;
+        }
+        return ip + ":" + fwd.listenPort;
+      }
+
+      function getUsedLocalPorts(excludeId, excludeKind) {
+        var used = [];
+        for (var i = 0; i < state.sshForwards.length; i++) {
+          var sf = state.sshForwards[i];
+          if (excludeKind === "ssh" && sf.id === excludeId) continue;
+          used.push({ port: Number(sf.listenPort), source: "SSH 隧道「" + sf.name + "」" });
+        }
+        for (var j = 0; j < state.xrayForwards.length; j++) {
+          var xf = state.xrayForwards[j];
+          if (excludeKind === "xray" && xf.id === excludeId) continue;
+          used.push({ port: Number(xf.listenPort), source: "Xray 转发「" + xf.name + "」" });
+        }
+        return used;
+      }
+
+      function findPortConflict(port, excludeId, excludeKind) {
+        var p = Number(port);
+        if (!p || p < 1 || p > 65535) return null;
+        var used = getUsedLocalPorts(excludeId, excludeKind);
+        for (var i = 0; i < used.length; i++) {
+          if (used[i].port === p) return used[i];
+        }
+        return null;
+      }
+
+      function findNextFreePort(preferredStart, excludeId, excludeKind) {
+        var usedSet = {};
+        var used = getUsedLocalPorts(excludeId, excludeKind);
+        for (var i = 0; i < used.length; i++) {
+          usedSet[used[i].port] = true;
+        }
+        var p = Number(preferredStart) || 15000;
+        if (p < 1024) p = p + 10000;
+        if (p > 65000) p = 15000;
+        while (usedSet[p] && p < 65535) {
+          p += 1;
+        }
+        if (usedSet[p]) {
+          p = 15001;
+          while (usedSet[p] && p < 65535) p += 1;
+        }
+        return p;
+      }
+
+      function showToast(message, kind) {
+        var host = document.getElementById("toastHost");
+        if (!host) return;
+        host.innerHTML = '<div class="toast ' + esc(kind || "") + '">' + esc(message) + "</div>";
+        if (toastTimer) clearTimeout(toastTimer);
+        toastTimer = setTimeout(function () {
+          host.innerHTML = "";
+        }, 2800);
+      }
+
+      function copyTextToClipboard(text, okMsg) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(function () {
+            showToast(okMsg || ("已复制：" + text), "success");
+          }, function () {
+            fallbackCopy(text, okMsg);
+          });
+        } else {
+          fallbackCopy(text, okMsg);
+        }
+      }
+
+      function fallbackCopy(text, okMsg) {
+        try {
+          var ta = document.createElement("textarea");
+          ta.value = text;
+          ta.style.position = "fixed";
+          ta.style.left = "-9999px";
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          document.body.removeChild(ta);
+          showToast(okMsg || ("已复制：" + text), "success");
+        } catch (e) {
+          showToast("复制失败，请手动复制：" + text, "warn");
+        }
+      }
+
+      function splitHostPort(raw) {
+        var text = (raw || "").trim();
+        var user = "";
+        var host = text;
+        var port = "";
+        var atIdx = text.indexOf("@");
+        if (atIdx > 0) {
+          user = text.slice(0, atIdx).trim();
+          host = text.slice(atIdx + 1).trim();
+        }
+        var m = host.match(/^\[([^\]]+)\]:(\d{1,5})$/);
+        if (m) {
+          return { user: user, host: m[1], port: Number(m[2]) };
+        }
+        var colonCount = (host.match(/:/g) || []).length;
+        if (colonCount === 1) {
+          var idx = host.lastIndexOf(":");
+          var pStr = host.slice(idx + 1).trim();
+          if (/^\d{1,5}$/.test(pStr)) {
+            var pNum = Number(pStr);
+            if (pNum >= 1 && pNum <= 65535) {
+              return { user: user, host: host.slice(0, idx).trim(), port: pNum };
+            }
+          }
+        }
+        return { user: user, host: host, port: port };
+      }
+
+      function parseSshLCommand(cmdText) {
+        var raw = (cmdText || "").trim();
+        if (!raw) {
+          return { ok: false, error: "请先粘贴 ssh -L 命令" };
+        }
+        var tokens = raw.match(/"[^"]*"|'[^']*'|\S+/g) || [];
+        var cleanTokens = tokens.map(function (t) {
+          return t.replace(/^['"]|['"]$/g, "");
+        });
+
+        var lSpec = "";
+        var sshPort = 22;
+        var user = "";
+        var jumpHost = "";
+
+        for (var i = 0; i < cleanTokens.length; i++) {
+          var tok = cleanTokens[i];
+          if (tok === "ssh") continue;
+          if (tok === "-L" && i + 1 < cleanTokens.length) {
+            lSpec = cleanTokens[++i];
+            continue;
+          }
+          if (tok.indexOf("-L") === 0 && tok.length > 2) {
+            lSpec = tok.slice(2);
+            continue;
+          }
+          if (tok === "-p" && i + 1 < cleanTokens.length) {
+            var pVal = Number(cleanTokens[++i]);
+            if (pVal >= 1 && pVal <= 65535) sshPort = pVal;
+            continue;
+          }
+          if (tok.indexOf("-p") === 0 && /^\d+$/.test(tok.slice(2))) {
+            var pInline = Number(tok.slice(2));
+            if (pInline >= 1 && pInline <= 65535) sshPort = pInline;
+            continue;
+          }
+          if (tok === "-i" || tok === "-F" || tok === "-o" || tok === "-J" || tok === "-l") {
+            if (tok === "-l" && i + 1 < cleanTokens.length) {
+              user = cleanTokens[++i];
+            } else if (i + 1 < cleanTokens.length) {
+              i += 1;
+            }
+            continue;
+          }
+          if (tok.charAt(0) === "-") continue;
+          if (tok.indexOf("@") !== -1) {
+            var parts = tok.split("@");
+            user = parts[0] || user;
+            jumpHost = parts.slice(1).join("@");
+          } else if (!jumpHost && tok.indexOf(":") === -1) {
+            jumpHost = tok;
+          }
+        }
+
+        if (!lSpec) {
+          return { ok: false, error: "未检测到 -L 本地转发参数（格式示例：-L 15432:10.0.1.8:5432）" };
+        }
+
+        var partsL = lSpec.split(":");
+        var listenIp = "127.0.0.1";
+        var listenPort = 0;
+        var targetHost = "";
+        var targetPort = 0;
+
+        if (partsL.length === 3) {
+          listenPort = Number(partsL[0]);
+          targetHost = partsL[1];
+          targetPort = Number(partsL[2]);
+        } else if (partsL.length === 4) {
+          listenIp = partsL[0] || "127.0.0.1";
+          listenPort = Number(partsL[1]);
+          targetHost = partsL[2];
+          targetPort = Number(partsL[3]);
+        } else {
+          return { ok: false, error: "-L 参数段数异常，应为 [绑定IP:]本地端口:目标主机:目标端口" };
+        }
+
+        if (!listenPort || listenPort < 1 || listenPort > 65535 || !targetHost || !targetPort || targetPort < 1 || targetPort > 65535) {
+          return { ok: false, error: "-L 中的端口号或目标主机无效" };
+        }
+
+        var matchedHost = null;
+        if (jumpHost) {
+          for (var h = 0; h < state.sshHosts.length; h++) {
+            var cand = state.sshHosts[h];
+            if (cand.address.toLowerCase() === jumpHost.toLowerCase() && Number(cand.port) === Number(sshPort)) {
+              matchedHost = cand;
+              break;
+            }
+          }
+          if (!matchedHost) {
+            for (var h2 = 0; h2 < state.sshHosts.length; h2++) {
+              if (state.sshHosts[h2].address.toLowerCase() === jumpHost.toLowerCase()) {
+                matchedHost = state.sshHosts[h2];
+                break;
+              }
+            }
+          }
+        }
+
+        return {
+          ok: true,
+          listenIp: listenIp,
+          listenPort: listenPort,
+          targetHost: targetHost,
+          targetPort: targetPort,
+          user: user,
+          jumpHost: jumpHost,
+          sshPort: sshPort,
+          matchedHost: matchedHost
+        };
+      }
+
+      /* ---------------- Tunnel & Host Async Actions ---------------- */
+      function toggleTunnelState(fwdId) {
+        var fwd = getForwardById(fwdId);
+        if (!fwd) return;
+        if (fwd.state === "running") {
+          fwd.state = "stopped";
+          fwd.lastError = "";
+          renderApp();
+          showToast("已停止 SSH 隧道「" + fwd.name + "」");
+          return;
+        }
+        if (fwd.state === "connecting") return;
+
+        var host = getHostById(fwd.sshHostId);
+        if (!host) {
+          fwd.state = "stopped";
+          fwd.lastError = "关联的 SSH 跳板机不存在";
+          renderApp();
+          showToast(fwd.lastError, "danger");
+          return;
+        }
+        fwd.state = "connecting";
+        fwd.lastError = "";
+        renderApp();
+        setTimeout(function () {
+          var target = getForwardById(fwdId);
+          if (!target || target.state !== "connecting") return;
+          if (!host.fingerprint) {
+            target.state = "stopped";
+            target.lastError = "跳板机「" + host.name + "」尚未固定服务器指纹，请先在 SSH 跳板机中探测指纹";
+            renderApp();
+            showToast(target.lastError, "warn");
+            return;
+          }
+          target.state = "running";
+          target.lastError = "";
+          renderApp();
+          showToast("SSH 隧道「" + target.name + "」已就绪，监听 " + getCopyAddress(target), "success");
+        }, 350);
+      }
+
+      function startAllTunnels() {
+        var pending = [];
+        for (var i = 0; i < state.sshForwards.length; i++) {
+          var fwd = state.sshForwards[i];
+          if (fwd.state !== "running" && fwd.state !== "connecting") {
+            fwd.state = "connecting";
+            fwd.lastError = "";
+            pending.push(fwd.id);
+          }
+        }
+        if (!pending.length) {
+          showToast("全部 SSH 隧道已在运行中");
+          return;
+        }
+        renderApp();
+        setTimeout(function () {
+          var started = 0;
+          var blocked = 0;
+          for (var j = 0; j < pending.length; j++) {
+            var item = getForwardById(pending[j]);
+            if (!item || item.state !== "connecting") continue;
+            var host = getHostById(item.sshHostId);
+            if (!host || !host.fingerprint) {
+              item.state = "stopped";
+              item.lastError = "跳板机缺少服务器指纹验证";
+              blocked += 1;
+            } else {
+              item.state = "running";
+              item.lastError = "";
+              started += 1;
+            }
+          }
+          renderApp();
+          if (blocked > 0) {
+            showToast("已启动 " + started + " 条隧道，" + blocked + " 条因跳板机未验证指纹未启动", "warn");
+          } else {
+            showToast("已启动全部 " + started + " 条 SSH 隧道", "success");
+          }
+        }, 360);
+      }
+
+      function stopAllTunnels() {
+        var stopped = 0;
+        for (var i = 0; i < state.sshForwards.length; i++) {
+          if (state.sshForwards[i].state !== "stopped") {
+            state.sshForwards[i].state = "stopped";
+            state.sshForwards[i].lastError = "";
+            stopped += 1;
+          }
+        }
+        renderApp();
+        showToast(stopped ? ("已停止 " + stopped + " 条 SSH 隧道") : "当前没有运行中的 SSH 隧道");
+      }
+
+      function testHostConnection(hostId) {
+        var host = getHostById(hostId);
+        if (!host) return;
+        host.lastTestStatus = "testing";
+        host.lastTestMsg = "正在模拟 SSH 握手与认证检查…";
+        renderApp();
+        setTimeout(function () {
+          var h = getHostById(hostId);
+          if (!h) return;
+          if (!h.fingerprint) {
+            h.lastTestStatus = "error";
+            h.lastTestMsg = "连接受阻：尚未固定服务器 SHA256 指纹（请点“编辑”探测指纹）。";
+            renderApp();
+            showToast("跳板机「" + h.name + "」未验证指纹", "warn");
+            return;
+          }
+          var cred = getCredById(h.credentialId);
+          if (!cred) {
+            h.lastTestStatus = "error";
+            h.lastTestMsg = "连接受阻：未绑定 SSH 登录凭证。";
+            renderApp();
+            showToast("跳板机未绑定凭证", "danger");
+            return;
+          }
+          var rtt = 18 + (hostId.length * 7) % 29;
+          h.lastTestStatus = "ok";
+          h.lastTestMsg = "握手与身份校验通过（账号 " + cred.username + "，RTT " + rtt + " ms）";
+          renderApp();
+          showToast("跳板机「" + h.name + "」测试连接成功", "success");
+        }, 450);
+      }
+
+      /* ---------------- Modal Builders ---------------- */
+      function openPortForwardModal(opts) {
+        opts = opts || {};
+        var mode = opts.mode || "ssh";
+        if (state.brokenXrayJson && mode === "xray") {
+          mode = "ssh";
+        }
+        var sshEditing = opts.editSshId ? getForwardById(opts.editSshId) : null;
+        var xrayEditing = null;
+        if (opts.editXrayId) {
+          for (var i = 0; i < state.xrayForwards.length; i++) {
+            if (state.xrayForwards[i].id === opts.editXrayId) {
+              xrayEditing = state.xrayForwards[i];
+              break;
+            }
+          }
+        }
+        var cloneFrom = opts.cloneSshId ? getForwardById(opts.cloneSshId) : null;
+
+        var defaultHostId = opts.preselectHostId || (sshEditing ? sshEditing.sshHostId : (cloneFrom ? cloneFrom.sshHostId : (state.sshHosts[0] ? state.sshHosts[0].id : "")));
+        var defaultTargetHost = sshEditing ? sshEditing.targetHost : (cloneFrom ? cloneFrom.targetHost : "10.0.1.8");
+        var defaultTargetPort = sshEditing ? sshEditing.targetPort : (cloneFrom ? cloneFrom.targetPort : 5432);
+        var defaultListenScope = sshEditing ? sshEditing.listenScope : (cloneFrom ? cloneFrom.listenScope : "loopback");
+        var defaultListenIp = sshEditing ? sshEditing.listenIp : (cloneFrom ? cloneFrom.listenIp : "127.0.0.1");
+        var defaultListenPort = sshEditing
+          ? sshEditing.listenPort
+          : findNextFreePort(cloneFrom ? cloneFrom.listenPort + 1 : 15432, null, "ssh");
+
+        var defaultName = sshEditing
+          ? sshEditing.name
+          : (cloneFrom ? (cloneFrom.name + " - 副本") : "");
+
+        var startNow = sshEditing ? (sshEditing.state === "running") : true;
+
+        modalStack = [{
+          type: "port_forward",
+          title: sshEditing ? "编辑端口转发" : (xrayEditing ? "编辑 Xray 端口转发" : (cloneFrom ? "克隆 SSH 隧道" : "新建端口转发")),
+          mode: mode,
+          editSshId: sshEditing ? sshEditing.id : null,
+          editXrayId: xrayEditing ? xrayEditing.id : null,
+          isClone: !!cloneFrom,
+          cmdText: "",
+          cmdParseResult: null,
+          cmdError: "",
+          errorMsg: "",
+          ssh: {
+            sshHostId: defaultHostId,
+            targetHost: defaultTargetHost,
+            targetPort: String(defaultTargetPort),
+            listenScope: defaultListenScope,
+            listenIp: defaultListenIp,
+            listenPort: String(defaultListenPort),
+            name: defaultName,
+            startNow: startNow
+          },
+          xray: {
+            protocol: xrayEditing ? xrayEditing.protocol : "tcp",
+            listenIp: xrayEditing ? xrayEditing.listenIp : "127.0.0.1",
+            listenPort: xrayEditing ? String(xrayEditing.listenPort) : String(findNextFreePort(18081, null, "xray")),
+            targetHost: xrayEditing ? xrayEditing.targetHost : "10.20.0.18",
+            targetPort: xrayEditing ? String(xrayEditing.targetPort) : "443",
+            outboundTag: xrayEditing ? xrayEditing.outboundTag : "proxy-sg-01",
+            name: xrayEditing ? xrayEditing.name : ""
+          }
+        }];
+        renderModal();
+      }
+
+      function openSshHostModal(opts) {
+        opts = opts || {};
+        var editing = opts.editId ? getHostById(opts.editId) : null;
+        var hasCreds = state.sshCredentials.length > 0;
+        var credMode = editing
+          ? "reuse"
+          : (opts.preferInlineCred || !hasCreds ? "inline" : "reuse");
+
+        modalStack.push({
+          type: "ssh_host",
+          title: editing ? "编辑 SSH 跳板机" : "新建 SSH 跳板机",
+          editId: editing ? editing.id : null,
+          fromPortForward: !!opts.fromPortForward,
+          address: editing ? editing.address : (opts.prefillHost || ""),
+          port: editing ? String(editing.port) : (opts.prefillPort ? String(opts.prefillPort) : "22"),
+          name: editing ? editing.name : "",
+          credMode: credMode,
+          credentialId: editing ? editing.credentialId : (state.sshCredentials[0] ? state.sshCredentials[0].id : ""),
+          inlineCred: {
+            name: "",
+            username: opts.prefillUser || "",
+            authKind: "password",
+            password: "",
+            keyPath: "",
+            passphrase: ""
+          },
+          fingerprint: editing ? editing.fingerprint : "",
+          probeState: "",
+          testState: "",
+          testMsg: "",
+          errorMsg: ""
+        });
+        renderModal();
+      }
+
+      function openSshCredModal(opts) {
+        opts = opts || {};
+        var editing = opts.editId ? getCredById(opts.editId) : null;
+        modalStack.push({
+          type: "ssh_cred",
+          title: editing ? "编辑 SSH 凭证" : "新建 SSH 凭证",
+          editId: editing ? editing.id : null,
+          name: editing ? editing.name : "",
+          username: editing ? editing.username : "",
+          authKind: editing ? editing.authKind : "password",
+          password: "",
+          keyPath: editing ? editing.keyPath : "",
+          passphrase: "",
+          hasExistingPassphrase: editing ? editing.hasPassphrase : false,
+          errorMsg: ""
+        });
+        renderModal();
+      }
+
+      function openHighlightsModal() {
+        modalStack = [{ type: "highlights" }];
+        renderModal();
+      }
+
+      function closeTopModal() {
+        if (!modalStack.length) return;
+        modalStack.pop();
+        renderModal();
+      }
+
+      /* ---------------- App Rendering ---------------- */
+      function renderTopBar() {
+        var runningSsh = state.sshForwards.filter(function (f) { return f.state === "running"; }).length;
+        var activeXrayCount = state.coreRunning && !state.brokenXrayJson ? state.xrayForwards.length : 0;
+        var totalActive = runningSsh + activeXrayCount;
+        var modeLabel = state.proxyMode === "direct" ? "直连" : (state.proxyMode === "global" ? "全局" : "PAC");
+
+        var dotClass = "status-dot";
+        var coreSummary = "Core 运行中 · 生产配置 (" + modeLabel + ") · " + totalActive + " 条转发监听";
+        if (state.brokenXrayJson) {
+          dotClass = "status-dot error";
+          coreSummary = "Xray 草稿异常 · " + runningSsh + " 条 SSH 隧道独立监听中";
+        } else if (!state.coreRunning) {
+          dotClass = "status-dot stopped";
+          coreSummary = "Core 已停止 · " + runningSsh + " 条 SSH 隧道独立监听中";
+        }
+
+        var navItems = [
+          { id: "overview", label: "总览" },
+          { id: "config", label: "配置" },
+          { id: "pac", label: "PAC" },
+          { id: "logs", label: "日志" },
+          { id: "diag", label: "诊断" },
+          { id: "settings", label: "设置" }
+        ];
+
+        var html = '<div class="app-topbar">';
+        html += '  <div class="brand-block">';
+        html += '    <span class="' + dotClass + '"></span>';
+        html += '    <span class="brand-name">Proxy Pilot</span>';
+        html += '    <span class="pill pill-neutral">' + esc(coreSummary) + "</span>";
+        html += "  </div>";
+        html += '  <nav class="nav-tabs" aria-label="主导航">';
+        for (var i = 0; i < navItems.length; i++) {
+          var item = navItems[i];
+          var cls = "nav-tab" + (state.activeNav === item.id ? " active" : "");
+          html += '<button type="button" class="' + cls + '" data-nav="' + item.id + '">' + esc(item.label) + "</button>";
+        }
+        html += "  </nav>";
+        html += '  <span class="version-label">v0.1.1-rc.45</span>';
+        html += "</div>";
+        document.getElementById("appTopBar").innerHTML = html;
+      }
+
+      function renderStatusStrip() {
+        var runningSsh = state.sshForwards.filter(function (f) { return f.state === "running"; }).length;
+        var activeXray = state.coreRunning && !state.brokenXrayJson ? state.xrayForwards.length : 0;
+        var coreTxt = state.brokenXrayJson ? "Core 草稿待修复" : (state.coreRunning ? "Xray Core 正常" : "Xray Core 已停止");
+        var html = '<div class="status-strip">';
+        html += '  <div class="status-strip-left">';
+        html += '    <span>' + esc(coreTxt) + "</span>";
+        html += '    <span>·</span>';
+        html += '    <span>Xray 转发：' + activeXray + " / " + state.xrayForwards.length + "</span>";
+        html += '    <span>·</span>';
+        html += '    <span>SSH 隧道（独立于 Core）：' + runningSsh + " / " + state.sshForwards.length + " 运行中</span>";
+        html += "  </div>";
+        html += '  <div class="status-strip-right">';
+        html += '    <span>边界声明：本地代理与本地隧道管理（无 SFTP / 无外部终端桥接）</span>';
+        html += "  </div>";
+        html += "</div>";
+        document.getElementById("appStatusStrip").innerHTML = html;
+      }
+
+      function renderOverview() {
+        var activeXray = state.coreRunning && !state.brokenXrayJson ? state.xrayForwards.length : 0;
+        var coreBadge = state.brokenXrayJson
+          ? '<span class="pill pill-danger">草稿存在 JSON 语法错误</span>'
+          : (state.coreRunning
+            ? '<span class="pill pill-success">运行中</span>'
+            : '<span class="pill pill-warn">已停止</span>');
+
+        var html = '<div class="overview-grid">';
+
+        // Left Card: 连接与系统代理状态
+        html += '  <section class="card">';
+        html += '    <div class="card-head">';
+        html += '      <h2 class="card-title">连接与系统代理状态</h2>';
+        html += coreBadge;
+        html += "    </div>";
+        html += '    <div class="kv-list">';
+        html += '      <div class="kv-row"><span class="kv-key">Core 进程</span><span class="kv-val">' + (state.coreRunning ? "运行中 (xray.exe · PID 14820)" : "未运行") + "</span></div>";
+        html += '      <div class="kv-row"><span class="kv-key">当前配置</span><span class="kv-val">生产配置</span></div>';
+        html += '      <div class="kv-row"><span class="kv-key">系统代理方式</span><span class="kv-val">' + (state.proxyMode === "direct" ? "WinINet 直连" : (state.proxyMode === "global" ? "WinINet 全局代理" : "WinINet + 本地 PAC")) + "</span></div>";
+        html += '      <div class="kv-row"><span class="kv-key">本机 HTTP 入口</span><span class="kv-val mono">' + (state.coreRunning ? "127.0.0.1:7890" : "未监听") + "</span></div>";
+        html += '      <div class="kv-row"><span class="kv-key">Xray 端口转发</span><span class="kv-val">' + activeXray + " / " + state.xrayForwards.length + " 条监听</span></div>";
+        html += '      <div class="kv-row"><span class="kv-key">代理模式</span><span class="kv-val">';
+        html += '        <div class="seg" role="group" aria-label="代理模式">';
+        var modes = [{ id: "direct", label: "直连" }, { id: "pac", label: "PAC" }, { id: "global", label: "全局" }];
+        for (var m = 0; m < modes.length; m++) {
+          var md = modes[m];
+          html += '<button type="button" class="seg-btn' + (state.proxyMode === md.id ? " active" : "") + '" data-proxy-mode="' + md.id + '">' + md.label + "</button>";
+        }
+        html += "        </div></span></div>";
+        html += "    </div>";
+        html += '    <div class="action-row">';
+        html += '      <button type="button" class="btn btn-4c' + (state.coreRunning ? "" : " btn-primary") + '" data-action="toggle-core">' + (state.coreRunning ? "停止 Core" : "启动 Core") + "</button>";
+        html += '      <button type="button" class="btn btn-4c" data-action="restart-core"' + (state.brokenXrayJson ? " disabled title=\"Xray JSON 存在语法错误\"" : "") + ">重启 Core</button>";
+        html += '      <button type="button" class="btn btn-4c" data-action="go-config">管理配置</button>';
+        html += '      <button type="button" class="btn btn-4c" data-action="go-diag">路由诊断</button>';
+        html += "    </div>";
+        html += "  </section>";
+
+        // Right Card: 端口转发与隧道
+        html += '  <section class="card">';
+        html += '    <div class="card-head">';
+        html += '      <h2 class="card-title">端口转发与隧道</h2>';
+        html += '      <div class="row-flex">';
+        html += '        <button type="button" class="btn btn-sm btn-primary" data-action="open-new-ssh">+ SSH 隧道</button>';
+        html += '        <button type="button" class="btn btn-sm" data-action="go-forwards">管理转发</button>';
+        html += "      </div>";
+        html += "    </div>";
+
+        // Xray forwards block
+        html += '    <div class="overview-subsection">';
+        html += '      <div class="overview-subhead"><span class="overview-subhead-title">Xray 端口转发（随 Core 启停）</span></div>';
+        if (state.brokenXrayJson) {
+          html += '      <div class="banner banner-warn">当前 Xray 草稿存在 JSON 语法错误，Xray 转发暂未激活；下方 SSH 隧道仍可独立运行。</div>';
+        } else if (!state.xrayForwards.length) {
+          html += '      <div class="subcard weak">暂无 Xray 端口转发规则。</div>';
+        } else {
+          html += '      <div class="compact-list">';
+          for (var i = 0; i < state.xrayForwards.length; i++) {
+            var xf = state.xrayForwards[i];
+            var xfPill = state.coreRunning
+              ? '<span class="pill pill-success">监听中</span>'
+              : '<span class="pill pill-neutral">等待 Core</span>';
+            html += '        <div class="compact-row">';
+            html += '          <div class="compact-row-main">';
+            html += '            <div class="compact-row-title">' + esc(xf.name) + ' <span class="pill pill-neutral">' + esc(xf.protocol.toUpperCase()) + " · " + esc(xf.outboundTag) + "</span></div>";
+            html += '            <div class="compact-row-route">' + esc(xf.listenIp + ":" + xf.listenPort) + " -> " + esc(xf.targetHost + ":" + xf.targetPort) + "</div>";
+            html += "          </div>";
+            html += '          <div class="compact-row-actions">' + xfPill + "</div>";
+            html += "        </div>";
+          }
+          html += "      </div>";
+        }
+        html += "    </div>";
+
+        // SSH tunnels block
+        html += '    <div class="overview-subsection">';
+        html += '      <div class="overview-subhead">';
+        html += '        <span class="overview-subhead-title">SSH 隧道按需转发（独立于 Core）</span>';
+        if (state.sshForwards.length >= 2) {
+          html += '        <div class="row-flex">';
+          html += '          <button type="button" class="btn btn-xs btn-success" data-action="start-all-ssh">全部启动</button>';
+          html += '          <button type="button" class="btn btn-xs" data-action="stop-all-ssh">全部停止</button>';
+          html += "        </div>";
+        }
+        html += "      </div>";
+
+        if (!state.sshForwards.length) {
+          html += '      <div class="empty-box">';
+          html += '        <div class="empty-title">尚未创建 SSH 隧道</div>';
+          html += '        <div class="empty-desc">可直接粘贴 <span class="mono">ssh -L ...</span> 命令，或在同一向导里一并创建跳板机与凭证并立即启动。</div>';
+          html += '        <button type="button" class="btn btn-sm btn-primary" data-action="open-new-ssh">新建第一条 SSH 隧道</button>';
+          html += "      </div>";
+        } else {
+          html += '      <div class="compact-list">';
+          for (var s = 0; s < state.sshForwards.length; s++) {
+            var sf = state.sshForwards[s];
+            var host = getHostById(sf.sshHostId);
+            var hostName = host ? host.name : "未知跳板机";
+            var stPill = sf.state === "running"
+              ? '<span class="pill pill-success">运行中</span>'
+              : (sf.state === "connecting" ? '<span class="pill pill-accent">连接中…</span>' : '<span class="pill pill-neutral">已停止</span>');
+            var toggleLabel = sf.state === "running" ? "停止" : (sf.state === "connecting" ? "连接中" : "启动");
+            html += '        <div class="compact-row">';
+            html += '          <div class="compact-row-main">';
+            html += '            <div class="compact-row-title">' + esc(sf.name) + ' <span class="pill pill-accent">TCP · SSH</span>' + (isLanExposed(sf) ? ' <span class="pill pill-warn">LAN 监听</span>' : "") + "</div>";
+            html += '            <div class="compact-row-route">' + esc(sf.listenIp + ":" + sf.listenPort + " -> " + sf.targetHost + ":" + sf.targetPort + " (" + hostName + ")") + "</div>";
+            html += "          </div>";
+            html += '          <div class="compact-row-actions">';
+            html += stPill;
+            html += '            <button type="button" class="btn btn-xs" data-copy-ssh="' + esc(sf.id) + '" title="复制监听地址 ' + esc(getCopyAddress(sf)) + '">复制</button>';
+            html += '            <button type="button" class="btn btn-xs ' + (sf.state === "running" ? "" : "btn-primary") + '" data-toggle-ssh="' + esc(sf.id) + '"' + (sf.state === "connecting" ? " disabled" : "") + ">" + toggleLabel + "</button>";
+            html += "          </div>";
+            html += "        </div>";
+          }
+          html += "      </div>";
+        }
+        html += "    </div>";
+
+        html += "  </section>";
+        html += "</div>";
+        return html;
+      }
+
+      function renderPortForwardsSubtab() {
+        var runningCount = state.sshForwards.filter(function (f) { return f.state === "running"; }).length;
+        var html = "";
+
+        // Summary subcard
+        html += '<div class="subcard summary-bar">';
+        html += '  <div class="summary-meta">';
+        html += '    <span class="section-title">本机转发通道总览</span>';
+        html += '    <span class="pill pill-accent">SSH 隧道 ' + state.sshForwards.length + ' 条（' + runningCount + ' 运行中）</span>';
+        html += '    <span class="pill pill-neutral">Xray 转发 ' + state.xrayForwards.length + " 条</span>";
+        html += "  </div>";
+        html += '  <div class="summary-actions">';
+        html += '    <button type="button" class="btn btn-sm btn-primary" data-action="open-new-ssh">+ SSH 隧道</button>';
+        html += '    <button type="button" class="btn btn-sm" data-action="open-new-xray"' + (state.brokenXrayJson ? ' disabled title="当前 Xray 草稿存在 JSON 语法错误，请先修复 JSON 后再新增 Xray 转发"' : "") + ">+ Xray 转发</button>";
+        html += "  </div>";
+        html += "</div>";
+
+        // SSH Tunnels Section (Always operable even when broken_json!)
+        html += '<div class="block-section">';
+        html += '  <div class="block-head">';
+        html += '    <div class="row-flex">';
+        html += '      <h3 class="section-title">SSH 隧道按需转发（独立于 Xray Core）</h3>';
+        html += '      <span class="pill pill-success">Xray 草稿异常时仍可正常启停与编辑</span>';
+        html += "    </div>";
+        if (state.sshForwards.length >= 2) {
+          html += '    <div class="row-flex">';
+          html += '      <button type="button" class="btn btn-xs btn-success" data-action="start-all-ssh">全部启动</button>';
+          html += '      <button type="button" class="btn btn-xs" data-action="stop-all-ssh">全部停止</button>';
+          html += "    </div>";
+        }
+        html += "  </div>";
+
+        if (!state.sshForwards.length) {
+          html += '  <div class="empty-box">';
+          html += '    <div class="empty-title">当前没有 SSH 隧道转发规则</div>';
+          html += '    <div class="empty-desc">支持粘贴 <span class="mono">ssh -L 本地端口:目标主机:目标端口 user@跳板机 -p 端口</span> 一键解析填入；若尚无跳板机与凭证，可在新建弹窗内一站式创建并立即启动。</div>';
+          html += '    <button type="button" class="btn btn-primary" data-action="open-new-ssh">+ 新建 SSH 隧道</button>';
+          html += "  </div>";
+        } else {
+          html += '  <div class="entity-grid">';
+          for (var i = 0; i < state.sshForwards.length; i++) {
+            var sf = state.sshForwards[i];
+            var host = getHostById(sf.sshHostId);
+            var hostLabel = host ? (host.name + " (" + host.address + ":" + host.port + ")") : "未关联跳板机";
+            var stBadge = sf.state === "running"
+              ? '<span class="pill pill-success">运行中</span>'
+              : (sf.state === "connecting" ? '<span class="pill pill-accent">连接中…</span>' : '<span class="pill pill-neutral">已停止</span>');
+            var toggleBtn = sf.state === "running" ? "停止" : (sf.state === "connecting" ? "连接中" : "启动");
+            html += '    <article class="entity-card' + (sf.state === "running" ? " running" : "") + '">';
+            html += '      <div class="entity-top">';
+            html += '        <div class="entity-title-wrap">';
+            html += '          <span class="entity-title">' + esc(sf.name) + "</span>";
+            html += "          " + stBadge;
+            html += '          <span class="pill pill-accent">TCP · SSH</span>';
+            if (isLanExposed(sf)) {
+              html += '          <span class="pill pill-warn" title="监听非回环地址，局域网设备可连接此端口">LAN 暴露风险</span>';
+            }
+            html += "        </div>";
+            html += '        <div class="entity-actions">';
+            html += '          <button type="button" class="btn btn-xs ' + (sf.state === "running" ? "" : "btn-primary") + '" data-toggle-ssh="' + esc(sf.id) + '"' + (sf.state === "connecting" ? " disabled" : "") + ">" + toggleBtn + "</button>";
+            html += '          <button type="button" class="btn btn-xs" data-copy-ssh="' + esc(sf.id) + '">复制地址</button>';
+            html += '          <button type="button" class="btn btn-xs" data-clone-ssh="' + esc(sf.id) + '">克隆</button>';
+            html += '          <button type="button" class="btn btn-xs" data-edit-ssh="' + esc(sf.id) + '">编辑</button>';
+            html += '          <button type="button" class="btn btn-xs btn-danger" data-del-ssh="' + esc(sf.id) + '">删除</button>';
+            html += "        </div>";
+            html += "      </div>";
+            html += '      <div class="flow-strip" aria-label="转发链路">';
+            html += '        <span class="flow-node">本机 ' + esc(sf.listenIp + ":" + sf.listenPort) + "</span>";
+            html += '        <span class="flow-arrow">→</span>';
+            html += '        <span class="flow-node hop">SSH 跳板机：' + esc(hostLabel) + "</span>";
+            html += '        <span class="flow-arrow">→</span>';
+            html += '        <span class="flow-node">目标 ' + esc(sf.targetHost + ":" + sf.targetPort) + "</span>";
+            html += "      </div>";
+            if (sf.lastError) {
+              html += '      <div class="banner banner-warn">' + esc(sf.lastError) + "</div>";
+            }
+            html += "    </article>";
+          }
+          html += "  </div>";
+        }
+        html += "</div>";
+
+        // Xray Port Forwards Section
+        html += '<div class="block-section">';
+        html += '  <div class="block-head">';
+        html += '    <h3 class="section-title">Xray 端口转发（dokodemo-door，随当前配置下发）</h3>';
+        html += "  </div>";
+        if (state.brokenXrayJson) {
+          html += '  <div class="banner banner-warn">';
+          html += '    <span>当前 Xray 草稿存在 JSON 语法错误，Xray 转发暂不可编辑；上方 SSH 隧道完全不受影响。</span>';
+          html += '    <button type="button" class="btn btn-xs" data-action="fix-json-demo">模拟修复 JSON 草稿</button>';
+          html += "  </div>";
+        }
+        if (!state.xrayForwards.length) {
+          html += '  <div class="subcard weak">暂无 Xray 端口转发规则。</div>';
+        } else {
+          html += '  <div class="entity-grid">';
+          for (var j = 0; j < state.xrayForwards.length; j++) {
+            var xf = state.xrayForwards[j];
+            html += '    <article class="entity-card">';
+            html += '      <div class="entity-top">';
+            html += '        <div class="entity-title-wrap">';
+            html += '          <span class="entity-title">' + esc(xf.name) + "</span>";
+            html += '          <span class="pill pill-neutral">' + esc(xf.protocol.toUpperCase()) + "</span>";
+            html += '          <span class="pill pill-neutral">出站：' + esc(xf.outboundTag) + "</span>";
+            html += "        </div>";
+            html += '        <div class="entity-actions">';
+            html += '          <button type="button" class="btn btn-xs" data-edit-xray="' + esc(xf.id) + '"' + (state.brokenXrayJson ? ' disabled title="Xray 草稿异常时暂不可编辑"' : "") + ">编辑</button>";
+            html += '          <button type="button" class="btn btn-xs btn-danger" data-del-xray="' + esc(xf.id) + '"' + (state.brokenXrayJson ? ' disabled title="Xray 草稿异常时暂不可删除"' : "") + ">删除</button>";
+            html += "        </div>";
+            html += "      </div>";
+            html += '      <div class="flow-strip">';
+            html += '        <span class="flow-node">本机 ' + esc(xf.listenIp + ":" + xf.listenPort) + "</span>";
+            html += '        <span class="flow-arrow">→</span>';
+            html += '        <span class="flow-node hop">Xray 出站：' + esc(xf.outboundTag) + "</span>";
+            html += '        <span class="flow-arrow">→</span>';
+            html += '        <span class="flow-node">目标 ' + esc(xf.targetHost + ":" + xf.targetPort) + "</span>";
+            html += "      </div>";
+            html += "    </article>";
+          }
+          html += "  </div>";
+        }
+        html += "</div>";
+
+        return html;
+      }
+
+      function renderSshHostsSubtab() {
+        var html = "";
+        html += '<div class="subcard summary-bar">';
+        html += '  <div class="summary-meta">';
+        html += '    <span class="section-title">SSH 跳板机</span>';
+        html += '    <span class="pill pill-neutral">共 ' + state.sshHosts.length + " 台</span>";
+        html += '    <span class="field-hint">为本地 SSH 隧道提供跳板握手、主机指纹固定与复用能力</span>';
+        html += "  </div>";
+        html += '  <div class="summary-actions">';
+        html += '    <button type="button" class="btn btn-sm btn-primary" data-action="open-new-host">+ 新增跳板机</button>';
+        html += "  </div>";
+        html += "</div>";
+
+        if (!state.sshHosts.length) {
+          html += '<div class="empty-box">';
+          html += '  <div class="empty-title">暂无 SSH 跳板机</div>';
+          html += '  <div class="empty-desc">可直接在这里新增跳板机（支持在同一弹窗内直接填写新凭证），或在新建 SSH 隧道时一并创建。</div>';
+          html += '  <button type="button" class="btn btn-primary" data-action="open-new-host">+ 新增跳板机</button>';
+          html += "</div>";
+          return html;
+        }
+
+        html += '<div class="entity-grid">';
+        for (var i = 0; i < state.sshHosts.length; i++) {
+          var host = state.sshHosts[i];
+          var cred = getCredById(host.credentialId);
+          var refs = countHostRefs(host.id);
+          var fpPill = host.fingerprint
+            ? '<span class="pill pill-success">指纹已固定</span>'
+            : '<span class="pill pill-warn">未验证指纹</span>';
+          html += '  <article class="entity-card">';
+          html += '    <div class="entity-top">';
+          html += '      <div class="entity-title-wrap">';
+          html += '        <span class="entity-title">' + esc(host.name) + "</span>";
+          html += "        " + fpPill;
+          html += '        <span class="pill pill-neutral">被 ' + refs + " 条转发引用</span>";
+          html += "      </div>";
+          html += '      <div class="entity-actions">';
+          html += '        <button type="button" class="btn btn-xs btn-primary" data-quick-forward-host="' + esc(host.id) + '">+ 转发</button>';
+          html += '        <button type="button" class="btn btn-xs" data-test-host="' + esc(host.id) + '"' + (host.lastTestStatus === "testing" ? " disabled" : "") + ">" + (host.lastTestStatus === "testing" ? "测试中…" : "测试连接") + "</button>";
+          html += '        <button type="button" class="btn btn-xs" data-edit-host="' + esc(host.id) + '">编辑</button>';
+          html += '        <button type="button" class="btn btn-xs btn-danger" data-del-host="' + esc(host.id) + '"' + (refs > 0 ? ' disabled title="仍有转发规则引用该跳板机，请先移除或改绑后再删除"' : "") + ">删除</button>";
+          html += "      </div>";
+          html += "    </div>";
+          html += '    <div class="flow-strip">';
+          html += '      <span class="flow-node">' + esc(host.address + ":" + host.port) + "</span>";
+          html += '      <span class="pill pill-neutral">凭证：' + esc(cred ? (cred.name + " (" + cred.username + ")") : "未绑定") + "</span>";
+          if (host.fingerprint) {
+            html += '      <span class="weak mono" style="font-size:11.5px;">' + esc(host.fingerprint.slice(0, 28)) + "…</span>";
+          }
+          html += "    </div>";
+          if (host.lastTestMsg) {
+            var bCls = host.lastTestStatus === "ok" ? "banner-success" : (host.lastTestStatus === "error" ? "banner-warn" : "banner-info");
+            html += '    <div class="banner ' + bCls + '">' + esc(host.lastTestMsg) + "</div>";
+          }
+          html += "  </article>";
+        }
+        html += "</div>";
+        return html;
+      }
+
+      function renderSshCredsSubtab() {
+        var html = "";
+        html += '<div class="subcard summary-bar">';
+        html += '  <div class="summary-meta">';
+        html += '    <span class="section-title">SSH 凭证（摘要列表）</span>';
+        html += '    <span class="pill pill-neutral">共 ' + state.sshCredentials.length + " 个</span>";
+        html += '    <span class="pill pill-success">已 DPAPI 加密 · 不回显明文</span>';
+        html += "  </div>";
+        html += '  <div class="summary-actions">';
+        html += '    <button type="button" class="btn btn-sm btn-primary" data-action="open-new-cred">+ 新增凭证</button>';
+        html += "  </div>";
+        html += "</div>";
+
+        if (!state.sshCredentials.length) {
+          html += '<div class="empty-box">';
+          html += '  <div class="empty-title">暂无 SSH 凭证</div>';
+          html += '  <div class="empty-desc">凭证支持账号密码或私钥文件认证；也可在新建跳板机时顺带创建，无需手动往返多个页签。</div>';
+          html += '  <button type="button" class="btn btn-primary" data-action="open-new-cred">+ 新增凭证</button>';
+          html += "</div>";
+          return html;
+        }
+
+        html += '<div class="entity-grid">';
+        for (var i = 0; i < state.sshCredentials.length; i++) {
+          var c = state.sshCredentials[i];
+          var refs = countCredRefs(c.id);
+          html += '  <article class="entity-card">';
+          html += '    <div class="entity-top">';
+          html += '      <div class="entity-title-wrap">';
+          html += '        <span class="entity-title">' + esc(c.name) + "</span>";
+          html += '        <span class="pill pill-neutral">' + (c.authKind === "private_key" ? "私钥文件" : "账号密码") + "</span>";
+          html += '        <span class="pill pill-success">已 DPAPI 加密</span>';
+          html += '        <span class="pill pill-neutral">被 ' + refs + " 台跳板机引用</span>";
+          html += "      </div>";
+          html += '      <div class="entity-actions">';
+          html += '        <button type="button" class="btn btn-xs" data-edit-cred="' + esc(c.id) + '">编辑</button>';
+          html += '        <button type="button" class="btn btn-xs btn-danger" data-del-cred="' + esc(c.id) + '"' + (refs > 0 ? ' disabled title="仍有跳板机引用该凭证"' : "") + ">删除</button>";
+          html += "      </div>";
+          html += "    </div>";
+          html += '    <div class="flow-strip">';
+          html += '      <span class="flow-node">账号：' + esc(c.username) + "</span>";
+          if (c.authKind === "private_key") {
+            html += '      <span class="weak mono">' + esc(c.keyPath || "私钥已托管") + (c.hasPassphrase ? "（含加密 Passphrase）" : "") + "</span>";
+          } else {
+            html += '      <span class="weak">密码密文由本机 Windows DPAPI 保护（界面不回显明文）</span>';
+          }
+          html += "    </div>";
+          html += "  </article>";
+        }
+        html += "</div>";
+        return html;
+      }
+
+      function renderConfigPage() {
+        var html = '<div class="config-layout">';
+
+        // Left Profile List
+        html += '  <aside class="card" aria-label="配置列表">';
+        html += '    <div class="card-head" style="margin-bottom:8px;"><h2 class="card-title">配置列表</h2></div>';
+        html += '    <div class="profile-list">';
+        html += '      <button type="button" class="profile-item active" data-profile="prod">';
+        html += '        <span class="profile-item-name">生产配置 <span class="pill pill-success">当前使用</span></span>';
+        html += '        <span class="field-hint">Xray 转发 ' + state.xrayForwards.length + ' · SSH 隧道 ' + state.sshForwards.length + "</span>";
+        html += "      </button>";
+        html += "    </div>";
+        html += '    <p class="field-hint" style="margin:10px 0 0;">注：SSH 隧道与跳板机独立于 Xray 配置切换全局复用。</p>';
+        html += "  </aside>";
+
+        // Right Profile Editor
+        html += '  <section class="card">';
+        html += '    <div class="config-tabs" role="tablist">';
+        var cfgTabs = [
+          { id: "nodes", label: "节点" },
+          { id: "routing", label: "分流规则" },
+          { id: "forwards", label: "端口转发" },
+          { id: "source", label: "更多与源码" }
+        ];
+        for (var t = 0; t < cfgTabs.length; t++) {
+          var ct = cfgTabs[t];
+          html += '<button type="button" class="config-tab' + (state.activeConfigTab === ct.id ? " active" : "") + '" data-cfg-tab="' + ct.id + '">' + ct.label + "</button>";
+        }
+        html += "    </div>";
+
+        if (state.activeConfigTab !== "forwards") {
+          html += '    <div class="empty-box">';
+          html += '      <div class="empty-title">当前原型聚焦于「端口转发与 SSH 隧道」交互设计</div>';
+          html += '      <div class="empty-desc">「节点」「分流规则」「更多与源码」保留现有 Xray 代理管理体验；请切换到「端口转发」或「总览」体验 SSH 隧道优化流。</div>';
+          html += '      <button type="button" class="btn btn-primary" data-cfg-tab="forwards">回到端口转发</button>';
+          html += "    </div>";
+        } else {
+          html += '    <div class="subtabs">';
+          html += '      <button type="button" class="subtab' + (state.activeForwardSubtab === "rules" ? " active" : "") + '" data-fwd-subtab="rules">转发规则</button>';
+          html += '      <button type="button" class="subtab' + (state.activeForwardSubtab === "hosts" ? " active" : "") + '" data-fwd-subtab="hosts">SSH 跳板机 (' + state.sshHosts.length + ")</button>";
+          html += '      <button type="button" class="subtab' + (state.activeForwardSubtab === "creds" ? " active" : "") + '" data-fwd-subtab="creds">SSH 凭证 (' + state.sshCredentials.length + ")</button>";
+          html += "    </div>";
+          if (state.activeForwardSubtab === "rules") {
+            html += renderPortForwardsSubtab();
+          } else if (state.activeForwardSubtab === "hosts") {
+            html += renderSshHostsSubtab();
+          } else {
+            html += renderSshCredsSubtab();
+          }
+        }
+        html += "  </section>";
+        html += "</div>";
+        return html;
+      }
+
+      function renderPlaceholderNav(navId) {
+        var names = { pac: "PAC 规则", logs: "运行日志", diag: "路由诊断", settings: "应用设置" };
+        var html = '<section class="card">';
+        html += '  <div class="empty-box">';
+        html += '    <div class="empty-title">' + esc(names[navId] || "页面") + " · 非本次调整范围</div>";
+        html += '    <div class="empty-desc">本次 SSH 隧道交互优化集中在「总览」与「配置 → 端口转发」（含转发规则、SSH 跳板机、SSH 凭证及三类弹窗）。</div>';
+        html += '    <div class="row-flex">';
+        html += '      <button type="button" class="btn btn-primary" data-action="go-forwards">打开 配置 → 端口转发</button>';
+        html += '      <button type="button" class="btn" data-nav="overview">返回总览</button>';
+        html += "    </div>";
+        html += "  </div>";
+        html += "</section>";
+        return html;
+      }
+
+      function renderApp() {
+        renderTopBar();
+        var main = document.getElementById("appMain");
+        if (state.activeNav === "overview") {
+          main.innerHTML = renderOverview();
+        } else if (state.activeNav === "config") {
+          main.innerHTML = renderConfigPage();
+        } else {
+          main.innerHTML = renderPlaceholderNav(state.activeNav);
+        }
+        renderStatusStrip();
+      }
+
+      /* ---------------- Modal Rendering & Live Updates ---------------- */
+      function renderPortForwardModalHtml(m) {
+        var isSsh = m.mode === "ssh";
+        var html = "";
+        html += '<div class="modal-card wide" role="dialog" aria-modal="true" aria-label="' + esc(m.title) + '">';
+        html += '  <div class="modal-head">';
+        html += '    <h2 class="modal-title">' + esc(m.title) + "</h2>";
+        html += '    <button type="button" class="btn btn-sm" data-modal-close>关闭</button>';
+        html += "  </div>";
+
+        html += '  <div class="modal-body">';
+        if (!m.editSshId && !m.editXrayId && !m.isClone) {
+          html += '    <div class="row-flex" style="justify-content:space-between;">';
+          html += '      <span class="field-label">通道类型</span>';
+          html += '      <div class="seg">';
+          html += '        <button type="button" class="seg-btn' + (isSsh ? " active" : "") + '" data-pf-mode="ssh">SSH 隧道</button>';
+          html += '        <button type="button" class="seg-btn' + (!isSsh ? " active" : "") + '" data-pf-mode="xray"' + (state.brokenXrayJson ? ' disabled title="当前 Xray 草稿 JSON 语法错误，暂不可创建 Xray 转发"' : "") + ">Xray 转发</button>";
+          html += "      </div>";
+          html += "    </div>";
+        }
+
+        if (isSsh) {
+          // Quick ssh -L paste parser
+          html += '    <div class="subcard field-group">';
+          html += '      <div class="field-label">';
+          html += '        <span>粘贴 ssh -L 命令自动填入（可选）</span>';
+          html += '        <button type="button" class="btn btn-xs" data-pf-fill-example>填入示例：ssh -L 15432:10.0.1.8:5432 ops@bastion.corp -p 2222</button>';
+          html += "      </div>";
+          html += '      <div class="row-flex" style="flex-wrap:nowrap;">';
+          html += '        <input type="text" class="input mono" id="pfCmdInput" placeholder="例如：ssh -L 15432:10.0.1.8:5432 ops@bastion.corp -p 2222" value="' + esc(m.cmdText) + '" />';
+          html += '        <button type="button" class="btn btn-sm" data-pf-parse-cmd style="flex-shrink:0;">解析填入</button>';
+          html += "      </div>";
+          if (m.cmdError) {
+            html += '      <div class="banner banner-warn">' + esc(m.cmdError) + "</div>";
+          } else if (m.cmdParseResult) {
+            var pr = m.cmdParseResult;
+            html += '      <div class="banner banner-info">';
+            if (pr.matchedHost) {
+              html += '        <span>已解析端口参数，并自动匹配跳板机「' + esc(pr.matchedHost.name) + "」。</span>";
+            } else if (pr.jumpHost) {
+              html += '        <span>已解析地址端口；跳板机 <span class="mono">' + esc((pr.user ? pr.user + "@" : "") + pr.jumpHost + ":" + pr.sshPort) + '</span> 尚未登记。</span>';
+              html += '        <button type="button" class="btn btn-xs btn-primary" data-pf-create-parsed-host>按解析结果新建跳板机</button>';
+            } else {
+              html += '        <span>已填入本地端口与目标地址端口，请选择 SSH 跳板机。</span>';
+            }
+            html += "      </div>";
+          }
+          html += "    </div>";
+
+          // Field 1: SSH Host
+          html += '    <div class="field-group">';
+          html += '      <label class="field-label" for="pfHostSelect"><span>1. SSH 跳板机</span></label>';
+          html += '      <div class="row-flex" style="flex-wrap:nowrap;">';
+          html += '        <select id="pfHostSelect" class="select">';
+          if (!state.sshHosts.length) {
+            html += '          <option value="">暂无可用 SSH 跳板机</option>';
+          } else {
+            for (var hi = 0; hi < state.sshHosts.length; hi++) {
+              var hItem = state.sshHosts[hi];
+              var sel = hItem.id === m.ssh.sshHostId ? " selected" : "";
+              html += '          <option value="' + esc(hItem.id) + '"' + sel + ">" + esc(hItem.name + " (" + hItem.address + ":" + hItem.port + ")") + "</option>";
+            }
+          }
+          html += "        </select>";
+          html += '        <button type="button" class="btn btn-sm" data-pf-new-host style="flex-shrink:0;">+ 新建跳板机</button>';
+          html += "      </div>";
+          if (!state.sshHosts.length) {
+            html += '      <div class="banner banner-info">暂无跳板机，点右侧可在同一弹窗内一并填写凭证并创建，完成后自动回到此处继续。</div>';
+          }
+          html += "    </div>";
+
+          // Field 2: Target Host & Port with chips
+          html += '    <div class="field-group">';
+          html += '      <div class="field-label"><span>2. 目标地址与端口（支持直接粘贴 host:port 自动拆分）</span></div>';
+          html += '      <div class="chip-row">';
+          html += '        <button type="button" class="chip' + (m.ssh.targetHost === "127.0.0.1" ? " active" : "") + '" data-pf-preset-host="127.0.0.1">跳板机本机 (127.0.0.1)</button>';
+          for (var pi = 0; pi < COMMON_TARGET_PORTS.length; pi++) {
+            var pt = COMMON_TARGET_PORTS[pi];
+            html += '        <button type="button" class="chip' + (Number(m.ssh.targetPort) === pt.port ? " active" : "") + '" data-pf-preset-port="' + pt.port + '">' + pt.short + "</button>";
+          }
+          html += "      </div>";
+          html += '      <div class="grid-target">';
+          html += '        <input type="text" class="input mono" id="pfTargetHost" placeholder="如 10.0.1.8 或粘贴 10.0.1.8:5432" value="' + esc(m.ssh.targetHost) + '" />';
+          html += '        <input type="number" class="input mono" id="pfTargetPort" min="1" max="65535" placeholder="目标端口" value="' + esc(m.ssh.targetPort) + '" />';
+          html += "      </div>";
+          html += "    </div>";
+
+          // Field 3: Listen Scope & Local Port
+          html += '    <div class="field-group">';
+          html += '      <div class="field-label">';
+          html += '        <span>3. 本机监听范围与端口</span>';
+          html += '        <div class="seg">';
+          html += '          <button type="button" class="seg-btn' + (m.ssh.listenScope === "loopback" ? " active" : "") + '" data-pf-scope="loopback">仅本机 (127.0.0.1)</button>';
+          html += '          <button type="button" class="seg-btn' + (m.ssh.listenScope === "lan" ? " active" : "") + '" data-pf-scope="lan">局域网 (0.0.0.0)</button>';
+          html += '          <button type="button" class="seg-btn' + (m.ssh.listenScope === "custom" ? " active" : "") + '" data-pf-scope="custom">自定义 IP</button>';
+          html += "        </div>";
+          html += "      </div>";
+          html += '      <div class="grid-listen">';
+          html += '        <input type="text" class="input mono" id="pfListenIp" value="' + esc(m.ssh.listenIp) + '"' + (m.ssh.listenScope !== "custom" ? " readonly" : "") + ' placeholder="监听 IP" />';
+          html += '        <input type="number" class="input mono" id="pfListenPort" min="1" max="65535" value="' + esc(m.ssh.listenPort) + '" placeholder="本机端口" />';
+          html += '        <button type="button" class="btn btn-sm" data-pf-same-port>同目标端口</button>';
+          html += "      </div>";
+          html += '      <div id="pfLiveLanWarn"></div>';
+          html += '      <div id="pfLivePortConflict"></div>';
+          html += "    </div>";
+
+          // Field 4: Optional Remark Name
+          html += '    <div class="field-group">';
+          html += '      <label class="field-label" for="pfNameInput"><span>4. 备注名称（可选）</span></label>';
+          html += '      <input type="text" class="input" id="pfNameInput" value="' + esc(m.ssh.name) + '" placeholder="留空自动命名：' + esc(buildAutoTunnelName(m.ssh.targetHost, m.ssh.targetPort)) + '" />';
+          html += "    </div>";
+        } else {
+          // Xray Forward Mode
+          html += '    <div class="grid-2">';
+          html += '      <div class="field-group">';
+          html += '        <label class="field-label" for="pfXrayProto">协议</label>';
+          html += '        <select id="pfXrayProto" class="select">';
+          html += '          <option value="tcp"' + (m.xray.protocol === "tcp" ? " selected" : "") + ">TCP</option>";
+          html += '          <option value="udp"' + (m.xray.protocol === "udp" ? " selected" : "") + ">UDP</option>";
+          html += '          <option value="tcp+udp"' + (m.xray.protocol === "tcp+udp" ? " selected" : "") + ">TCP + UDP</option>";
+          html += "        </select>";
+          html += "      </div>";
+          html += '      <div class="field-group">';
+          html += '        <label class="field-label" for="pfXrayOutbound">Xray 出站节点</label>';
+          html += '        <select id="pfXrayOutbound" class="select">';
+          var outbounds = ["proxy-sg-01", "proxy-jp-02", "direct", "block"];
+          for (var ob = 0; ob < outbounds.length; ob++) {
+            html += '          <option value="' + outbounds[ob] + '"' + (m.xray.outboundTag === outbounds[ob] ? " selected" : "") + ">" + outbounds[ob] + "</option>";
+          }
+          html += "        </select>";
+          html += "      </div>";
+          html += "    </div>";
+          html += '    <div class="grid-2">';
+          html += '      <div class="field-group">';
+          html += '        <label class="field-label" for="pfXrayListenIp">本机监听 IP</label>';
+          html += '        <input id="pfXrayListenIp" type="text" class="input mono" value="' + esc(m.xray.listenIp) + '" />';
+          html += "      </div>";
+          html += '      <div class="field-group">';
+          html += '        <label class="field-label" for="pfXrayListenPort">本机端口</label>';
+          html += '        <input id="pfXrayListenPort" type="number" class="input mono" min="1" max="65535" value="' + esc(m.xray.listenPort) + '" />';
+          html += "      </div>";
+          html += "    </div>";
+          html += '    <div id="pfXrayConflict"></div>';
+          html += '    <div class="grid-2">';
+          html += '      <div class="field-group">';
+          html += '        <label class="field-label" for="pfXrayTargetHost">目标地址</label>';
+          html += '        <input id="pfXrayTargetHost" type="text" class="input mono" value="' + esc(m.xray.targetHost) + '" />';
+          html += "      </div>";
+          html += '      <div class="field-group">';
+          html += '        <label class="field-label" for="pfXrayTargetPort">目标端口</label>';
+          html += '        <input id="pfXrayTargetPort" type="number" class="input mono" min="1" max="65535" value="' + esc(m.xray.targetPort) + '" />';
+          html += "      </div>";
+          html += "    </div>";
+          html += '    <div class="field-group">';
+          html += '      <label class="field-label" for="pfXrayName">备注名称（可选）</label>';
+          html += '      <input id="pfXrayName" type="text" class="input" value="' + esc(m.xray.name) + '" placeholder="留空自动命名" />';
+          html += "    </div>";
+        }
+
+        html += '    <div id="pfLiveError">' + (m.errorMsg ? ('<div class="banner banner-danger">' + esc(m.errorMsg) + "</div>") : "") + "</div>";
+        html += "  </div>";
+
+        html += '  <div class="modal-foot">';
+        if (isSsh) {
+          html += '    <label class="check-label"><input type="checkbox" id="pfStartNowCheck"' + (m.ssh.startNow ? " checked" : "") + ' /> 保存并立即启动</label>';
+        }
+        html += '    <div class="modal-foot-actions">';
+        html += '      <button type="button" class="btn" data-modal-close>取消</button>';
+        if (isSsh) {
+          html += '      <button type="button" class="btn btn-primary" id="pfSaveBtn" data-pf-save>' + (m.ssh.startNow ? "保存并启动" : "保存 SSH 隧道") + "</button>";
+        } else {
+          html += '      <button type="button" class="btn btn-primary" id="pfSaveBtn" data-pf-save>保存 Xray 转发</button>';
+        }
+        html += "    </div>";
+        html += "  </div>";
+        html += "</div>";
+        return html;
+      }
+
+      function updatePortForwardLiveHints() {
+        var m = modalStack[modalStack.length - 1];
+        if (!m || m.type !== "port_forward") return;
+        if (m.mode === "ssh") {
+          var lanBox = document.getElementById("pfLiveLanWarn");
+          if (lanBox) {
+            var showLan = m.ssh.listenScope !== "loopback" && !isLoopbackIp(m.ssh.listenIp);
+            lanBox.innerHTML = showLan
+              ? '<div class="banner banner-warn">当前监听非回环地址（' + esc(m.ssh.listenIp || "0.0.0.0") + "），同一局域网下的其他主机也可访问此隧道端口，请确认目标服务安全策略。</div>"
+              : "";
+          }
+          var conflictBox = document.getElementById("pfLivePortConflict");
+          if (conflictBox) {
+            var conf = findPortConflict(m.ssh.listenPort, m.editSshId, "ssh");
+            if (conf) {
+              var freeP = findNextFreePort(Number(m.ssh.listenPort) + 1, m.editSshId, "ssh");
+              conflictBox.innerHTML =
+                '<div class="banner banner-danger">' +
+                '  <span>端口 ' + esc(m.ssh.listenPort) + " 已被" + esc(conf.source) + "占用。</span>" +
+                '  <button type="button" class="btn btn-xs btn-primary" data-pf-fix-port="' + freeP + '">改用空闲端口 (' + freeP + ")</button>" +
+                "</div>";
+            } else {
+              conflictBox.innerHTML = "";
+            }
+          }
+          var nameInput = document.getElementById("pfNameInput");
+          if (nameInput) {
+            nameInput.placeholder = "留空自动命名：" + buildAutoTunnelName(m.ssh.targetHost, m.ssh.targetPort);
+          }
+          var saveBtn = document.getElementById("pfSaveBtn");
+          if (saveBtn) {
+            saveBtn.textContent = m.ssh.startNow ? "保存并启动" : "保存 SSH 隧道";
+          }
+        } else {
+          var xConflict = document.getElementById("pfXrayConflict");
+          if (xConflict) {
+            var xConf = findPortConflict(m.xray.listenPort, m.editXrayId, "xray");
+            if (xConf) {
+              var xFree = findNextFreePort(Number(m.xray.listenPort) + 1, m.editXrayId, "xray");
+              xConflict.innerHTML =
+                '<div class="banner banner-danger">' +
+                '  <span>端口 ' + esc(m.xray.listenPort) + " 已被" + esc(xConf.source) + "占用。</span>" +
+                '  <button type="button" class="btn btn-xs btn-primary" data-pf-fix-xray-port="' + xFree + '">改用空闲端口 (' + xFree + ")</button>" +
+                "</div>";
+            } else {
+              xConflict.innerHTML = "";
+            }
+          }
+        }
+      }
+
+      function renderSshHostModalHtml(m) {
+        var hasCreds = state.sshCredentials.length > 0;
+        var html = "";
+        html += '<div class="modal-card" role="dialog" aria-modal="true" aria-label="' + esc(m.title) + '">';
+        html += '  <div class="modal-head">';
+        html += '    <h2 class="modal-title">' + esc(m.title) + "</h2>";
+        html += '    <button type="button" class="btn btn-sm" data-modal-close>取消</button>';
+        html += "  </div>";
+        html += '  <div class="modal-body">';
+        html += '    <div class="grid-target">';
+        html += '      <div class="field-group">';
+        html += '        <label class="field-label" for="shAddressInput">服务器地址（支持粘贴 user@host:2222）</label>';
+        html += '        <input id="shAddressInput" type="text" class="input mono" placeholder="如 bastion.corp 或 ops@bastion.corp:2222" value="' + esc(m.address) + '" />';
+        html += "      </div>";
+        html += '      <div class="field-group">';
+        html += '        <label class="field-label" for="shPortInput">SSH 端口</label>';
+        html += '        <input id="shPortInput" type="number" class="input mono" min="1" max="65535" value="' + esc(m.port) + '" />';
+        html += "      </div>";
+        html += "    </div>";
+
+        html += '    <div class="field-group">';
+        html += '      <label class="field-label" for="shNameInput">跳板机名称（可选，留空自动使用服务器地址）</label>';
+        html += '      <input id="shNameInput" type="text" class="input" value="' + esc(m.name) + '" placeholder="留空自动命名：' + esc((m.address || "").trim() || "bastion.corp") + '" />';
+        html += "    </div>";
+
+        // Credential section (Reuse or Inline Create)
+        html += '    <div class="field-group">';
+        html += '      <div class="field-label">';
+        html += '        <span>SSH 登录凭证</span>';
+        html += '        <div class="seg">';
+        html += '          <button type="button" class="seg-btn' + (m.credMode === "reuse" ? " active" : "") + '" data-sh-cred-mode="reuse"' + (!hasCreds ? ' disabled title="当前尚无已保存凭证，请直接填写新凭证"' : "") + ">复用已有凭证</button>";
+        html += '          <button type="button" class="seg-btn' + (m.credMode === "inline" ? " active" : "") + '" data-sh-cred-mode="inline">直接填写新凭证</button>';
+        html += "        </div>";
+        html += "      </div>";
+
+        if (m.credMode === "reuse") {
+          html += '      <select id="shCredSelect" class="select">';
+          for (var i = 0; i < state.sshCredentials.length; i++) {
+            var cr = state.sshCredentials[i];
+            html += '        <option value="' + esc(cr.id) + '"' + (cr.id === m.credentialId ? " selected" : "") + ">" + esc(cr.name + " · " + cr.username + " (" + (cr.authKind === "private_key" ? "私钥" : "密码") + ")") + "</option>";
+          }
+          html += "      </select>";
+        } else {
+          var ic = m.inlineCred;
+          html += '      <div class="inline-cred-box">';
+          html += '        <div class="row-flex" style="justify-content:space-between;">';
+          html += '          <span class="field-hint">保存跳板机时将自动生成并 DPAPI 加密保存此凭证</span>';
+          html += '          <div class="seg">';
+          html += '            <button type="button" class="seg-btn' + (ic.authKind === "password" ? " active" : "") + '" data-sh-inline-auth="password">账号密码</button>';
+          html += '            <button type="button" class="seg-btn' + (ic.authKind === "private_key" ? " active" : "") + '" data-sh-inline-auth="private_key">私钥文件</button>';
+          html += "          </div>";
+          html += "        </div>";
+          html += '        <div class="grid-2">';
+          html += '          <div class="field-group">';
+          html += '            <label class="field-label" for="shInlineUser">SSH 账号</label>';
+          html += '            <input id="shInlineUser" type="text" class="input mono" placeholder="如 ops / root" value="' + esc(ic.username) + '" />';
+          html += "          </div>";
+          html += '          <div class="field-group">';
+          html += '            <label class="field-label" for="shInlineCredName">凭证名称（可选，留空自动生成）</label>';
+          html += '            <input id="shInlineCredName" type="text" class="input" placeholder="留空自动命名：' + esc(buildAutoCredName(ic.username, ic.authKind)) + '" value="' + esc(ic.name) + '" />';
+          html += "          </div>";
+          html += "        </div>";
+          if (ic.authKind === "password") {
+            html += '        <div class="field-group">';
+            html += '          <label class="field-label" for="shInlinePwd">登录密码</label>';
+            html += '          <input id="shInlinePwd" type="password" class="input" placeholder="仅用于本机 DPAPI 加密存储，不回显" value="' + esc(ic.password) + '" />';
+            html += "        </div>";
+          } else {
+            html += '        <div class="grid-2">';
+            html += '          <div class="field-group">';
+            html += '            <label class="field-label" for="shInlineKeyPath">私钥文件路径</label>';
+            html += '            <input id="shInlineKeyPath" type="text" class="input mono" placeholder="如 C:\\Users\\me\\.ssh\\id_ed25519" value="' + esc(ic.keyPath) + '" />';
+            html += "          </div>";
+            html += '          <div class="field-group">';
+            html += '            <label class="field-label" for="shInlinePassphrase">私钥 Passphrase（可选）</label>';
+            html += '            <input id="shInlinePassphrase" type="password" class="input" placeholder="无密码保护则留空" value="' + esc(ic.passphrase) + '" />';
+            html += "          </div>";
+            html += "        </div>";
+          }
+          html += "      </div>";
+        }
+        html += "    </div>";
+
+        // Host Key Fingerprint & Probe & Test
+        html += '    <div class="field-group">';
+        html += '      <label class="field-label" for="shFpInput">服务器公钥指纹（Host Key SHA256 固定校验）</label>';
+        html += '      <div class="row-flex" style="flex-wrap:nowrap;">';
+        html += '        <input id="shFpInput" type="text" class="input mono" placeholder="SHA256:..." value="' + esc(m.fingerprint) + '" />';
+        html += '        <button type="button" class="btn btn-sm" id="shProbeBtn" data-sh-probe style="flex-shrink:0;"' + (m.probeState === "probing" ? " disabled" : "") + ">" + (m.probeState === "probing" ? "探测中…" : "探测指纹") + "</button>";
+        html += '        <button type="button" class="btn btn-sm" id="shTestBtn" data-sh-test style="flex-shrink:0;"' + (m.testState === "testing" ? " disabled" : "") + ">" + (m.testState === "testing" ? "测试中…" : "测试连接") + "</button>";
+        html += "      </div>";
+        html += '      <div id="shTestBanner">';
+        if (m.testMsg) {
+          var cls = m.testState === "ok" ? "banner-success" : (m.testState === "warn" ? "banner-warn" : "banner-info");
+          html += '        <div class="banner ' + cls + '">' + esc(m.testMsg) + "</div>";
+        }
+        html += "      </div>";
+        html += "    </div>";
+
+        html += '    <div id="shErrorBanner">' + (m.errorMsg ? ('<div class="banner banner-danger">' + esc(m.errorMsg) + "</div>") : "") + "</div>";
+        html += "  </div>";
+        html += '  <div class="modal-foot">';
+        html += '    <span class="field-hint">' + (m.fromPortForward ? "保存后将自动返回「端口转发」弹窗并选中此跳板机" : "仅作为 SSH 隧道跳板机登记") + "</span>";
+        html += '    <div class="modal-foot-actions">';
+        html += '      <button type="button" class="btn" data-modal-close>取消</button>';
+        html += '      <button type="button" class="btn btn-primary" data-sh-save>保存跳板机</button>';
+        html += "    </div>";
+        html += "  </div>";
+        html += "</div>";
+        return html;
+      }
+
+      function updateSshHostLiveHints() {
+        var m = modalStack[modalStack.length - 1];
+        if (!m || m.type !== "ssh_host") return;
+        var nameInput = document.getElementById("shNameInput");
+        if (nameInput) {
+          var cleaned = splitHostPort(m.address).host || "bastion.corp";
+          nameInput.placeholder = "留空自动命名：" + cleaned;
+        }
+        var icName = document.getElementById("shInlineCredName");
+        if (icName && m.credMode === "inline") {
+          icName.placeholder = "留空自动命名：" + buildAutoCredName(m.inlineCred.username, m.inlineCred.authKind);
+        }
+      }
+
+      function renderSshCredModalHtml(m) {
+        var html = "";
+        html += '<div class="modal-card" role="dialog" aria-modal="true" aria-label="' + esc(m.title) + '">';
+        html += '  <div class="modal-head">';
+        html += '    <h2 class="modal-title">' + esc(m.title) + "</h2>";
+        html += '    <button type="button" class="btn btn-sm" data-modal-close>取消</button>';
+        html += "  </div>";
+        html += '  <div class="modal-body">';
+        html += '    <div class="grid-2">';
+        html += '      <div class="field-group">';
+        html += '        <label class="field-label" for="scUserInput">SSH 账号</label>';
+        html += '        <input id="scUserInput" type="text" class="input mono" placeholder="如 ops" value="' + esc(m.username) + '" />';
+        html += "      </div>";
+        html += '      <div class="field-group">';
+        html += '        <label class="field-label" for="scNameInput">凭证名称（可选，留空自动生成）</label>';
+        html += '        <input id="scNameInput" type="text" class="input" placeholder="留空自动命名：' + esc(buildAutoCredName(m.username, m.authKind)) + '" value="' + esc(m.name) + '" />';
+        html += "      </div>";
+        html += "    </div>";
+        html += '    <div class="field-group">';
+        html += '      <div class="field-label">';
+        html += '        <span>认证方式</span>';
+        html += '        <div class="seg">';
+        html += '          <button type="button" class="seg-btn' + (m.authKind === "password" ? " active" : "") + '" data-sc-auth="password">账号密码</button>';
+        html += '          <button type="button" class="seg-btn' + (m.authKind === "private_key" ? " active" : "") + '" data-sc-auth="private_key">私钥文件</button>';
+        html += "        </div>";
+        html += "      </div>";
+        html += "    </div>";
+
+        if (m.authKind === "password") {
+          html += '    <div class="field-group">';
+          html += '      <label class="field-label" for="scPwdInput">登录密码</label>';
+          html += '      <input id="scPwdInput" type="password" class="input" placeholder="' + (m.editId ? "留空表示保持已加密存储的密码不变" : "请输入 SSH 登录密码") + '" value="' + esc(m.password) + '" />';
+          html += "    </div>";
+        } else {
+          html += '    <div class="grid-2">';
+          html += '      <div class="field-group">';
+          html += '        <label class="field-label" for="scKeyPathInput">私钥文件路径</label>';
+          html += '        <input id="scKeyPathInput" type="text" class="input mono" placeholder="如 C:\\Users\\me\\.ssh\\id_ed25519" value="' + esc(m.keyPath) + '" />';
+          html += "      </div>";
+          html += '      <div class="field-group">';
+          html += '        <label class="field-label" for="scPassphraseInput">私钥 Passphrase（可选）</label>';
+          html += '        <input id="scPassphraseInput" type="password" class="input" placeholder="' + (m.editId && m.hasExistingPassphrase ? "留空保持原加密 Passphrase 不变" : "无则留空") + '" value="' + esc(m.passphrase) + '" />';
+          html += "      </div>";
+          html += "    </div>";
+        }
+
+        html += '    <div class="banner banner-info">本地使用 Windows DPAPI 加密落盘；为保障凭据安全，已保存的明文密码与私钥密码不会在界面回显。</div>';
+        html += '    <div id="scErrorBanner">' + (m.errorMsg ? ('<div class="banner banner-danger">' + esc(m.errorMsg) + "</div>") : "") + "</div>";
+        html += "  </div>";
+        html += '  <div class="modal-foot">';
+        html += '    <div class="modal-foot-actions">';
+        html += '      <button type="button" class="btn" data-modal-close>取消</button>';
+        html += '      <button type="button" class="btn btn-primary" data-sc-save>保存凭证</button>';
+        html += "    </div>";
+        html += "  </div>";
+        html += "</div>";
+        return html;
+      }
+
+      function renderHighlightsModalHtml() {
+        var html = "";
+        html += '<div class="modal-card" role="dialog" aria-modal="true" aria-label="SSH 隧道交互优化亮点说明">';
+        html += '  <div class="modal-head">';
+        html += '    <h2 class="modal-title">SSH 隧道交互优化亮点说明</h2>';
+        html += '    <button type="button" class="btn btn-sm" data-modal-close>关闭</button>';
+        html += "  </div>";
+        html += '  <div class="modal-body">';
+        html += '    <div class="banner banner-info">产品边界保持纯粹：Proxy Pilot 始终聚焦本机代理（Xray Core / PAC）与本机转发通道（dokodemo-door / SSH Tunnel），不引入 SFTP 文件管理、不翻转为远端主机视角、不做外部终端命令桥接。</div>';
+        html += '    <ul class="highlights-list">';
+        html += '      <li><strong>一站式闭环建隧道（消除三页往返）</strong>：新建 SSH 隧道弹窗内可点 <code>+ 新建跳板机</code>，而在新建跳板机弹窗内当场即可「直接填写新凭证」（首配时默认展开），保存后自动选中并返回继续配隧道。</li>';
+        html += '      <li><strong>粘贴 <span class="mono">ssh -L</span> 命令自动解析</strong>：粘贴类似 <span class="mono">ssh -L 15432:10.0.1.8:5432 ops@bastion.corp -p 2222</span> 即可自动拆解本地端口、目标主机与端口，并自动匹配已有跳板机或一键按解析结果新建跳板机。</li>';
+        html += '      <li><strong>常见服务端口预设 + 端口冲突秒修 + 自动命名</strong>：提供 22 / 3306 / 5432 / 6379 / 8080 / 3389 一键预设、目标 <span class="mono">host:port</span> 粘贴自动拆分、实时监听端口占用检测（一键「改用空闲端口」）以及留空自动生成可读备注名。</li>';
+        html += '      <li><strong>保存并立即启动 & 批量启停 / 一键克隆 / 复制地址</strong>：新建或克隆默认勾选「保存并立即启动」；2 条以上隧道在「总览」和「转发规则」均提供「全部启动 / 全部停止」，每行一键复制本机连接地址（如 <span class="mono">127.0.0.1:15432</span>）。</li>';
+        html += '      <li><strong>跳板机主动「+ 转发」与「测试连接」</strong>：在「SSH 跳板机」列表可直接点 <code>+ 转发</code> 带入跳板机与下一个空闲端口，也可先点 <code>测试连接</code> 验证指纹与认证后再启动隧道。</li>';
+        html += '      <li><strong>严格解耦 Xray 草稿校验</strong>：即使处于「Xray 草稿 JSON 语法错误」场景，SSH 隧道的新建、编辑、克隆与启停也完全不受阻塞。</li>';
+        html += "    </ul>";
+        html += "  </div>";
+        html += '  <div class="modal-foot">';
+        html += '    <div class="modal-foot-actions"><button type="button" class="btn btn-primary" data-modal-close>知道了</button></div>';
+        html += "  </div>";
+        html += "</div>";
+        return html;
+      }
+
+      function renderModal() {
+        var root = document.getElementById("modalRoot");
+        if (!modalStack.length) {
+          root.innerHTML = "";
+          return;
+        }
+        var top = modalStack[modalStack.length - 1];
+        var inner = "";
+        if (top.type === "port_forward") {
+          inner = renderPortForwardModalHtml(top);
+        } else if (top.type === "ssh_host") {
+          inner = renderSshHostModalHtml(top);
+        } else if (top.type === "ssh_cred") {
+          inner = renderSshCredModalHtml(top);
+        } else if (top.type === "highlights") {
+          inner = renderHighlightsModalHtml();
+        }
+        root.innerHTML = '<div class="modal-backdrop" data-backdrop-close>' + inner + "</div>";
+        if (top.type === "port_forward") {
+          updatePortForwardLiveHints();
+        } else if (top.type === "ssh_host") {
+          updateSshHostLiveHints();
+        }
+      }
+
+      /* ---------------- Save Handlers ---------------- */
+      function savePortForwardModal() {
+        var m = modalStack[modalStack.length - 1];
+        if (!m || m.type !== "port_forward") return;
+        m.errorMsg = "";
+
+        if (m.mode === "ssh") {
+          var hostId = m.ssh.sshHostId;
+          var targetHost = (m.ssh.targetHost || "").trim();
+          var targetPort = Number(m.ssh.targetPort);
+          var listenIp = (m.ssh.listenIp || "").trim() || "127.0.0.1";
+          var listenPort = Number(m.ssh.listenPort);
+
+          if (!hostId || !getHostById(hostId)) {
+            m.errorMsg = "请先选择或新建一台 SSH 跳板机。";
+          } else if (!targetHost) {
+            m.errorMsg = "请填写目标地址（例如 10.0.1.8 或 127.0.0.1）。";
+          } else if (!targetPort || targetPort < 1 || targetPort > 65535) {
+            m.errorMsg = "目标端口必须在 1 ~ 65535 之间。";
+          } else if (!listenPort || listenPort < 1 || listenPort > 65535) {
+            m.errorMsg = "本机监听端口必须在 1 ~ 65535 之间。";
+          } else if (findPortConflict(listenPort, m.editSshId, "ssh")) {
+            m.errorMsg = "本机端口 " + listenPort + " 已被其他转发规则占用，请修改或点击上方「改用空闲端口」。";
+          }
+
+          if (m.errorMsg) {
+            var errBox = document.getElementById("pfLiveError");
+            if (errBox) errBox.innerHTML = '<div class="banner banner-danger">' + esc(m.errorMsg) + "</div>";
+            return;
+          }
+
+          var finalName = (m.ssh.name || "").trim() || buildAutoTunnelName(targetHost, targetPort);
+          var savedId = m.editSshId;
+
+          if (m.editSshId) {
+            var existing = getForwardById(m.editSshId);
+            if (existing) {
+              existing.name = finalName;
+              existing.sshHostId = hostId;
+              existing.listenScope = m.ssh.listenScope;
+              existing.listenIp = listenIp;
+              existing.listenPort = listenPort;
+              existing.targetHost = targetHost;
+              existing.targetPort = targetPort;
+              if (!m.ssh.startNow) {
+                existing.state = "stopped";
+              }
+            }
+          } else {
+            savedId = nextUid("sf");
+            state.sshForwards.push({
+              id: savedId,
+              name: finalName,
+              sshHostId: hostId,
+              listenScope: m.ssh.listenScope,
+              listenIp: listenIp,
+              listenPort: listenPort,
+              targetHost: targetHost,
+              targetPort: targetPort,
+              state: "stopped",
+              lastError: ""
+            });
+          }
+
+          var startAfter = !!m.ssh.startNow;
+          modalStack = [];
+          renderModal();
+          renderApp();
+          if (startAfter) {
+            toggleTunnelState(savedId);
+          } else {
+            showToast("已保存 SSH 隧道「" + finalName + "」", "success");
+          }
+          return;
+        }
+
+        // Xray forward save
+        var xListenIp = (m.xray.listenIp || "").trim() || "127.0.0.1";
+        var xListenPort = Number(m.xray.listenPort);
+        var xTargetHost = (m.xray.targetHost || "").trim();
+        var xTargetPort = Number(m.xray.targetPort);
+        if (!xTargetHost || !xTargetPort || xTargetPort < 1 || xTargetPort > 65535 || !xListenPort || xListenPort < 1 || xListenPort > 65535) {
+          m.errorMsg = "请检查 Xray 转发的监听端口与目标地址端口。";
+        } else if (findPortConflict(xListenPort, m.editXrayId, "xray")) {
+          m.errorMsg = "本机端口 " + xListenPort + " 已被占用。";
+        }
+        if (m.errorMsg) {
+          var xErr = document.getElementById("pfLiveError");
+          if (xErr) xErr.innerHTML = '<div class="banner banner-danger">' + esc(m.errorMsg) + "</div>";
+          return;
+        }
+        var xName = (m.xray.name || "").trim() || ("Xray " + xTargetHost + ":" + xTargetPort);
+        if (m.editXrayId) {
+          for (var i = 0; i < state.xrayForwards.length; i++) {
+            if (state.xrayForwards[i].id === m.editXrayId) {
+              state.xrayForwards[i].protocol = m.xray.protocol;
+              state.xrayForwards[i].listenIp = xListenIp;
+              state.xrayForwards[i].listenPort = xListenPort;
+              state.xrayForwards[i].targetHost = xTargetHost;
+              state.xrayForwards[i].targetPort = xTargetPort;
+              state.xrayForwards[i].outboundTag = m.xray.outboundTag;
+              state.xrayForwards[i].name = xName;
+            }
+          }
+        } else {
+          state.xrayForwards.push({
+            id: nextUid("xf"),
+            name: xName,
+            protocol: m.xray.protocol,
+            listenIp: xListenIp,
+            listenPort: xListenPort,
+            targetHost: xTargetHost,
+            targetPort: xTargetPort,
+            outboundTag: m.xray.outboundTag
+          });
+        }
+        modalStack = [];
+        renderModal();
+        renderApp();
+        showToast("已保存 Xray 转发「" + xName + "」", "success");
+      }
+
+      function saveSshHostModal() {
+        var m = modalStack[modalStack.length - 1];
+        if (!m || m.type !== "ssh_host") return;
+        m.errorMsg = "";
+
+        var parsedAddr = splitHostPort(m.address);
+        var cleanHost = parsedAddr.host;
+        var port = Number(parsedAddr.port || m.port || 22);
+        var hostName = (m.name || "").trim() || cleanHost;
+        var credId = m.credentialId;
+
+        if (!cleanHost) {
+          m.errorMsg = "请填写 SSH 跳板机服务器地址。";
+        } else if (!port || port < 1 || port > 65535) {
+          m.errorMsg = "SSH 端口必须在 1 ~ 65535 之间。";
+        } else if (m.credMode === "reuse") {
+          if (!credId || !getCredById(credId)) {
+            m.errorMsg = "请选择已有凭证，或切换到「直接填写新凭证」。";
+          }
+        } else {
+          var ic = m.inlineCred;
+          var icUser = (ic.username || parsedAddr.user || "").trim();
+          if (!icUser) {
+            m.errorMsg = "请填写新凭证的 SSH 账号。";
+          } else if (ic.authKind === "password" && !(ic.password || "").trim()) {
+            m.errorMsg = "请填写登录密码（或切换到私钥文件模式）。";
+          } else if (ic.authKind === "private_key" && !(ic.keyPath || "").trim()) {
+            m.errorMsg = "请填写私钥文件路径。";
+          } else {
+            var newCredId = nextUid("cred");
+            var newCredName = (ic.name || "").trim() || buildAutoCredName(icUser, ic.authKind);
+            state.sshCredentials.push({
+              id: newCredId,
+              name: newCredName,
+              username: icUser,
+              authKind: ic.authKind,
+              keyPath: ic.authKind === "private_key" ? ic.keyPath.trim() : "",
+              hasPassphrase: ic.authKind === "private_key" && !!(ic.passphrase || "").trim(),
+              dpapiEncrypted: true
+            });
+            credId = newCredId;
+          }
+        }
+
+        if (m.errorMsg) {
+          var errBox = document.getElementById("shErrorBanner");
+          if (errBox) errBox.innerHTML = '<div class="banner banner-danger">' + esc(m.errorMsg) + "</div>";
+          return;
+        }
+
+        var savedHostId = m.editId;
+        if (m.editId) {
+          var existing = getHostById(m.editId);
+          if (existing) {
+            existing.name = hostName;
+            existing.address = cleanHost;
+            existing.port = port;
+            existing.credentialId = credId;
+            existing.fingerprint = (m.fingerprint || "").trim();
+          }
+        } else {
+          savedHostId = nextUid("host");
+          state.sshHosts.push({
+            id: savedHostId,
+            name: hostName,
+            address: cleanHost,
+            port: port,
+            credentialId: credId,
+            fingerprint: (m.fingerprint || "").trim(),
+            lastTestStatus: "",
+            lastTestMsg: ""
+          });
+        }
+
+        modalStack.pop();
+        if (modalStack.length && modalStack[modalStack.length - 1].type === "port_forward") {
+          var pf = modalStack[modalStack.length - 1];
+          pf.ssh.sshHostId = savedHostId;
+          if (pf.cmdParseResult) {
+            pf.cmdParseResult.matchedHost = getHostById(savedHostId);
+          }
+        }
+        renderModal();
+        renderApp();
+        showToast("已保存跳板机「" + hostName + "」", "success");
+      }
+
+      function saveSshCredModal() {
+        var m = modalStack[modalStack.length - 1];
+        if (!m || m.type !== "ssh_cred") return;
+        m.errorMsg = "";
+        var user = (m.username || "").trim();
+        if (!user) {
+          m.errorMsg = "请填写 SSH 账号。";
+        } else if (!m.editId && m.authKind === "password" && !(m.password || "").trim()) {
+          m.errorMsg = "新建密码凭证时请填写登录密码。";
+        } else if (m.authKind === "private_key" && !(m.keyPath || "").trim()) {
+          m.errorMsg = "请填写私钥文件路径。";
+        }
+
+        if (m.errorMsg) {
+          var errBox = document.getElementById("scErrorBanner");
+          if (errBox) errBox.innerHTML = '<div class="banner banner-danger">' + esc(m.errorMsg) + "</div>";
+          return;
+        }
+
+        var credName = (m.name || "").trim() || buildAutoCredName(user, m.authKind);
+        if (m.editId) {
+          var existing = getCredById(m.editId);
+          if (existing) {
+            existing.name = credName;
+            existing.username = user;
+            existing.authKind = m.authKind;
+            existing.keyPath = m.authKind === "private_key" ? m.keyPath.trim() : "";
+            if (m.authKind === "private_key" && (m.passphrase || "").trim()) {
+              existing.hasPassphrase = true;
+            } else if (m.authKind === "password") {
+              existing.hasPassphrase = false;
+            }
+          }
+        } else {
+          state.sshCredentials.push({
+            id: nextUid("cred"),
+            name: credName,
+            username: user,
+            authKind: m.authKind,
+            keyPath: m.authKind === "private_key" ? m.keyPath.trim() : "",
+            hasPassphrase: m.authKind === "private_key" && !!(m.passphrase || "").trim(),
+            dpapiEncrypted: true
+          });
+        }
+        modalStack.pop();
+        renderModal();
+        renderApp();
+        showToast("已保存 SSH 凭证「" + credName + "」", "success");
+      }
+
+      /* ---------------- Event Wiring ---------------- */
+      document.getElementById("scenarioSelect").addEventListener("change", function (e) {
+        modalStack = [];
+        state = createScenarioData(e.target.value);
+        renderModal();
+        renderApp();
+        showToast("已切换演示场景");
+      });
+
+      document.getElementById("themeToggleBtn").addEventListener("click", function () {
+        theme = theme === "light" ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", theme);
+        this.textContent = theme === "light" ? "切换深色" : "切换浅色";
+      });
+
+      document.getElementById("resetScenarioBtn").addEventListener("click", function () {
+        var cur = document.getElementById("scenarioSelect").value;
+        modalStack = [];
+        state = createScenarioData(cur);
+        renderModal();
+        renderApp();
+        showToast("已重置当前场景初始数据");
+      });
+
+      document.getElementById("highlightsBtn").addEventListener("click", openHighlightsModal);
+
+      document.addEventListener("click", function (e) {
+        var btn = e.target.closest("button");
+        if (!btn) {
+          if (e.target.hasAttribute("data-backdrop-close")) {
+            closeTopModal();
+          }
+          return;
+        }
+
+        if (btn.hasAttribute("data-modal-close")) {
+          closeTopModal();
+          return;
+        }
+
+        var nav = btn.getAttribute("data-nav");
+        if (nav) {
+          state.activeNav = nav;
+          renderApp();
+          return;
+        }
+
+        var pm = btn.getAttribute("data-proxy-mode");
+        if (pm) {
+          state.proxyMode = pm;
+          renderApp();
+          showToast("代理模式已切换为：" + (pm === "direct" ? "直连" : (pm === "global" ? "全局" : "PAC")));
+          return;
+        }
+
+        var cfgTab = btn.getAttribute("data-cfg-tab");
+        if (cfgTab) {
+          state.activeConfigTab = cfgTab;
+          renderApp();
+          return;
+        }
+
+        var subtab = btn.getAttribute("data-fwd-subtab");
+        if (subtab) {
+          state.activeForwardSubtab = subtab;
+          renderApp();
+          return;
+        }
+
+        var action = btn.getAttribute("data-action");
+        if (action === "toggle-core") {
+          if (!state.coreRunning && state.brokenXrayJson) {
+            showToast("Xray 草稿存在 JSON 语法错误，无法启动 Core；SSH 隧道仍可独立运行", "warn");
+            return;
+          }
+          state.coreRunning = !state.coreRunning;
+          renderApp();
+          showToast(state.coreRunning ? "Xray Core 已启动" : "Xray Core 已停止（独立 SSH 隧道保持原有状态）");
+          return;
+        }
+        if (action === "restart-core") {
+          showToast("已平滑重启 Xray Core（SSH 隧道保持连接不中断）", "success");
+          return;
+        }
+        if (action === "go-config") {
+          state.activeNav = "config";
+          renderApp();
+          return;
+        }
+        if (action === "go-diag") {
+          state.activeNav = "diag";
+          renderApp();
+          return;
+        }
+        if (action === "go-forwards") {
+          state.activeNav = "config";
+          state.activeConfigTab = "forwards";
+          state.activeForwardSubtab = "rules";
+          renderApp();
+          return;
+        }
+        if (action === "open-new-ssh") {
+          openPortForwardModal({ mode: "ssh" });
+          return;
+        }
+        if (action === "open-new-xray") {
+          openPortForwardModal({ mode: "xray" });
+          return;
+        }
+        if (action === "start-all-ssh") {
+          startAllTunnels();
+          return;
+        }
+        if (action === "stop-all-ssh") {
+          stopAllTunnels();
+          return;
+        }
+        if (action === "open-new-host") {
+          openSshHostModal();
+          return;
+        }
+        if (action === "open-new-cred") {
+          openSshCredModal();
+          return;
+        }
+        if (action === "fix-json-demo") {
+          state.brokenXrayJson = false;
+          state.coreRunning = true;
+          renderApp();
+          showToast("已模拟修复 Xray JSON 草稿并恢复 Xray 转发编辑", "success");
+          return;
+        }
+
+        var copySshId = btn.getAttribute("data-copy-ssh");
+        if (copySshId) {
+          var copyFwd = getForwardById(copySshId);
+          if (copyFwd) {
+            var addr = getCopyAddress(copyFwd);
+            copyTextToClipboard(addr, "已复制本地连接地址：" + addr);
+          }
+          return;
+        }
+
+        var toggleSshId = btn.getAttribute("data-toggle-ssh");
+        if (toggleSshId) {
+          toggleTunnelState(toggleSshId);
+          return;
+        }
+
+        var cloneSshId = btn.getAttribute("data-clone-ssh");
+        if (cloneSshId) {
+          openPortForwardModal({ mode: "ssh", cloneSshId: cloneSshId });
+          return;
+        }
+
+        var editSshId = btn.getAttribute("data-edit-ssh");
+        if (editSshId) {
+          openPortForwardModal({ mode: "ssh", editSshId: editSshId });
+          return;
+        }
+
+        var delSshId = btn.getAttribute("data-del-ssh");
+        if (delSshId) {
+          state.sshForwards = state.sshForwards.filter(function (f) { return f.id !== delSshId; });
+          renderApp();
+          showToast("已删除 SSH 隧道转发规则");
+          return;
+        }
+
+        var editXrayId = btn.getAttribute("data-edit-xray");
+        if (editXrayId) {
+          openPortForwardModal({ mode: "xray", editXrayId: editXrayId });
+          return;
+        }
+
+        var delXrayId = btn.getAttribute("data-del-xray");
+        if (delXrayId) {
+          state.xrayForwards = state.xrayForwards.filter(function (f) { return f.id !== delXrayId; });
+          renderApp();
+          showToast("已删除 Xray 端口转发规则");
+          return;
+        }
+
+        var quickHostId = btn.getAttribute("data-quick-forward-host");
+        if (quickHostId) {
+          openPortForwardModal({ mode: "ssh", preselectHostId: quickHostId });
+          return;
+        }
+
+        var testHostId = btn.getAttribute("data-test-host");
+        if (testHostId) {
+          testHostConnection(testHostId);
+          return;
+        }
+
+        var editHostId = btn.getAttribute("data-edit-host");
+        if (editHostId) {
+          openSshHostModal({ editId: editHostId });
+          return;
+        }
+
+        var delHostId = btn.getAttribute("data-del-host");
+        if (delHostId) {
+          state.sshHosts = state.sshHosts.filter(function (h) { return h.id !== delHostId; });
+          renderApp();
+          showToast("已删除 SSH 跳板机");
+          return;
+        }
+
+        var editCredId = btn.getAttribute("data-edit-cred");
+        if (editCredId) {
+          openSshCredModal({ editId: editCredId });
+          return;
+        }
+
+        var delCredId = btn.getAttribute("data-del-cred");
+        if (delCredId) {
+          state.sshCredentials = state.sshCredentials.filter(function (c) { return c.id !== delCredId; });
+          renderApp();
+          showToast("已删除 SSH 凭证");
+          return;
+        }
+
+        /* ----- Inside Modals ----- */
+        var top = modalStack[modalStack.length - 1];
+        if (!top) return;
+
+        if (top.type === "port_forward") {
+          var pfMode = btn.getAttribute("data-pf-mode");
+          if (pfMode) {
+            top.mode = pfMode;
+            top.errorMsg = "";
+            renderModal();
+            return;
+          }
+          if (btn.hasAttribute("data-pf-fill-example")) {
+            top.cmdText = "ssh -L 15432:10.0.1.8:5432 ops@bastion.corp -p 2222";
+            applyParsedSshCommand(top);
+            return;
+          }
+          if (btn.hasAttribute("data-pf-parse-cmd")) {
+            applyParsedSshCommand(top);
+            return;
+          }
+          if (btn.hasAttribute("data-pf-create-parsed-host") && top.cmdParseResult) {
+            openSshHostModal({
+              fromPortForward: true,
+              prefillHost: top.cmdParseResult.jumpHost,
+              prefillPort: top.cmdParseResult.sshPort,
+              prefillUser: top.cmdParseResult.user,
+              preferInlineCred: true
+            });
+            return;
+          }
+          if (btn.hasAttribute("data-pf-new-host")) {
+            openSshHostModal({ fromPortForward: true });
+            return;
+          }
+          var pHost = btn.getAttribute("data-pf-preset-host");
+          if (pHost) {
+            top.ssh.targetHost = pHost;
+            renderModal();
+            return;
+          }
+          var pPort = btn.getAttribute("data-pf-preset-port");
+          if (pPort) {
+            top.ssh.targetPort = pPort;
+            renderModal();
+            return;
+          }
+          var scope = btn.getAttribute("data-pf-scope");
+          if (scope) {
+            top.ssh.listenScope = scope;
+            if (scope === "loopback") top.ssh.listenIp = "127.0.0.1";
+            else if (scope === "lan") top.ssh.listenIp = "0.0.0.0";
+            else if (isLoopbackIp(top.ssh.listenIp) || top.ssh.listenIp === "0.0.0.0") top.ssh.listenIp = "192.168.1.50";
+            renderModal();
+            return;
+          }
+          if (btn.hasAttribute("data-pf-same-port")) {
+            if (Number(top.ssh.targetPort) > 0) {
+              top.ssh.listenPort = String(top.ssh.targetPort);
+              var lpInput = document.getElementById("pfListenPort");
+              if (lpInput) lpInput.value = top.ssh.listenPort;
+              updatePortForwardLiveHints();
+            }
+            return;
+          }
+          var fixPort = btn.getAttribute("data-pf-fix-port");
+          if (fixPort) {
+            top.ssh.listenPort = fixPort;
+            var lpEl = document.getElementById("pfListenPort");
+            if (lpEl) lpEl.value = fixPort;
+            updatePortForwardLiveHints();
+            return;
+          }
+          var fixXrayPort = btn.getAttribute("data-pf-fix-xray-port");
+          if (fixXrayPort) {
+            top.xray.listenPort = fixXrayPort;
+            var xlpEl = document.getElementById("pfXrayListenPort");
+            if (xlpEl) xlpEl.value = fixXrayPort;
+            updatePortForwardLiveHints();
+            return;
+          }
+          if (btn.hasAttribute("data-pf-save")) {
+            savePortForwardModal();
+            return;
+          }
+        }
+
+        if (top.type === "ssh_host") {
+          var shCredMode = btn.getAttribute("data-sh-cred-mode");
+          if (shCredMode) {
+            top.credMode = shCredMode;
+            top.errorMsg = "";
+            renderModal();
+            return;
+          }
+          var shInlineAuth = btn.getAttribute("data-sh-inline-auth");
+          if (shInlineAuth) {
+            top.inlineCred.authKind = shInlineAuth;
+            top.errorMsg = "";
+            renderModal();
+            return;
+          }
+          if (btn.hasAttribute("data-sh-probe")) {
+            if (!(top.address || "").trim()) {
+              top.testState = "warn";
+              top.testMsg = "请先填写跳板机服务器地址再探测指纹。";
+              renderModal();
+              return;
+            }
+            top.probeState = "probing";
+            top.testState = "testing";
+            top.testMsg = "正在连接跳板机获取主机公钥指纹…";
+            renderModal();
+            setTimeout(function () {
+              var curTop = modalStack[modalStack.length - 1];
+              if (!curTop || curTop.type !== "ssh_host") return;
+              curTop.probeState = "done";
+              curTop.fingerprint = "SHA256:9xQ4kLm2pV7wZ1nC8tB5rY3jH6sD0fG2eA4uN7qP9";
+              curTop.testState = "ok";
+              curTop.testMsg = "已探测并固定 SHA256 主机指纹，请确认无误后保存。";
+              renderModal();
+            }, 350);
+            return;
+          }
+          if (btn.hasAttribute("data-sh-test")) {
+            top.testState = "testing";
+            top.testMsg = "正在模拟 SSH 握手与凭证校验…";
+            renderModal();
+            setTimeout(function () {
+              var curTop = modalStack[modalStack.length - 1];
+              if (!curTop || curTop.type !== "ssh_host") return;
+              if (!(curTop.address || "").trim()) {
+                curTop.testState = "warn";
+                curTop.testMsg = "服务器地址不能为空。";
+              } else if (!(curTop.fingerprint || "").trim()) {
+                curTop.testState = "warn";
+                curTop.testMsg = "请先点击「探测指纹」固定服务器 SHA256 指纹后再测试连接。";
+              } else if (curTop.credMode === "inline" && !(curTop.inlineCred.username || "").trim()) {
+                curTop.testState = "warn";
+                curTop.testMsg = "请先填写新凭证的 SSH 账号后再测试连接。";
+              } else {
+                curTop.testState = "ok";
+                curTop.testMsg = "握手与身份校验成功（模拟 RTT 21 ms）。";
+              }
+              renderModal();
+            }, 400);
+            return;
+          }
+          if (btn.hasAttribute("data-sh-save")) {
+            saveSshHostModal();
+            return;
+          }
+        }
+
+        if (top.type === "ssh_cred") {
+          var scAuth = btn.getAttribute("data-sc-auth");
+          if (scAuth) {
+            top.authKind = scAuth;
+            top.errorMsg = "";
+            renderModal();
+            return;
+          }
+          if (btn.hasAttribute("data-sc-save")) {
+            saveSshCredModal();
+            return;
+          }
+        }
+      });
+
+      function applyParsedSshCommand(m) {
+        var res = parseSshLCommand(m.cmdText);
+        if (!res.ok) {
+          m.cmdError = res.error;
+          m.cmdParseResult = null;
+          renderModal();
+          return;
+        }
+        m.cmdError = "";
+        m.cmdParseResult = res;
+        m.ssh.targetHost = res.targetHost;
+        m.ssh.targetPort = String(res.targetPort);
+        if (res.listenIp === "0.0.0.0") {
+          m.ssh.listenScope = "lan";
+          m.ssh.listenIp = "0.0.0.0";
+        } else if (isLoopbackIp(res.listenIp)) {
+          m.ssh.listenScope = "loopback";
+          m.ssh.listenIp = "127.0.0.1";
+        } else {
+          m.ssh.listenScope = "custom";
+          m.ssh.listenIp = res.listenIp;
+        }
+        m.ssh.listenPort = String(res.listenPort);
+        if (res.matchedHost) {
+          m.ssh.sshHostId = res.matchedHost.id;
+        }
+        renderModal();
+        showToast("已解析 ssh -L 命令并填入表单", "success");
+      }
+
+      /* Live input sync WITHOUT full modal innerHTML re-render (preserves focus/caret) */
+      document.addEventListener("input", function (e) {
+        var top = modalStack[modalStack.length - 1];
+        if (!top) return;
+        var el = e.target;
+        var id = el.id;
+
+        if (top.type === "port_forward") {
+          if (id === "pfCmdInput") { top.cmdText = el.value; return; }
+          if (id === "pfTargetHost") {
+            var sp = splitHostPort(el.value);
+            if (sp.port && el.value.indexOf(":") !== -1 && (el.value.indexOf("]") !== -1 || (el.value.match(/:/g) || []).length === 1)) {
+              top.ssh.targetHost = sp.host;
+              top.ssh.targetPort = String(sp.port);
+              el.value = sp.host;
+              var tpInput = document.getElementById("pfTargetPort");
+              if (tpInput) tpInput.value = String(sp.port);
+              showToast("已自动拆分目标地址与端口：" + sp.host + ":" + sp.port);
+            } else {
+              top.ssh.targetHost = el.value;
+            }
+            updatePortForwardLiveHints();
+            return;
+          }
+          if (id === "pfTargetPort") { top.ssh.targetPort = el.value; updatePortForwardLiveHints(); return; }
+          if (id === "pfListenIp") { top.ssh.listenIp = el.value; updatePortForwardLiveHints(); return; }
+          if (id === "pfListenPort") { top.ssh.listenPort = el.value; updatePortForwardLiveHints(); return; }
+          if (id === "pfNameInput") { top.ssh.name = el.value; return; }
+          if (id === "pfXrayListenIp") { top.xray.listenIp = el.value; return; }
+          if (id === "pfXrayListenPort") { top.xray.listenPort = el.value; updatePortForwardLiveHints(); return; }
+          if (id === "pfXrayTargetHost") { top.xray.targetHost = el.value; return; }
+          if (id === "pfXrayTargetPort") { top.xray.targetPort = el.value; return; }
+          if (id === "pfXrayName") { top.xray.name = el.value; return; }
+        }
+
+        if (top.type === "ssh_host") {
+          if (id === "shAddressInput") { top.address = el.value; updateSshHostLiveHints(); return; }
+          if (id === "shPortInput") { top.port = el.value; return; }
+          if (id === "shNameInput") { top.name = el.value; return; }
+          if (id === "shFpInput") { top.fingerprint = el.value; return; }
+          if (id === "shInlineUser") { top.inlineCred.username = el.value; updateSshHostLiveHints(); return; }
+          if (id === "shInlineCredName") { top.inlineCred.name = el.value; return; }
+          if (id === "shInlinePwd") { top.inlineCred.password = el.value; return; }
+          if (id === "shInlineKeyPath") { top.inlineCred.keyPath = el.value; return; }
+          if (id === "shInlinePassphrase") { top.inlineCred.passphrase = el.value; return; }
+        }
+
+        if (top.type === "ssh_cred") {
+          if (id === "scUserInput") {
+            top.username = el.value;
+            var scNameEl = document.getElementById("scNameInput");
+            if (scNameEl) scNameEl.placeholder = "留空自动命名：" + buildAutoCredName(top.username, top.authKind);
+            return;
+          }
+          if (id === "scNameInput") { top.name = el.value; return; }
+          if (id === "scPwdInput") { top.password = el.value; return; }
+          if (id === "scKeyPathInput") { top.keyPath = el.value; return; }
+          if (id === "scPassphraseInput") { top.passphrase = el.value; return; }
+        }
+      });
+
+      function maybeApplyHostAddrSplit(top, rawValue) {
+        var sp = splitHostPort(rawValue);
+        if (!sp.user && !sp.port) return false;
+        top.address = sp.host;
+        var addrEl = document.getElementById("shAddressInput");
+        if (addrEl) addrEl.value = sp.host;
+        if (sp.port) {
+          top.port = String(sp.port);
+          var portEl = document.getElementById("shPortInput");
+          if (portEl) portEl.value = String(sp.port);
+        }
+        if (sp.user && top.credMode === "inline") {
+          top.inlineCred.username = sp.user;
+          var uEl = document.getElementById("shInlineUser");
+          if (uEl) uEl.value = sp.user;
+        }
+        updateSshHostLiveHints();
+        showToast("已自动拆分服务器地址" + (sp.port ? "与端口" : "") + (sp.user ? "并填入账号" : ""));
+        return true;
+      }
+
+      document.addEventListener("paste", function (e) {
+        var top = modalStack[modalStack.length - 1];
+        if (!top || top.type !== "ssh_host" || e.target.id !== "shAddressInput") return;
+        setTimeout(function () {
+          maybeApplyHostAddrSplit(top, e.target.value);
+        }, 0);
+      });
+
+      document.addEventListener("blur", function (e) {
+        var top = modalStack[modalStack.length - 1];
+        if (!top || top.type !== "ssh_host" || e.target.id !== "shAddressInput") return;
+        maybeApplyHostAddrSplit(top, e.target.value);
+      }, true);
+
+      document.addEventListener("change", function (e) {
+        var top = modalStack[modalStack.length - 1];
+        if (!top) return;
+        var el = e.target;
+        var id = el.id;
+        if (top.type === "port_forward") {
+          if (id === "pfHostSelect") { top.ssh.sshHostId = el.value; return; }
+          if (id === "pfStartNowCheck") {
+            top.ssh.startNow = el.checked;
+            updatePortForwardLiveHints();
+            return;
+          }
+          if (id === "pfXrayProto") { top.xray.protocol = el.value; return; }
+          if (id === "pfXrayOutbound") { top.xray.outboundTag = el.value; return; }
+        }
+        if (top.type === "ssh_host" && id === "shCredSelect") {
+          top.credentialId = el.value;
+        }
+      });
+
+      document.addEventListener("keydown", function (e) {
+        if (e.key === "Escape" && modalStack.length) {
+          closeTopModal();
+        }
+      });
+
+      renderApp();
+    })();
+  </script>
+</body>
+</html>

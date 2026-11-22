@@ -2,7 +2,7 @@
 use crate::ssh_store::ResolvedCredential;
 use proxy_model::{
     Error, Result, SshAuthKind, SshForward, SshForwardRuntime, SshForwardState, SshHost,
-    SshHostKeyProbe,
+    SshHostKeyProbe, SshHostTestResult,
 };
 use proxy_runtime::Logs;
 use russh::{
@@ -224,6 +224,24 @@ async fn establish_session(
     }
 }
 
+pub async fn test_host_connection(
+    host: &SshHost,
+    cred: &ResolvedCredential,
+) -> Result<SshHostTestResult> {
+    let started = std::time::Instant::now();
+    let session = establish_session(host, cred).await?;
+    let latency_ms = started.elapsed().as_millis() as u64;
+    let _ = session
+        .disconnect(russh::Disconnect::ByApplication, "", "en")
+        .await;
+    Ok(SshHostTestResult {
+        host: host.host.clone(),
+        port: host.port,
+        username: cred.username.clone(),
+        latency_ms,
+    })
+}
+
 fn format_methods(methods: &MethodSet) -> String {
     let list: Vec<&str> = methods.iter().map(<&'static str>::from).collect();
     if list.is_empty() {
@@ -288,6 +306,10 @@ impl SshTunnelManager {
 
     pub fn is_running(&self, forward_id: &str) -> bool {
         self.active.contains_key(forward_id)
+    }
+
+    pub fn record_error(&self, forward_id: &str, message: impl Into<String>) {
+        self.set_runtime(forward_id, SshForwardState::Error, Some(message.into()));
     }
 
     pub async fn start_forward(
@@ -799,5 +821,71 @@ mod tests {
         conn2.read_exact(&mut reply2).await.unwrap();
         assert_eq!(&reply2, b"key-forward");
         manager.stop_all().await;
+
+        // 4. Host connection test checks missing fingerprint, mismatch, password, and key auth.
+        let no_fp_host = SshHost {
+            host_key_fingerprint: String::new(),
+            ..good_host.clone()
+        };
+        let missing_fp_err = test_host_connection(
+            &no_fp_host,
+            &ResolvedCredential {
+                username: "ops".into(),
+                auth_kind: SshAuthKind::Password,
+                password: Some("pw-123".into()),
+                private_key_path: Default::default(),
+                passphrase: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(missing_fp_err.code, "SSH_HOST_KEY_REQUIRED");
+
+        let wrong_fp_host = SshHost {
+            host_key_fingerprint: "SHA256:wrong".into(),
+            ..good_host.clone()
+        };
+        let wrong_fp_err = test_host_connection(
+            &wrong_fp_host,
+            &ResolvedCredential {
+                username: "ops".into(),
+                auth_kind: SshAuthKind::Password,
+                password: Some("pw-123".into()),
+                private_key_path: Default::default(),
+                passphrase: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(wrong_fp_err.code, "SSH_HOST_KEY_MISMATCH");
+
+        let pw_test = test_host_connection(
+            &good_host,
+            &ResolvedCredential {
+                username: "ops".into(),
+                auth_kind: SshAuthKind::Password,
+                password: Some("pw-123".into()),
+                private_key_path: Default::default(),
+                passphrase: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(pw_test.username, "ops");
+        assert_eq!(pw_test.port, ssh_addr.port());
+
+        let key_test = test_host_connection(
+            &good_host,
+            &ResolvedCredential {
+                username: "ops".into(),
+                auth_kind: SshAuthKind::PrivateKey,
+                password: None,
+                private_key_path: tmp.path().join("id_ed25519"),
+                passphrase: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(key_test.username, "ops");
     }
 }
