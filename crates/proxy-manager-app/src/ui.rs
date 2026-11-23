@@ -65,6 +65,7 @@ enum SettingsTab {
     #[default]
     Core,
     Startup,
+    Probe,
     Appearance,
     Storage,
 }
@@ -357,6 +358,10 @@ pub(super) struct UiState {
     pub pac_test: String,
     pub pac_notes: Vec<String>,
     pub pac_checked: bool,
+    pub probe_adhoc_url: String,
+    pub probe_config_draft: proxy_model::ProxyProbeConfig,
+    pub probe_config_dirty: bool,
+    pub probe_config_loaded: bool,
     pub history_preview: Option<HistoryPreview>,
     pub latency_host: String,
     pub latency_port: String,
@@ -468,6 +473,10 @@ impl Default for UiState {
             pac_test: String::new(),
             pac_notes: vec![],
             pac_checked: false,
+            probe_adhoc_url: proxy_model::DEFAULT_PROXY_PROBE_URL.into(),
+            probe_config_draft: Default::default(),
+            probe_config_dirty: false,
+            probe_config_loaded: false,
             history_preview: None,
             latency_host: String::new(),
             latency_port: "443".into(),
@@ -660,6 +669,19 @@ fn mode_name(mode: ProxyMode) -> &'static str {
         ProxyMode::Pac => "使用 PAC 自动代理",
     }
 }
+fn availability_tone(state: ProxyAvailabilityState) -> crate::widgets::BadgeTone {
+    match state {
+        ProxyAvailabilityState::Available => crate::widgets::BadgeTone::Success,
+        ProxyAvailabilityState::Degraded | ProxyAvailabilityState::DirectOnly => {
+            crate::widgets::BadgeTone::Warn
+        }
+        ProxyAvailabilityState::Unavailable => crate::widgets::BadgeTone::Danger,
+        ProxyAvailabilityState::Checking => crate::widgets::BadgeTone::Accent,
+        ProxyAvailabilityState::Stopped
+        | ProxyAvailabilityState::Untested
+        | ProxyAvailabilityState::Unsupported => crate::widgets::BadgeTone::Muted,
+    }
+}
 pub(super) fn command_name(command: &Command) -> &'static str {
     match command {
         Command::ValidateDraft { .. } => "检查配置",
@@ -692,6 +714,8 @@ pub(super) fn command_name(command: &Command) -> &'static str {
         Command::StopSshForward { .. } => "停止 SSH 端口转发",
         Command::StartAllSshForwards => "批量启动 SSH 隧道",
         Command::StopAllSshForwards => "批量停止 SSH 隧道",
+        Command::CheckProxyAvailability { .. } => "检测代理可用性",
+        Command::SaveProxyProbeConfig { .. } => "保存代理探测设置",
         _ => "读取后台状态",
     }
 }

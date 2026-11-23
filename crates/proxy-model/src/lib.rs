@@ -193,6 +193,162 @@ pub struct SshState {
 }
 
 pub const DEFAULT_PAC_PORT: u16 = 18080;
+pub const DEFAULT_PROXY_PROBE_URL: &str = "https://cp.cloudflare.com/generate_204";
+pub const DEFAULT_PROXY_PROBE_INTERVAL_SECS: u64 = 30;
+pub const DEFAULT_PROXY_PROBE_TIMEOUT_SECS: u64 = 5;
+
+fn default_proxy_probe_url() -> String {
+    DEFAULT_PROXY_PROBE_URL.into()
+}
+fn default_proxy_probe_interval_secs() -> u64 {
+    DEFAULT_PROXY_PROBE_INTERVAL_SECS
+}
+fn default_proxy_probe_timeout_secs() -> u64 {
+    DEFAULT_PROXY_PROBE_TIMEOUT_SECS
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyProbeConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_proxy_probe_url")]
+    pub target_url: String,
+    #[serde(default = "default_proxy_probe_interval_secs")]
+    pub interval_secs: u64,
+    #[serde(default = "default_proxy_probe_timeout_secs")]
+    pub timeout_secs: u64,
+    #[serde(default = "default_true")]
+    pub tray_throttle: bool,
+}
+
+impl Default for ProxyProbeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            target_url: default_proxy_probe_url(),
+            interval_secs: DEFAULT_PROXY_PROBE_INTERVAL_SECS,
+            timeout_secs: DEFAULT_PROXY_PROBE_TIMEOUT_SECS,
+            tray_throttle: true,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ProxyAvailabilityState {
+    #[default]
+    Stopped,
+    Untested,
+    Checking,
+    Available,
+    Degraded,
+    DirectOnly,
+    Unavailable,
+    Unsupported,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum DiagnosticStepStatus {
+    Pass,
+    Warn,
+    Fail,
+    #[default]
+    Skipped,
+    Checking,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiagnosticStep {
+    pub index: u8,
+    pub name: String,
+    #[serde(default)]
+    pub status: DiagnosticStepStatus,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub detail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyProbeSample {
+    pub timestamp: String,
+    #[serde(default)]
+    pub state: ProxyAvailabilityState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    #[serde(default)]
+    pub note: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ObservatoryOutboundStatus {
+    pub outbound_tag: String,
+    #[serde(default)]
+    pub alive: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delay_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyAvailability {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_instance_id: Option<String>,
+    #[serde(default)]
+    pub state: ProxyAvailabilityState,
+    #[serde(default)]
+    pub checking: bool,
+    #[serde(default)]
+    pub badge_text: String,
+    #[serde(default)]
+    pub overview_hint: String,
+    #[serde(default)]
+    pub headline: String,
+    #[serde(default)]
+    pub target_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inbound_tag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inbound_protocol: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_outbound: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fail_stage: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fail_detail: Option<String>,
+    #[serde(default)]
+    pub consecutive_failures: u32,
+    #[serde(default)]
+    pub suggestions: Vec<String>,
+    #[serde(default)]
+    pub steps: Vec<DiagnosticStep>,
+    #[serde(default)]
+    pub history: Vec<ProxyProbeSample>,
+    #[serde(default)]
+    pub observatory: Vec<ObservatoryOutboundStatus>,
+    #[serde(default)]
+    pub config: ProxyProbeConfig,
+    #[serde(default)]
+    pub tray_throttled: bool,
+}
 fn default_pac_port() -> u16 {
     DEFAULT_PAC_PORT
 }
@@ -514,6 +670,13 @@ pub enum Command {
     },
     StartAllSshForwards,
     StopAllSshForwards,
+    CheckProxyAvailability {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_url: Option<String>,
+    },
+    SaveProxyProbeConfig {
+        config: ProxyProbeConfig,
+    },
     Shutdown,
 }
 impl Command {
@@ -537,6 +700,7 @@ impl Command {
                 | Self::GetSshState
                 | Self::ProbeSshHostKey { .. }
                 | Self::TestSshHost { .. }
+                | Self::CheckProxyAvailability { .. }
         )
     }
 
@@ -556,6 +720,13 @@ impl Command {
                 | Self::StopSshForward { .. }
                 | Self::StartAllSshForwards
                 | Self::StopAllSshForwards
+        )
+    }
+
+    pub fn is_probe_command(&self) -> bool {
+        matches!(
+            self,
+            Self::CheckProxyAvailability { .. } | Self::SaveProxyProbeConfig { .. }
         )
     }
 }
@@ -604,6 +775,9 @@ pub struct Status {
     /// Non-fatal startup notice, e.g. automatic connection was skipped.
     #[serde(default)]
     pub auto_connect_notice: Option<String>,
+    /// Synthesized end-to-end proxy availability and diagnostic report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_availability: Option<ProxyAvailability>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

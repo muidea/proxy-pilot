@@ -92,12 +92,44 @@ impl App {
                         } else {
                             format!("{short_prof} ({mode_short})")
                         };
-                        let status_text = if total_running_pf > 0 {
+                        let base_text = if total_running_pf > 0 {
                             format!("Core 运行中 · {prof_part} · {total_running_pf} 条转发监听")
                         } else {
                             format!("Core 运行中 · {prof_part}")
                         };
-                        crate::widgets::badge(ui, &status_text, crate::widgets::BadgeTone::Success);
+                        let avail = self
+                            .status
+                            .as_ref()
+                            .and_then(|s| s.proxy_availability.as_ref());
+                        let (status_text, status_tone) = match avail {
+                            Some(a)
+                                if a.state == ProxyAvailabilityState::Unavailable
+                                    && !a.checking =>
+                            {
+                                (
+                                    format!("{base_text} · 代理不可用"),
+                                    crate::widgets::BadgeTone::Danger,
+                                )
+                            }
+                            Some(a)
+                                if a.state == ProxyAvailabilityState::Degraded && !a.checking =>
+                            {
+                                (
+                                    format!("{base_text} · 代理波动"),
+                                    crate::widgets::BadgeTone::Warn,
+                                )
+                            }
+                            Some(a)
+                                if a.state == ProxyAvailabilityState::DirectOnly && !a.checking =>
+                            {
+                                (
+                                    format!("{base_text} · 未走代理"),
+                                    crate::widgets::BadgeTone::Warn,
+                                )
+                            }
+                            _ => (base_text, crate::widgets::BadgeTone::Success),
+                        };
+                        crate::widgets::badge(ui, &status_text, status_tone);
                     } else if running_ssh_count > 0 {
                         crate::widgets::badge(
                             ui,
@@ -455,6 +487,113 @@ impl App {
                     "Core 进程",
                     RichText::new(core_label).strong().color(core_fg),
                 );
+                ui.separator();
+                let avail = app
+                    .status
+                    .as_ref()
+                    .and_then(|s| s.proxy_availability.as_ref());
+                let (avail_badge, avail_tone, avail_hint, can_retest, avail_hover) = match avail {
+                    Some(a) if a.checking => (
+                        "检测中…".to_owned(),
+                        crate::widgets::BadgeTone::Accent,
+                        String::new(),
+                        false,
+                        format!("正在检测：{}", a.target_url),
+                    ),
+                    Some(a) => {
+                        let tone = availability_tone(a.state);
+                        let retest_ok = running
+                            && a.state != ProxyAvailabilityState::Unsupported
+                            && app.ui.connected
+                            && !app.shutdown_requested;
+                        (
+                            if a.badge_text.is_empty() {
+                                "待检测".to_owned()
+                            } else {
+                                a.badge_text.clone()
+                            },
+                            tone,
+                            a.overview_hint.clone(),
+                            retest_ok,
+                            a.headline.clone(),
+                        )
+                    }
+                    None => (
+                        if running { "待检测" } else { "未运行" }.to_owned(),
+                        crate::widgets::BadgeTone::Muted,
+                        String::new(),
+                        running && app.ui.connected && !app.shutdown_requested,
+                        String::new(),
+                    ),
+                };
+                let label_width = 112.0_f32.min(ui.available_width() * 0.34);
+                let mut trigger_retest = false;
+                let mut open_diag = false;
+                ui.horizontal_top(|ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(label_width, 0.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.set_min_width(label_width);
+                            ui.add(
+                                egui::Label::new(RichText::new("代理可用性").small().weak()).wrap(),
+                            );
+                        },
+                    );
+                    ui.vertical(|ui| {
+                        ui.set_min_width(ui.available_width());
+                        crate::widgets::responsive_compact_header(
+                            ui,
+                            250.0,
+                            |ui| {
+                                let resp = ui.scope(|ui| {
+                                    crate::widgets::badge(ui, &avail_badge, avail_tone);
+                                });
+                                if !avail_hover.is_empty() {
+                                    resp.response.on_hover_text(&avail_hover);
+                                }
+                            },
+                            |ui, rtl| {
+                                let retest_label = if avail.is_some_and(|a| a.checking) {
+                                    "检测中…"
+                                } else {
+                                    "重测"
+                                };
+                                for idx in if rtl { [1, 0] } else { [0, 1] } {
+                                    match idx {
+                                        0 if crate::widgets::compact_button_enabled(
+                                            ui,
+                                            can_retest,
+                                            retest_label,
+                                        )
+                                        .clicked() =>
+                                        {
+                                            trigger_retest = true;
+                                        }
+                                        1 if crate::widgets::compact_button(ui, "诊断详情")
+                                            .clicked() =>
+                                        {
+                                            open_diag = true;
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            },
+                        );
+                        if !avail_hint.is_empty() {
+                            ui.add_space(3.0);
+                            ui.add(
+                                egui::Label::new(RichText::new(&avail_hint).small().weak()).wrap(),
+                            );
+                        }
+                    });
+                });
+                if trigger_retest {
+                    app.send(Command::CheckProxyAvailability { target_url: None });
+                }
+                if open_diag {
+                    app.ui.page = Page::Diagnostics;
+                }
                 ui.separator();
                 let profile_desc = match generation.as_ref() {
                     Some(_) if running => name.clone(),

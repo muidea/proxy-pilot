@@ -3,6 +3,7 @@ pub mod ipc;
 pub mod maintenance;
 mod operations;
 mod pac_server;
+mod proxy_probe;
 mod restart_budget;
 mod ssh_store;
 mod ssh_tunnel;
@@ -81,6 +82,7 @@ pub struct Supervisor<B: ProxyBackend> {
     pac_servers: Vec<PacServer>,
     ssh_store: ssh_store::SshStore,
     ssh_tunnels: ssh_tunnel::SshTunnelManager,
+    proxy_probe: proxy_probe::ProxyProbeManager,
     #[cfg(test)]
     fail_settlement: bool,
     listener_ready: bool,
@@ -90,7 +92,7 @@ pub struct Supervisor<B: ProxyBackend> {
 impl Supervisor<SystemProxy> {
     /// Initializes supervisor state and acquires the data directory lock before running recovery.
     pub fn prepare(root: &Path) -> Result<(Self, bool)> {
-        Self::prepare_with_backends(root, SystemProxy, Box::new(SystemStartup))
+        Self::prepare_with_backends_mode(root, SystemProxy, Box::new(SystemStartup), true)
     }
     pub async fn open(root: &Path) -> Result<Self> {
         Self::with_backend(root, SystemProxy).await
@@ -127,6 +129,14 @@ impl<B: ProxyBackend> Supervisor<B> {
         root: &Path,
         backend: B,
         startup_backend: Box<dyn StartupBackend>,
+    ) -> Result<(Self, bool)> {
+        Self::prepare_with_backends_mode(root, backend, startup_backend, false)
+    }
+    fn prepare_with_backends_mode(
+        root: &Path,
+        backend: B,
+        startup_backend: Box<dyn StartupBackend>,
+        auto_probe_enabled: bool,
     ) -> Result<(Self, bool)> {
         let store = Store::open(root)?;
         let lock = store.lock()?;
@@ -184,6 +194,7 @@ impl<B: ProxyBackend> Supervisor<B> {
         let settings = settings_result.unwrap_or_default().unwrap_or_default();
         let generation = generation_result.unwrap_or_default();
         let ssh_store = ssh_store::SshStore::load(&store.root)?;
+        let proxy_probe = proxy_probe::ProxyProbeManager::load(&store.root, auto_probe_enabled)?;
         let operations = OperationStore::new(&store.root);
         let principal = proxy_config::security::principal()?;
         let startup =
@@ -212,6 +223,7 @@ impl<B: ProxyBackend> Supervisor<B> {
             pac_servers: Vec::new(),
             ssh_store,
             ssh_tunnels: ssh_tunnel::SshTunnelManager::new(),
+            proxy_probe,
             listener_ready: false,
             #[cfg(test)]
             fail_settlement: false,
@@ -358,6 +370,7 @@ impl<B: ProxyBackend> Supervisor<B> {
                 "Serving".into()
             },
             auto_connect_notice: self.auto_connect_notice.clone(),
+            proxy_availability: Some(self.proxy_probe.snapshot()),
         }
     }
     fn history(&self, profile: &str) -> Result<Vec<Generation>> {
@@ -441,7 +454,10 @@ impl<B: ProxyBackend> Supervisor<B> {
         }
         let caller = self.caller();
         match &request.command {
-            Command::GetStatus => return Ok(serde_json::to_value(self.status())?),
+            Command::GetStatus => {
+                self.proxy_probe.note_client_activity();
+                return Ok(serde_json::to_value(self.status())?);
+            }
             Command::GetRuntimeConfig { generation_id } => {
                 return Ok(serde_json::to_value(self.runtime_config(generation_id)?)?);
             }
@@ -570,6 +586,9 @@ impl<B: ProxyBackend> Supervisor<B> {
         }
         if let Some(ssh_res) = self.dispatch_ssh(&request.command).await {
             return ssh_res;
+        }
+        if let Some(probe_res) = self.dispatch_probe(&request.command) {
+            return probe_res;
         }
         // Deduplication deliberately precedes generation/revision checks, including after restart.
         let lookup = self.operations.lookup(&caller, &request);
@@ -898,6 +917,7 @@ impl<B: ProxyBackend> Supervisor<B> {
                         .await?;
                     if matches!(op.request.command, Command::Shutdown) {
                         self.ssh_tunnels.stop_all().await;
+                        self.proxy_probe.on_core_stopped();
                         self.shutdown = true;
                     }
                     Ok(value)
@@ -911,6 +931,7 @@ impl<B: ProxyBackend> Supervisor<B> {
                     }
                     if matches!(op.request.command, Command::Shutdown) {
                         self.ssh_tunnels.stop_all().await;
+                        self.proxy_probe.on_core_stopped();
                         self.shutdown = true;
                     }
                     Ok(json!({"stopped":true}))
@@ -1050,6 +1071,7 @@ impl<B: ProxyBackend> Supervisor<B> {
     }
     async fn stop_process(&mut self) -> Result<()> {
         self.listener_ready = false;
+        self.proxy_probe.on_core_stopped();
         if let Some(mut core) = self.core.take() {
             core.stop().await?;
         }
@@ -1312,6 +1334,68 @@ impl<B: ProxyBackend> Supervisor<B> {
                 proxy_runtime::log(&self.logs, "已停止全部 SSH 端口转发");
                 serde_json::to_value(self.ssh_state()).map_err(Into::into)
             }
+            _ => return None,
+        };
+        Some(res)
+    }
+
+    fn build_probe_context(&self) -> Option<proxy_probe::ProbeContext> {
+        let g = self.generation.clone()?;
+        let instance_id = self.core.as_ref()?.instance_id.clone();
+        if !self.listener_ready {
+            return None;
+        }
+        let resolved = self.resolve_candidate(&g.candidate);
+        let bytes = fs::read(&resolved.config_path).ok()?;
+        let config = parse_config(&bytes).ok()?;
+        let geodata = Self::load_candidate_geodata(&self.store.root, &g.candidate, &config);
+        let pac_script = if g.proxy_mode == ProxyMode::Pac {
+            g.pac
+                .as_ref()
+                .and_then(|p| fs::read_to_string(resolve_path(&self.store.root, &p.path)).ok())
+        } else {
+            None
+        };
+        let profile_display_name = optional_json::<Value>(&self.store.root.join("config/gui.json"))
+            .ok()
+            .flatten()
+            .and_then(|v| {
+                v.get("names")?
+                    .get(&g.candidate.profile_id)?
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| g.candidate.profile_id.clone());
+        Some(proxy_probe::ProbeContext {
+            generation: g,
+            runtime_instance_id: instance_id,
+            profile_display_name,
+            proxy_state: self.proxy.state(),
+            config,
+            geodata,
+            pac_script,
+        })
+    }
+
+    fn sync_proxy_probe_context(&mut self, trigger_initial: bool) {
+        if let Some(ctx) = self.build_probe_context() {
+            self.proxy_probe.sync_context(ctx, trigger_initial);
+        }
+    }
+
+    fn dispatch_probe(&mut self, command: &Command) -> Option<Result<Value>> {
+        let res = match command {
+            Command::CheckProxyAvailability { target_url } => {
+                self.sync_proxy_probe_context(false);
+                self.proxy_probe
+                    .trigger_manual(target_url.clone())
+                    .and_then(|snap| serde_json::to_value(snap).map_err(Into::into))
+            }
+            Command::SaveProxyProbeConfig { config } => self
+                .proxy_probe
+                .save_config(config.clone())
+                .and_then(|snap| serde_json::to_value(snap).map_err(Into::into)),
             _ => return None,
         };
         Some(res)
@@ -1588,6 +1672,7 @@ impl<B: ProxyBackend> Supervisor<B> {
                 .into_iter()
                 .collect();
             self.prune_pac_servers(&keep).await;
+            self.sync_proxy_probe_context(true);
             return Ok(serde_json::to_value(generation)?);
         }
         if let Err(error) = result {
@@ -2124,6 +2209,7 @@ impl<B: ProxyBackend> Supervisor<B> {
                 Ok(Some(code)) => {
                     let core = self.core.take().unwrap();
                     self.listener_ready = false;
+                    self.proxy_probe.on_core_stopped();
                     let instance = core.instance_id;
                     proxy_runtime::log(&self.logs, format!("Core exited: {code}"));
                     if let Err(e) = self.proxy.release() {
@@ -2152,6 +2238,7 @@ impl<B: ProxyBackend> Supervisor<B> {
                 _ => {}
             }
         }
+        self.proxy_probe.tick();
         if self.retry.as_ref().is_some_and(|r| r.due <= Instant::now()) {
             let mut ticket = self.retry.take().unwrap();
             if self.blocked

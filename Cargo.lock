@@ -3853,7 +3853,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "proxy-config"
-version = "0.1.1-rc.47"
+version = "0.1.1-rc.48"
 dependencies = [
  "base64",
  "fs2",
@@ -3868,7 +3868,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-manager-app"
-version = "0.1.1-rc.47"
+version = "0.1.1-rc.48"
 dependencies = [
  "eframe",
  "proxy-config",
@@ -3889,7 +3889,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-model"
-version = "0.1.1-rc.47"
+version = "0.1.1-rc.48"
 dependencies = [
  "serde",
  "serde_json",
@@ -3899,7 +3899,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-pac"
-version = "0.1.1-rc.47"
+version = "0.1.1-rc.48"
 dependencies = [
  "boa_engine",
  "proxy-config",
@@ -3912,7 +3912,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-runtime"
-version = "0.1.1-rc.47"
+version = "0.1.1-rc.48"
 dependencies = [
  "base64",
  "proxy-model",
@@ -3925,7 +3925,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-supervisor"
-version = "0.1.1-rc.47"
+version = "0.1.1-rc.48"
 dependencies = [
  "base64",
  "flate2",
@@ -3934,10 +3934,14 @@ dependencies = [
  "proxy-pac",
  "proxy-runtime",
  "russh",
+ "rustls",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-rustls",
+ "webpki-roots",
  "windows-integration",
  "windows-sys 0.61.2",
 ]
@@ -4298,6 +4302,40 @@ dependencies = [
  "libc",
  "linux-raw-sys 0.12.1",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rustls"
+version = "0.23.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
+dependencies = [
+ "once_cell",
+ "ring",
+ "rustls-pki-types",
+ "rustls-webpki",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
+name = "rustls-pki-types"
+version = "1.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "102f35f7de7b06d8c61f1cff6592f5253e0dea431c74867aad5dfd70f44663fb"
+dependencies = [
+ "zeroize",
+]
+
+[[package]]
+name = "rustls-webpki"
+version = "0.103.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3a0760a887c14823fca5a1c970b01d47c328c696c0c64829d1df50e8f853fd5"
+dependencies = [
+ "ring",
+ "rustls-pki-types",
+ "untrusted",
 ]
 
 [[package]]
@@ -5003,6 +5041,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-rustls"
+version = "0.26.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9cc2678c2cdd569ef8215e2afd7954ada2ae20b4fdd2c5fe6139a3b02d105db"
+dependencies = [
+ "rustls",
+ "tokio",
+]
+
+[[package]]
 name = "toml"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5536,6 +5584,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "webpki-roots"
+version = "1.0.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7265c9301c16a8711c992c2d8da90ee77ef54b1ed51482d6dfeb00dc756b1297"
+dependencies = [
+ "rustls-pki-types",
+]
+
+[[package]]
 name = "weezl"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5726,7 +5783,7 @@ dependencies = [
 
 [[package]]
 name = "windows-integration"
-version = "0.1.1-rc.47"
+version = "0.1.1-rc.48"
 dependencies = [
  "proxy-config",
  "proxy-model",

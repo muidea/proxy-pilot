@@ -68,6 +68,7 @@ fn app() -> App {
         listener_state: "Ready".into(),
         pac_state: "Stopped".into(),
         auto_connect_notice: None,
+        proxy_availability: None,
     });
     app.ui.runtime = Some(RuntimeConfig {
         generation_id: "generation-1".into(),
@@ -125,6 +126,7 @@ fn native_pages_and_dialogs_render_in_both_themes_at_supported_sizes() {
             for tab in [
                 SettingsTab::Core,
                 SettingsTab::Startup,
+                SettingsTab::Probe,
                 SettingsTab::Appearance,
                 SettingsTab::Storage,
             ] {
@@ -2236,6 +2238,7 @@ fn pac_proxy_mode_is_persisted_across_shutdown_and_restored_on_startup() {
         listener_state: "Ready".into(),
         pac_state: "Ready".into(),
         auto_connect_notice: None,
+        proxy_availability: None,
     });
     // Unapplied draft changes for the profile must not override the last applied PAC config.
     app.profile_id = "work".into();
@@ -3346,19 +3349,19 @@ fn route_prediction_input_retains_focus_and_selects_all_after_predict() {
 
     let ctx = egui::Context::default();
     configure(&ctx);
-    let output = guided_frame(&mut app, &ctx, vec![], 1100.0, 1200.0);
+    let output = guided_frame(&mut app, &ctx, vec![], 1100.0, 1550.0);
     let host_pos = text_bounds(&output, "example.com").center();
-    guided_frame(&mut app, &ctx, pointer_click(host_pos), 1100.0, 1200.0);
+    guided_frame(&mut app, &ctx, pointer_click(host_pos), 1100.0, 1550.0);
     guided_frame(
         &mut app,
         &ctx,
         vec![egui::Event::Text("google.com".into())],
         1100.0,
-        1200.0,
+        1550.0,
     );
     assert_eq!(app.route_host, "google.com");
 
-    guided_click(&mut app, &ctx, "预测命中规则与出站", 1100.0, 1200.0);
+    guided_click(&mut app, &ctx, "预测命中规则与出站", 1100.0, 1550.0);
     assert!(matches!(
         requests.try_recv(),
         Ok(Request {
@@ -3373,7 +3376,7 @@ fn route_prediction_input_retains_focus_and_selects_all_after_predict() {
         &ctx,
         vec![egui::Event::Text("github.com".into())],
         1100.0,
-        1200.0,
+        1550.0,
     );
     assert_eq!(app.route_host, "github.com");
 }
@@ -5083,6 +5086,10 @@ fn all_pages_render_cleanly_without_overflow_or_overlap_across_window_sizes() {
     let pid = app.profile_id.clone();
     app.save_pac_draft_for(&pid, pac_draft);
 
+    if let Some(status) = app.status.as_mut() {
+        status.proxy_availability = Some(sample_proxy_availability_fixture());
+    }
+
     app.ui.ssh_state = SshState {
         credentials: vec![SshCredentialSummary {
             id: "cred-1".into(),
@@ -5293,6 +5300,7 @@ fn all_pages_render_cleanly_without_overflow_or_overlap_across_window_sizes() {
             for (name, s_tab) in [
                 ("settings-core", SettingsTab::Core),
                 ("settings-startup", SettingsTab::Startup),
+                ("settings-probe", SettingsTab::Probe),
                 ("settings-appearance", SettingsTab::Appearance),
                 ("settings-storage", SettingsTab::Storage),
             ] {
@@ -5344,6 +5352,7 @@ fn all_pages_render_cleanly_without_overflow_or_overlap_across_window_sizes() {
                                 | "默认访问"
                                 | "已保存"
                                 | "协议握手就绪"
+                                | "可用 · 128 ms"
                         ) {
                             assert_eq!(
                                 text.galley.rows.len(),
@@ -5371,4 +5380,276 @@ fn all_pages_render_cleanly_without_overflow_or_overlap_across_window_sizes() {
             }
         }
     }
+}
+
+fn sample_proxy_availability_fixture() -> ProxyAvailability {
+    let steps = vec![
+        DiagnosticStep {
+            index: 1,
+            name: "Core 进程与运行代次".into(),
+            status: DiagnosticStepStatus::Pass,
+            label: "通过".into(),
+            detail: "配置「香港节点」运行中 · 冻结代次".into(),
+            evidence: Some("generation-1".into()),
+        },
+        DiagnosticStep {
+            index: 2,
+            name: "本地代理入站握手".into(),
+            status: DiagnosticStepStatus::Pass,
+            label: "通过 · 4 ms".into(),
+            detail: "入站 Tag：http-in (HTTP) · 无认证".into(),
+            evidence: Some("127.0.0.1:10809".into()),
+        },
+        DiagnosticStep {
+            index: 3,
+            name: "路由规则归属（静态预测）".into(),
+            status: DiagnosticStepStatus::Pass,
+            label: "通过 · proxy".into(),
+            detail: "默认走代理出站".into(),
+            evidence: Some("expected_outbound=proxy".into()),
+        },
+        DiagnosticStep {
+            index: 4,
+            name: "经由代理端到端连通".into(),
+            status: DiagnosticStepStatus::Pass,
+            label: "可用 · 128 ms".into(),
+            detail: "HTTP CONNECT + TLS · HTTP 204（本地 4 ms · TLS 42 ms · 总耗时 128 ms）".into(),
+            evidence: Some(format!("target={DEFAULT_PROXY_PROBE_URL}")),
+        },
+        DiagnosticStep {
+            index: 5,
+            name: "系统代理 / PAC 生效关联".into(),
+            status: DiagnosticStepStatus::Pass,
+            label: "全局已接管".into(),
+            detail: "系统代理指向本地入口 http-in".into(),
+            evidence: None,
+        },
+    ];
+    let history = (0..10)
+        .map(|i| ProxyProbeSample {
+            timestamp: format!("2026-11-23 15:0{}:00.000 +08:00", i % 10),
+            state: if i == 3 {
+                ProxyAvailabilityState::Degraded
+            } else {
+                ProxyAvailabilityState::Available
+            },
+            total_ms: Some(110 + i as u64 * 8),
+            tls_ms: Some(36 + i as u64 * 2),
+            http_status: Some(204),
+            note: if i == 3 {
+                "首次复测短暂抖动".into()
+            } else {
+                "自动检测正常".into()
+            },
+        })
+        .collect();
+    ProxyAvailability {
+        generation_id: Some("generation-1".into()),
+        runtime_instance_id: Some("instance".into()),
+        state: ProxyAvailabilityState::Available,
+        checking: false,
+        badge_text: "可用 · 128 ms".into(),
+        overview_hint: String::new(),
+        headline: "代理链路畅通，经由代理出口可达外部站点".into(),
+        target_url: DEFAULT_PROXY_PROBE_URL.into(),
+        checked_at: Some("2026-11-23 15:09:00.000 +08:00".into()),
+        local_ms: Some(4),
+        tls_ms: Some(42),
+        total_ms: Some(128),
+        http_status: Some(204),
+        inbound_tag: Some("http-in".into()),
+        inbound_protocol: Some("http".into()),
+        expected_outbound: Some("proxy".into()),
+        fail_stage: None,
+        fail_detail: None,
+        consecutive_failures: 0,
+        suggestions: vec![],
+        steps,
+        history,
+        observatory: vec![ObservatoryOutboundStatus {
+            outbound_tag: "proxy".into(),
+            alive: true,
+            delay_ms: Some(115),
+            last_error: None,
+        }],
+        config: ProxyProbeConfig::default(),
+        tray_throttled: false,
+    }
+}
+
+#[test]
+fn proxy_availability_overview_diagnostics_and_settings_flow() {
+    let mut app = app();
+    let (tx, requests) = mpsc::sync_channel(MAX_PENDING);
+    app.tx = tx;
+    let mut avail = sample_proxy_availability_fixture();
+    app.status.as_mut().unwrap().proxy_availability = Some(avail.clone());
+
+    let ctx = egui::Context::default();
+    configure(&ctx);
+
+    let find_text = |shape: &egui::Shape, pred: &dyn Fn(&str) -> bool| -> Option<egui::Pos2> {
+        fn walk(shape: &egui::Shape, pred: &dyn Fn(&str) -> bool) -> Option<egui::Pos2> {
+            match shape {
+                egui::Shape::Text(t) if pred(t.galley.text()) => {
+                    Some(t.pos + t.galley.size() * 0.5)
+                }
+                egui::Shape::Vec(v) => v.iter().find_map(|s| walk(s, pred)),
+                _ => None,
+            }
+        }
+        walk(shape, pred)
+    };
+    let collect_all_text = |out: &egui::FullOutput| -> Vec<String> {
+        let mut texts = Vec::new();
+        fn walk(shape: &egui::Shape, acc: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(t) => acc.push(t.galley.text().to_owned()),
+                egui::Shape::Vec(v) => {
+                    for s in v {
+                        walk(s, acc);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for shape in &out.shapes {
+            walk(&shape.shape, &mut texts);
+        }
+        texts
+    };
+    let click = |app: &mut App, label: &str| {
+        guided_frame(app, &ctx, vec![], 1100.0, 900.0);
+        let out = guided_frame(app, &ctx, vec![], 1100.0, 900.0);
+        let pos = out
+            .shapes
+            .iter()
+            .find_map(|s| find_text(&s.shape, &|t| t == label))
+            .unwrap_or_else(|| panic!("missing clickable label: {label}"));
+        guided_frame(
+            app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            1100.0,
+            900.0,
+        );
+        guided_frame(
+            app,
+            &ctx,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            1100.0,
+            900.0,
+        );
+    };
+
+    // 1. Overview healthy state: concise badge & actions, no verbose technical line.
+    app.ui.page = Page::Overview;
+    let ov = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    let ov_texts = collect_all_text(&ov);
+    assert!(ov_texts.iter().any(|t| t == "代理可用性"));
+    assert!(ov_texts.iter().any(|t| t == "可用 · 128 ms"));
+    assert!(ov_texts.iter().any(|t| t == "重测"));
+    assert!(ov_texts.iter().any(|t| t == "诊断详情"));
+    assert!(!ov_texts.iter().any(|t| t.contains("经由 http-in")));
+    assert!(!ov_texts.iter().any(|t| t.contains("自动检测")));
+
+    click(&mut app, "重测");
+    assert!(requests.try_iter().any(|r| matches!(
+        r.command,
+        Command::CheckProxyAvailability { target_url: None }
+    )));
+    app.busy = false;
+
+    // 2. Overview abnormal states: DirectOnly & Unavailable alert suffixes and short hints.
+    avail.state = ProxyAvailabilityState::DirectOnly;
+    avail.badge_text = "直连可达（未走代理）".into();
+    avail.overview_hint = "当前检测地址未走代理，建议更换".into();
+    app.status.as_mut().unwrap().proxy_availability = Some(avail.clone());
+    let direct_ov = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    let direct_texts = collect_all_text(&direct_ov);
+    assert!(direct_texts.iter().any(|t| t.contains("· 未走代理")));
+    assert!(
+        direct_texts
+            .iter()
+            .any(|t| t == "当前检测地址未走代理，建议更换")
+    );
+
+    avail.state = ProxyAvailabilityState::Unavailable;
+    avail.badge_text = "不可用".into();
+    avail.overview_hint = "本地入口正常，远端节点连接失败".into();
+    app.status.as_mut().unwrap().proxy_availability = Some(avail);
+    let unavail_ov = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    let unavail_texts = collect_all_text(&unavail_ov);
+    assert!(unavail_texts.iter().any(|t| t.contains("· 代理不可用")));
+    assert!(
+        unavail_texts
+            .iter()
+            .any(|t| t == "本地入口正常，远端节点连接失败")
+    );
+
+    // Clicking 诊断详情 opens Diagnostics page.
+    click(&mut app, "诊断详情");
+    assert_eq!(app.ui.page, Page::Diagnostics);
+
+    // 3. Diagnostics page: 5 steps + ad-hoc URL test + redacted Markdown report.
+    app.status.as_mut().unwrap().proxy_availability = Some(sample_proxy_availability_fixture());
+    let diag = guided_frame(&mut app, &ctx, vec![], 1100.0, 1500.0);
+    let diag_texts = collect_all_text(&diag);
+    assert!(diag_texts.iter().any(|t| t == "代理可用性诊断报告"));
+    assert!(diag_texts.iter().any(|t| t == "Core 进程与运行代次"));
+    assert!(diag_texts.iter().any(|t| t == "系统代理 / PAC 生效关联"));
+    assert!(
+        diag_texts
+            .iter()
+            .any(|t| t == "近期稳定性与延迟曲线（最近 10 次）")
+    );
+
+    click(&mut app, "gstatic HTTPS 204");
+    click(&mut app, "测试此地址");
+    assert!(requests.try_iter().any(|r| matches!(
+        r.command,
+        Command::CheckProxyAvailability { target_url: Some(ref u) }
+            if u == "https://www.gstatic.com/generate_204"
+    )));
+    app.busy = false;
+
+    let report = app.format_proxy_diagnostic_report();
+    assert!(report.contains("# Proxy Pilot 代理可用性诊断报告"));
+    assert!(report.contains("## 诊断结论"));
+    assert!(report.contains("## 五步链路核查"));
+    assert!(report.contains("## Xray Native Observatory（只读）"));
+    assert!(report.contains("## 近期探测样本（最近 5 条）"));
+    assert!(!report.contains("Proxy-Authorization"));
+    assert!(!report.contains("password"));
+
+    // 4. Settings -> 代理探测 tab saves ProxyProbeConfig independently of SaveSettings.
+    app.ui.page = Page::Settings;
+    click(&mut app, "代理探测");
+    assert_eq!(app.ui.settings_tab, SettingsTab::Probe);
+    click(&mut app, "Cloudflare HTTP 204（免 TLS）");
+    click(&mut app, "保存设置（热生效）");
+    let cmds: Vec<Command> = requests.try_iter().map(|r| r.command).collect();
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Command::SaveProxyProbeConfig { config }
+            if config.target_url == "http://cp.cloudflare.com/generate_204"
+    )));
+    assert!(
+        !cmds
+            .iter()
+            .any(|c| matches!(c, Command::SaveSettings { .. }))
+    );
 }

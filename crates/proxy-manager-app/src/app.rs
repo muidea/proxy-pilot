@@ -779,6 +779,7 @@ impl App {
         }
         if command.is_write() {
             let safe_recovery = command.is_ssh_command()
+                || command.is_probe_command()
                 || matches!(
                     command,
                     Command::StopCore
@@ -1060,6 +1061,15 @@ impl App {
                             }
                             let generation = status.generation.as_ref().map(|g| g.id.clone());
                             let running = status.core_state == "Running";
+                            if let Some(avail) = &status.proxy_availability {
+                                if !self.ui.probe_config_dirty {
+                                    self.ui.probe_config_draft = avail.config.clone();
+                                }
+                                if !self.ui.probe_config_loaded {
+                                    self.ui.probe_adhoc_url = avail.config.target_url.clone();
+                                    self.ui.probe_config_loaded = true;
+                                }
+                            }
                             self.status = Some(status);
                             self.sync_restore_state(running, false);
                             self.maybe_restore_core();
@@ -1342,6 +1352,33 @@ impl App {
                             self.clear_request_failure();
                             self.message = "已停止全部 SSH 隧道。".into();
                             self.add_event("信息", "已停止全部 SSH 隧道", response.request_id);
+                        }
+                    }
+                    Command::CheckProxyAvailability { .. } => {
+                        if let Ok(avail) = serde_json::from_value::<ProxyAvailability>(value) {
+                            let badge = avail.badge_text.clone();
+                            if let Some(status) = self.status.as_mut() {
+                                status.proxy_availability = Some(avail);
+                            }
+                            self.message = if badge == "检测中…" {
+                                "正在检测代理可用性…".into()
+                            } else {
+                                format!("代理可用性：{badge}")
+                            };
+                        }
+                    }
+                    Command::SaveProxyProbeConfig { .. } => {
+                        if let Ok(avail) = serde_json::from_value::<ProxyAvailability>(value) {
+                            self.ui.probe_config_draft = avail.config.clone();
+                            self.ui.probe_adhoc_url = avail.config.target_url.clone();
+                            self.ui.probe_config_dirty = false;
+                            self.ui.probe_config_loaded = true;
+                            if let Some(status) = self.status.as_mut() {
+                                status.proxy_availability = Some(avail);
+                            }
+                            self.clear_request_failure();
+                            self.message = "已保存代理探测设置（热生效，无需重启 Core）。".into();
+                            self.add_event("信息", "已保存代理探测设置", response.request_id);
                         }
                     }
                     Command::DeleteSshCredential { .. }
@@ -1764,10 +1801,17 @@ impl eframe::App for App {
             self.request_exit(ui::ExitKind::Gui);
             ctx.request_repaint();
         }
-        if self.last_poll.elapsed() > Duration::from_secs(2)
-            && !self.busy
-            && !self.shutdown_requested
+        let poll_interval = if self
+            .status
+            .as_ref()
+            .and_then(|s| s.proxy_availability.as_ref())
+            .is_some_and(|a| a.checking)
         {
+            Duration::from_millis(500)
+        } else {
+            Duration::from_secs(2)
+        };
+        if self.last_poll.elapsed() > poll_interval && !self.busy && !self.shutdown_requested {
             self.send(Command::GetStatus);
             if self.ui.page == Page::Logs && !self.ui.logs_paused {
                 self.send(Command::GetLogs);

@@ -1,12 +1,715 @@
 use super::*;
 
+fn step_tone(status: DiagnosticStepStatus) -> crate::widgets::BadgeTone {
+    match status {
+        DiagnosticStepStatus::Pass => crate::widgets::BadgeTone::Success,
+        DiagnosticStepStatus::Warn => crate::widgets::BadgeTone::Warn,
+        DiagnosticStepStatus::Fail => crate::widgets::BadgeTone::Danger,
+        DiagnosticStepStatus::Checking => crate::widgets::BadgeTone::Accent,
+        DiagnosticStepStatus::Skipped => crate::widgets::BadgeTone::Muted,
+    }
+}
+
+fn availability_state_label(state: ProxyAvailabilityState) -> &'static str {
+    match state {
+        ProxyAvailabilityState::Stopped => "未运行",
+        ProxyAvailabilityState::Untested => "待检测",
+        ProxyAvailabilityState::Checking => "检测中",
+        ProxyAvailabilityState::Available => "可用",
+        ProxyAvailabilityState::Degraded => "网络波动",
+        ProxyAvailabilityState::DirectOnly => "直连可达（未走代理）",
+        ProxyAvailabilityState::Unavailable => "不可用",
+        ProxyAvailabilityState::Unsupported => "不支持",
+    }
+}
+
+fn circled_step_index(index: u8) -> String {
+    match index {
+        1 => "①".into(),
+        2 => "②".into(),
+        3 => "③".into(),
+        4 => "④".into(),
+        5 => "⑤".into(),
+        _ => index.to_string(),
+    }
+}
+
+fn redact_probe_url(url: &str) -> String {
+    let trimmed = url.trim();
+    let Some((scheme, rest)) = trimmed.split_once("://") else {
+        return trimmed.into();
+    };
+    let (authority, suffix) = match rest.find(['/', '?', '#']) {
+        Some(idx) => (&rest[..idx], &rest[idx..]),
+        None => (rest, ""),
+    };
+    let redacted_authority = match authority.rsplit_once('@') {
+        Some((_, host_port)) => format!("***@{host_port}"),
+        None => authority.to_owned(),
+    };
+    format!("{scheme}://{redacted_authority}{suffix}")
+}
+
 impl App {
+    pub(in crate::app) fn format_proxy_diagnostic_report(&self) -> String {
+        let mut out = String::from("# Proxy Pilot 代理可用性诊断报告\n\n");
+        let conn = if self.ui.connected {
+            "已连接"
+        } else {
+            "未连接（以下为最后已知状态）"
+        };
+        let core_state = self
+            .status
+            .as_ref()
+            .map(|s| s.core_state.as_str())
+            .unwrap_or("未读取");
+        let profile = self
+            .status
+            .as_ref()
+            .and_then(|s| s.generation.as_ref())
+            .map(|g| self.ui.workspace.name(&g.candidate.profile_id).to_string())
+            .unwrap_or_else(|| "未应用配置".into());
+        let mode = self
+            .status
+            .as_ref()
+            .and_then(|s| s.generation.as_ref())
+            .map(|g| mode_name(g.proxy_mode))
+            .unwrap_or("未应用");
+        let gen_id = self
+            .status
+            .as_ref()
+            .and_then(|s| s.generation.as_ref())
+            .map(|g| g.id.as_str())
+            .unwrap_or("-");
+        let inst_id = self
+            .status
+            .as_ref()
+            .and_then(|s| s.runtime_instance_id.as_deref())
+            .unwrap_or("-");
+        out.push_str(&format!("- 后台连接: {conn}\n"));
+        out.push_str(&format!("- Core 状态: {core_state}\n"));
+        out.push_str(&format!(
+            "- 当前配置: {profile} · 代理模式: {mode} · 系统代理: {}\n",
+            self.proxy_label()
+        ));
+        out.push_str(&format!("- 生效代次: {gen_id} · 运行实例: {inst_id}\n\n"));
+
+        let Some(avail) = self
+            .status
+            .as_ref()
+            .and_then(|s| s.proxy_availability.as_ref())
+        else {
+            out.push_str("## 诊断结论\n\n- 状态: 暂无探测结果\n");
+            return out;
+        };
+
+        out.push_str("## 诊断结论\n\n");
+        out.push_str(&format!(
+            "- 状态: {} ({})\n",
+            availability_state_label(avail.state),
+            if avail.badge_text.is_empty() {
+                "-"
+            } else {
+                &avail.badge_text
+            }
+        ));
+        if !avail.headline.is_empty() {
+            out.push_str(&format!("- 结论: {}\n", avail.headline));
+        }
+        if !avail.target_url.is_empty() {
+            out.push_str(&format!(
+                "- 探测目标: {}\n",
+                redact_probe_url(&avail.target_url)
+            ));
+        }
+        if let Some(checked_at) = avail.checked_at.as_deref() {
+            out.push_str(&format!("- 检测时间: {checked_at}\n"));
+        }
+        if let Some(in_tag) = avail.inbound_tag.as_deref() {
+            let proto = avail.inbound_protocol.as_deref().unwrap_or("-");
+            out.push_str(&format!("- 本地入站: {in_tag} ({proto})\n"));
+        }
+        if let Some(expected_out) = avail.expected_outbound.as_deref() {
+            out.push_str(&format!("- 静态路由预测出站: {expected_out}\n"));
+        }
+        out.push_str(&format!(
+            "- 耗时与状态码: 本地={}ms, TLS={}ms, 总计={}ms, HTTP={}\n",
+            avail
+                .local_ms
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".into()),
+            avail
+                .tls_ms
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".into()),
+            avail
+                .total_ms
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".into()),
+            avail
+                .http_status
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".into()),
+        ));
+        if let Some(stage) = avail.fail_stage.as_deref() {
+            out.push_str(&format!("- 失败阶段: {stage}\n"));
+        }
+        if let Some(detail) = avail.fail_detail.as_deref() {
+            out.push_str(&format!("- 失败详情: {detail}\n"));
+        }
+        if !avail.suggestions.is_empty() {
+            out.push_str("- 修复建议:\n");
+            for sug in &avail.suggestions {
+                out.push_str(&format!("  - {sug}\n"));
+            }
+        }
+
+        if !avail.steps.is_empty() {
+            out.push_str("\n## 五步链路核查\n\n");
+            for step in &avail.steps {
+                let ev = step
+                    .evidence
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| format!(" ({s})"))
+                    .unwrap_or_default();
+                out.push_str(&format!(
+                    "- [{}] {}: {} — {}{ev}\n",
+                    step.index, step.name, step.label, step.detail
+                ));
+            }
+        }
+
+        if !avail.observatory.is_empty() {
+            out.push_str("\n## Xray Native Observatory（只读）\n\n");
+            for obs in &avail.observatory {
+                let delay = obs
+                    .delay_ms
+                    .map(|ms| format!("{ms}ms"))
+                    .unwrap_or_else(|| "-".into());
+                let err = obs.last_error.as_deref().unwrap_or("-");
+                out.push_str(&format!(
+                    "- {}: alive={}, delay={delay}, error={err}\n",
+                    obs.outbound_tag, obs.alive
+                ));
+            }
+        }
+
+        if !avail.history.is_empty() {
+            out.push_str("\n## 近期探测样本（最近 5 条）\n\n");
+            for sample in avail.history.iter().rev().take(5) {
+                let tot = sample
+                    .total_ms
+                    .map(|ms| format!("{ms}ms"))
+                    .unwrap_or_else(|| "-".into());
+                let tls = sample
+                    .tls_ms
+                    .map(|ms| format!("{ms}ms"))
+                    .unwrap_or_else(|| "-".into());
+                let code = sample
+                    .http_status
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "-".into());
+                out.push_str(&format!(
+                    "- {} | {} | total={tot} | TLS {tls} | HTTP {code} | {}\n",
+                    sample.timestamp,
+                    availability_state_label(sample.state),
+                    sample.note
+                ));
+            }
+        }
+        out
+    }
+
+    fn proxy_availability_report_card(&mut self, ui: &mut egui::Ui) {
+        let avail = self
+            .status
+            .as_ref()
+            .and_then(|s| s.proxy_availability.as_ref())
+            .cloned();
+        let running = self.is_running();
+        let checking = avail.as_ref().is_some_and(|a| a.checking);
+        let unsupported = avail
+            .as_ref()
+            .is_some_and(|a| a.state == ProxyAvailabilityState::Unsupported);
+        let can_probe =
+            running && self.ui.connected && !self.shutdown_requested && !checking && !unsupported;
+
+        let mut trigger_default = false;
+        let mut trigger_adhoc = false;
+        let mut copy_report = false;
+
+        card(ui, |ui| {
+            crate::widgets::responsive_header(
+                ui,
+                460.0,
+                |ui| {
+                    ui.label(RichText::new("代理可用性诊断报告").strong().size(18.0));
+                },
+                |ui, rtl| {
+                    let retest_label = if checking {
+                        "诊断中…"
+                    } else {
+                        "立即重新诊断"
+                    };
+                    for idx in if rtl { [1, 0] } else { [0, 1] } {
+                        match idx {
+                            0 => {
+                                if primary(ui, retest_label, can_probe) {
+                                    trigger_default = true;
+                                }
+                            }
+                            _ => {
+                                if ui.button("复制诊断报告").clicked() {
+                                    copy_report = true;
+                                }
+                            }
+                        }
+                    }
+                },
+            );
+            ui.add_space(6.0);
+
+            match &avail {
+                Some(a) => {
+                    let tone = if a.checking {
+                        crate::widgets::BadgeTone::Accent
+                    } else {
+                        availability_tone(a.state)
+                    };
+                    let badge_label = if a.checking {
+                        "检测中…"
+                    } else if a.badge_text.is_empty() {
+                        availability_state_label(a.state)
+                    } else {
+                        a.badge_text.as_str()
+                    };
+                    let headline = if a.headline.trim().is_empty() {
+                        availability_state_label(a.state)
+                    } else {
+                        a.headline.as_str()
+                    };
+                    crate::widgets::subcard(ui, Some(tone), false, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            crate::widgets::badge(ui, badge_label, tone);
+                            ui.add(egui::Label::new(RichText::new(headline).strong()).wrap());
+                            if let Some(gen_id) = a.generation_id.as_deref() {
+                                let short_gen: String = gen_id.chars().take(16).collect();
+                                crate::widgets::mono_badge(
+                                    ui,
+                                    &short_gen,
+                                    crate::widgets::BadgeTone::Muted,
+                                );
+                            }
+                            if a.tray_throttled {
+                                crate::widgets::badge(
+                                    ui,
+                                    "托盘降频中",
+                                    crate::widgets::BadgeTone::Muted,
+                                );
+                            }
+                        });
+
+                        let mut meta_parts = Vec::new();
+                        if !a.target_url.is_empty() {
+                            meta_parts.push(format!("目标 {}", redact_probe_url(&a.target_url)));
+                        }
+                        if let Some(ts) = a.checked_at.as_deref() {
+                            meta_parts.push(format!("时间 {ts}"));
+                        }
+                        if let (Some(loc), Some(tls), Some(tot)) =
+                            (a.local_ms, a.tls_ms, a.total_ms)
+                        {
+                            meta_parts
+                                .push(format!("本地 {loc} ms · TLS {tls} ms · 总计 {tot} ms"));
+                        } else if let Some(tot) = a.total_ms {
+                            meta_parts.push(format!("总计 {tot} ms"));
+                        }
+                        if let Some(code) = a.http_status {
+                            meta_parts.push(format!("HTTP {code}"));
+                        }
+                        if let Some(in_tag) = a.inbound_tag.as_deref() {
+                            let route_out = a.expected_outbound.as_deref().unwrap_or("未确定");
+                            meta_parts.push(format!("链路 {in_tag} → {route_out}"));
+                        }
+                        if !meta_parts.is_empty() {
+                            ui.add_space(4.0);
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(meta_parts.join(" · ")).small().weak(),
+                                )
+                                .wrap(),
+                            );
+                        }
+
+                        if let Some(stage) = a.fail_stage.as_deref().filter(|s| !s.is_empty()) {
+                            ui.add_space(4.0);
+                            let (danger_fg, _, _) =
+                                crate::widgets::tone_palette(ui, crate::widgets::BadgeTone::Danger);
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(format!("卡点阶段：{stage}"))
+                                        .small()
+                                        .strong()
+                                        .color(danger_fg),
+                                )
+                                .wrap(),
+                            );
+                        }
+                        if let Some(detail) = a.fail_detail.as_deref().filter(|s| !s.is_empty()) {
+                            ui.add(egui::Label::new(RichText::new(detail).small().weak()).wrap());
+                        }
+                        for sug in &a.suggestions {
+                            ui.add(
+                                egui::Label::new(RichText::new(format!("• {sug}")).small()).wrap(),
+                            );
+                        }
+                    });
+                }
+                None => {
+                    crate::widgets::subcard(
+                        ui,
+                        Some(crate::widgets::BadgeTone::Muted),
+                        false,
+                        |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                crate::widgets::badge(
+                                    ui,
+                                    if running { "待检测" } else { "Core 未运行" },
+                                    crate::widgets::BadgeTone::Muted,
+                                );
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(if running {
+                                            "尚未生成本轮代理诊断结果，可点击「立即重新诊断」或指定地址测速。"
+                                        } else {
+                                            "Core 启动后将自动执行首轮端到端代理诊断；你也可以在设置中调整探测策略。"
+                                        })
+                                        .small()
+                                        .weak(),
+                                    )
+                                    .wrap(),
+                                );
+                            });
+                        },
+                    );
+                }
+            }
+
+            ui.add_space(8.0);
+            ui.add(
+                egui::Label::new(
+                    RichText::new("按指定地址诊断（仅本次单次探测，不修改默认设置，支持 http:// 与 https://）")
+                        .small()
+                        .weak(),
+                )
+                .wrap(),
+            );
+            ui.horizontal_wrapped(|ui| {
+                let url_w = (ui.available_width() - 120.0).clamp(160.0, 420.0);
+                crate::widgets::singleline_select_all(
+                    ui,
+                    &mut self.ui.probe_adhoc_url,
+                    url_w,
+                    proxy_model::DEFAULT_PROXY_PROBE_URL,
+                );
+                if ui
+                    .add_enabled(
+                        can_probe && !self.ui.probe_adhoc_url.trim().is_empty(),
+                        egui::Button::new("测试此地址"),
+                    )
+                    .clicked()
+                {
+                    trigger_adhoc = true;
+                }
+            });
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("常用预设：").small().weak());
+                for (preset, title) in [
+                    (
+                        "https://cp.cloudflare.com/generate_204",
+                        "Cloudflare HTTPS 204",
+                    ),
+                    (
+                        "http://cp.cloudflare.com/generate_204",
+                        "Cloudflare HTTP 204",
+                    ),
+                    ("https://www.gstatic.com/generate_204", "gstatic HTTPS 204"),
+                ] {
+                    if crate::widgets::compact_chip(
+                        ui,
+                        title,
+                        self.ui.probe_adhoc_url.trim() == preset,
+                    )
+                    .clicked()
+                    {
+                        self.ui.probe_adhoc_url = preset.to_owned();
+                    }
+                }
+            });
+
+            if let Some(a) = &avail {
+                if !a.steps.is_empty() {
+                    ui.add_space(10.0);
+                    ui.label(RichText::new("五步链路核查").strong());
+                    ui.add_space(4.0);
+                    for step in &a.steps {
+                        let tone = step_tone(step.status);
+                        let dimmed = step.status == DiagnosticStepStatus::Skipped;
+                        crate::widgets::compact_subcard(ui, Some(tone), dimmed, |ui| {
+                            crate::widgets::responsive_compact_header(
+                                ui,
+                                320.0,
+                                |ui| {
+                                    ui.horizontal(|ui| {
+                                        crate::widgets::mono_badge(
+                                            ui,
+                                            &circled_step_index(step.index),
+                                            crate::widgets::BadgeTone::Muted,
+                                        );
+                                        ui.add(
+                                            egui::Label::new(RichText::new(&step.name).strong())
+                                                .wrap(),
+                                        );
+                                    });
+                                },
+                                |ui, _| {
+                                    crate::widgets::badge(ui, &step.label, tone);
+                                },
+                            );
+                            if !step.detail.is_empty() {
+                                ui.add(
+                                    egui::Label::new(RichText::new(&step.detail).small()).wrap(),
+                                );
+                            }
+                            if let Some(ev) = step.evidence.as_deref().filter(|s| !s.is_empty()) {
+                                ui.add(
+                                    egui::Label::new(RichText::new(ev).small().monospace().weak())
+                                        .wrap(),
+                                );
+                            }
+                        });
+                        ui.add_space(4.0);
+                    }
+                }
+
+                if !a.observatory.is_empty() {
+                    ui.add_space(8.0);
+                    ui.label(RichText::new("Xray 原生出站状态（只读 Observatory）").strong());
+                    ui.add_space(4.0);
+                    for obs in &a.observatory {
+                        let obs_tone = if obs.alive {
+                            crate::widgets::BadgeTone::Success
+                        } else {
+                            crate::widgets::BadgeTone::Danger
+                        };
+                        crate::widgets::compact_subcard(ui, Some(obs_tone), false, |ui| {
+                            crate::widgets::responsive_compact_header(
+                                ui,
+                                280.0,
+                                |ui| {
+                                    ui.horizontal(|ui| {
+                                        crate::widgets::mono_badge(
+                                            ui,
+                                            &obs.outbound_tag,
+                                            crate::widgets::BadgeTone::Muted,
+                                        );
+                                        let note = match (obs.delay_ms, obs.last_error.as_deref()) {
+                                            (Some(ms), Some(err)) => format!("{ms} ms · {err}"),
+                                            (Some(ms), None) => format!("{ms} ms"),
+                                            (None, Some(err)) => err.to_owned(),
+                                            (None, None) => "无附加指标".into(),
+                                        };
+                                        ui.add(
+                                            egui::Label::new(RichText::new(note).small().weak())
+                                                .wrap(),
+                                        );
+                                    });
+                                },
+                                |ui, _| {
+                                    crate::widgets::badge(
+                                        ui,
+                                        if obs.alive { "存活" } else { "离线" },
+                                        obs_tone,
+                                    );
+                                },
+                            );
+                        });
+                        ui.add_space(4.0);
+                    }
+                }
+
+                if !a.history.is_empty() {
+                    ui.add_space(8.0);
+                    let total = a.history.len();
+                    let pass_count = a
+                        .history
+                        .iter()
+                        .filter(|s| s.state == ProxyAvailabilityState::Available)
+                        .count();
+                    let pass_rate_pct = (pass_count * 100) / total;
+                    let ok_latencies: Vec<u64> = a
+                        .history
+                        .iter()
+                        .filter(|s| s.state == ProxyAvailabilityState::Available)
+                        .filter_map(|s| s.total_ms)
+                        .collect();
+                    let avg_ms = (!ok_latencies.is_empty())
+                        .then(|| ok_latencies.iter().sum::<u64>() / ok_latencies.len() as u64);
+                    let max_ms = a
+                        .history
+                        .iter()
+                        .filter_map(|s| s.total_ms)
+                        .max()
+                        .unwrap_or(0);
+
+                    ui.label(RichText::new("近期稳定性与延迟曲线（最近 10 次）").strong());
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new(format!(
+                                "通过率 {pass_rate_pct}%（{pass_count}/{total}）"
+                            ))
+                            .small(),
+                        );
+                        ui.label(
+                            RichText::new(format!(
+                                "成功均值 {}",
+                                avg_ms
+                                    .map(|v| format!("{v} ms"))
+                                    .unwrap_or_else(|| "--".into())
+                            ))
+                            .small()
+                            .weak(),
+                        );
+                        ui.label(
+                            RichText::new(format!(
+                                "峰值耗时 {}",
+                                if max_ms > 0 {
+                                    format!("{max_ms} ms")
+                                } else {
+                                    "--".into()
+                                }
+                            ))
+                            .small()
+                            .weak(),
+                        );
+                    });
+                    let bar_area_w = ui.available_width().clamp(160.0, 440.0);
+                    let (rect, resp) =
+                        ui.allocate_exact_size(egui::vec2(bar_area_w, 34.0), egui::Sense::hover());
+                    if ui.is_rect_visible(rect) {
+                        let slots = 10usize;
+                        let gap = 4.0_f32;
+                        let bar_w =
+                            ((rect.width() - gap * (slots as f32 - 1.0)) / slots as f32).max(6.0);
+                        let max_scale = max_ms.max(200) as f32;
+                        let empty_fill = crate::widgets::panel_alt_color(ui);
+                        let offset = slots.saturating_sub(a.history.len());
+                        for idx in 0..slots {
+                            let x0 = rect.min.x + idx as f32 * (bar_w + gap);
+                            let x1 = (x0 + bar_w).min(rect.max.x);
+                            if x1 <= x0 {
+                                continue;
+                            }
+                            if idx < offset {
+                                let bar_rect = egui::Rect::from_min_max(
+                                    egui::pos2(x0, rect.max.y - 4.0),
+                                    egui::pos2(x1, rect.max.y),
+                                );
+                                ui.painter().rect_filled(bar_rect, 2.0, empty_fill);
+                            } else if let Some(sample) = a.history.get(idx - offset) {
+                                let (fg, _, _) = crate::widgets::tone_palette(
+                                    ui,
+                                    availability_tone(sample.state),
+                                );
+                                let frac = sample
+                                    .total_ms
+                                    .map(|ms| (ms as f32 / max_scale).clamp(0.22, 1.0))
+                                    .unwrap_or(0.30);
+                                let bar_h = (rect.height() * frac).clamp(6.0, rect.height());
+                                let bar_rect = egui::Rect::from_min_max(
+                                    egui::pos2(x0, rect.max.y - bar_h),
+                                    egui::pos2(x1, rect.max.y),
+                                );
+                                ui.painter().rect_filled(bar_rect, 3.0, fg);
+                            }
+                        }
+                    }
+                    resp.on_hover_text(format!(
+                        "最近 {} 次探测（由左至右由旧到新）：绿色=可用，橙色=波动/直连，红色=不可用",
+                        a.history.len()
+                    ));
+
+                    egui::CollapsingHeader::new(format!(
+                        "查看近期探测明细（最近 {} 条）",
+                        a.history.len()
+                    ))
+                    .show(ui, |ui| {
+                        for sample in a.history.iter().rev() {
+                            ui.horizontal_wrapped(|ui| {
+                                crate::widgets::badge(
+                                    ui,
+                                    availability_state_label(sample.state),
+                                    availability_tone(sample.state),
+                                );
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(&sample.timestamp).small().monospace().weak(),
+                                    )
+                                    .wrap(),
+                                );
+                                let lat = match (sample.total_ms, sample.tls_ms, sample.http_status)
+                                {
+                                    (Some(tot), Some(tls), Some(code)) => {
+                                        format!("{tot} ms (TLS {tls} ms) · HTTP {code}")
+                                    }
+                                    (Some(tot), None, Some(code)) => {
+                                        format!("{tot} ms · HTTP {code}")
+                                    }
+                                    (Some(tot), _, None) => format!("{tot} ms"),
+                                    _ => "-".into(),
+                                };
+                                ui.add(egui::Label::new(RichText::new(lat).small()).wrap());
+                                if !sample.note.is_empty() {
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(&sample.note).small().weak(),
+                                        )
+                                        .wrap(),
+                                    );
+                                }
+                            });
+                        }
+                    });
+                }
+            }
+        });
+
+        if trigger_default {
+            self.send(Command::CheckProxyAvailability { target_url: None });
+        } else if trigger_adhoc {
+            let target = self.ui.probe_adhoc_url.trim().to_owned();
+            if !target.is_empty() {
+                self.send(Command::CheckProxyAvailability {
+                    target_url: Some(target),
+                });
+            }
+        }
+        if copy_report {
+            let report = self.format_proxy_diagnostic_report();
+            ui.ctx().copy_text(report);
+            self.message = "已复制诊断报告（已脱敏）。".into();
+        }
+    }
+
     pub(in crate::app) fn diagnostics(&mut self, ui: &mut egui::Ui) {
         heading(
             ui,
             "诊断",
             "进程、代理归属与本机探针分别呈现；路由只做静态预测，实际出口需外部验证。",
         );
+        self.proxy_availability_report_card(ui);
+        ui.add_space(16.0);
         card(ui, |ui| {
             ui.label(RichText::new("本机状态").strong().size(18.0));
             line(

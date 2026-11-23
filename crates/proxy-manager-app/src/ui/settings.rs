@@ -7,6 +7,7 @@ impl App {
             for (tab, label) in [
                 (SettingsTab::Core, "Core 与依赖"),
                 (SettingsTab::Startup, "启动行为"),
+                (SettingsTab::Probe, "代理探测"),
                 (SettingsTab::Appearance, "外观"),
                 (SettingsTab::Storage, "数据与存储"),
             ] {
@@ -51,6 +52,7 @@ impl App {
                         );
                     });
                 }
+                SettingsTab::Probe => self.proxy_probe_settings(ui),
                 SettingsTab::Appearance => {
                     ui.label(RichText::new("显示风格").strong().size(18.0));
                     ui.label("立即生效，并记住当前用户的选择。跟随系统会响应系统主题变化。");
@@ -313,6 +315,143 @@ impl App {
             .weak(),
         );
     }
+    fn proxy_probe_settings(&mut self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("代理可用性自动探测").strong().size(18.0));
+        ui.add(
+            egui::Label::new(
+                RichText::new("修改后热生效，不会重启 Core 或中断现有连接。默认采用轻量 HTTPS/HTTP 204 端到端实测。")
+                    .small()
+                    .weak(),
+            )
+            .wrap(),
+        );
+        ui.separator();
+        let can_edit = self.ui.connected && !self.shutdown_requested;
+        ui.add_enabled_ui(can_edit, |ui| {
+            let mut draft = self.ui.probe_config_draft.clone();
+            let before = draft.clone();
+
+            ui.checkbox(
+                &mut draft.enabled,
+                "启用自动探测（启动/切换配置就绪后立即检测，并按间隔保持准实时）",
+            );
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label("前台巡检间隔");
+                let interval_label = format!("每 {} 秒", draft.interval_secs);
+                ui.add_enabled_ui(draft.enabled, |ui| {
+                    egui::ComboBox::from_id_salt("probe-interval-select")
+                        .width(150.0)
+                        .selected_text(interval_label)
+                        .show_ui(ui, |ui| {
+                            for (secs, label) in [
+                                (15u64, "每 15 秒"),
+                                (30, "每 30 秒（推荐）"),
+                                (60, "每 60 秒"),
+                                (120, "每 120 秒"),
+                            ] {
+                                ui.selectable_value(&mut draft.interval_secs, secs, label);
+                            }
+                        });
+                });
+                ui.add(
+                    egui::Label::new(
+                        RichText::new("单次偶发失败 3 秒后自动复测，连续 2 次失败才标红")
+                            .small()
+                            .weak(),
+                    )
+                    .wrap(),
+                );
+            });
+            ui.add_space(4.0);
+            ui.checkbox(
+                &mut draft.tray_throttle,
+                "主窗口隐藏到系统托盘后降频至 120 秒（重新打开窗口立即补测）",
+            );
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label("单次超时上限");
+                let timeout_label = format!("{} 秒", draft.timeout_secs);
+                egui::ComboBox::from_id_salt("probe-timeout-select")
+                    .width(130.0)
+                    .selected_text(timeout_label)
+                    .show_ui(ui, |ui| {
+                        for (secs, label) in [
+                            (3u64, "3 秒"),
+                            (5, "5 秒（默认）"),
+                            (8, "8 秒"),
+                            (10, "10 秒"),
+                        ] {
+                            ui.selectable_value(&mut draft.timeout_secs, secs, label);
+                        }
+                    });
+            });
+            ui.add_space(6.0);
+            ui.label("默认探测 URL（支持 https:// 与 http://）");
+            let url_width = if ui.max_rect().width().is_finite() {
+                (ui.max_rect().width() - 36.0).clamp(180.0, 520.0)
+            } else {
+                380.0
+            };
+            crate::widgets::singleline_select_all(
+                ui,
+                &mut draft.target_url,
+                url_width,
+                proxy_model::DEFAULT_PROXY_PROBE_URL,
+            );
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("常用预设：").small().weak());
+                for (preset, title) in [
+                    (
+                        "https://cp.cloudflare.com/generate_204",
+                        "Cloudflare HTTPS 204（推荐）",
+                    ),
+                    (
+                        "http://cp.cloudflare.com/generate_204",
+                        "Cloudflare HTTP 204（免 TLS）",
+                    ),
+                    ("https://www.gstatic.com/generate_204", "gstatic HTTPS 204"),
+                    ("https://www.google.com/generate_204", "Google HTTPS 204"),
+                ] {
+                    if crate::widgets::compact_chip(ui, title, draft.target_url.trim() == preset)
+                        .clicked()
+                    {
+                        draft.target_url = preset.to_owned();
+                    }
+                }
+            });
+            if draft != before {
+                self.ui.probe_config_draft = draft;
+                self.ui.probe_config_dirty = true;
+            }
+        });
+        ui.separator();
+        let can_retest = can_edit
+            && self.is_running()
+            && self
+                .status
+                .as_ref()
+                .and_then(|s| s.proxy_availability.as_ref())
+                .is_none_or(|a| !a.checking && a.state != ProxyAvailabilityState::Unsupported);
+        ui.horizontal_wrapped(|ui| {
+            if primary(ui, "保存设置（热生效）", can_edit && !self.busy) {
+                let config = self.ui.probe_config_draft.clone();
+                self.send(Command::SaveProxyProbeConfig { config });
+            }
+            if ui
+                .add_enabled(
+                    can_retest && !self.busy,
+                    egui::Button::new("保存并立即测一次"),
+                )
+                .clicked()
+            {
+                let config = self.ui.probe_config_draft.clone();
+                self.send(Command::SaveProxyProbeConfig { config });
+                self.send(Command::CheckProxyAvailability { target_url: None });
+            }
+        });
+    }
+
     pub(in crate::app) fn setup(&mut self, ui: &mut egui::Ui) {
         if !self.ui.settings_loaded || !self.ui.profiles_loaded {
             heading(ui, "欢迎使用 Proxy Pilot", "正在读取已有配置与设置…");

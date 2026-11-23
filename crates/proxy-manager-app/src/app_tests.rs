@@ -559,6 +559,7 @@ fn status(generation: Option<Generation>) -> Status {
         listener_state: "Ready".into(),
         pac_state: "Stopped".into(),
         auto_connect_notice: None,
+        proxy_availability: None,
     }
 }
 fn generation(app: &App) -> Generation {

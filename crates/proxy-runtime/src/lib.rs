@@ -523,7 +523,7 @@ impl ManagedCore {
 /// Resolve a local connectable address for a listener IP. Wildcard binds
 /// (`0.0.0.0` / `::`) map to loopback (`127.0.0.1` / `::1`); non-loopback
 /// interface addresses are rejected.
-pub(crate) fn local_bind_target(ip: std::net::IpAddr) -> Option<std::net::IpAddr> {
+pub fn local_bind_target(ip: std::net::IpAddr) -> Option<std::net::IpAddr> {
     if ip.is_unspecified() {
         Some(if ip.is_ipv4() {
             std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
