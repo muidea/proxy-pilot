@@ -1,8 +1,8 @@
 # Proxy Pilot 交接文档
 
-更新时间：2026-11-22
+更新时间：2026-11-23
 
-本文用于把当前工作区交给下一位开发者、评审者或 Windows 验证人员。当前已发布基线为 `efe1fcf`（`v0.1.1-rc.4`）；当前源码版本为 `v0.1.1-rc.46`。不能把已发布的 `v0.1.1-rc.4` 当作当前源码版本。
+本文用于把当前工作区交给下一位开发者、评审者或 Windows 验证人员。当前已发布基线为 `efe1fcf`（`v0.1.1-rc.4`）；当前源码版本为 `v0.1.1-rc.47`。不能把已发布的 `v0.1.1-rc.4` 当作当前源码版本。
 
 ## 当前产品边界
 
@@ -34,7 +34,7 @@ cargo fmt --all -- --check
 git diff --check
 ```
 
-当前基线（`v0.1.1-rc.46`）全工作区 `--locked` 常规回归为 **296 项通过，7 项需显式 `XRAY_TEST_CORE` 环境用例忽略**；其中 `proxy-pilot`（`proxy-manager-app`）单元/无窗口回归 **136 项通过**（1 项需显式 Core 忽略），`proxy-supervisor` 库测试 **52 项通过**（1 项需显式 Core 忽略），`windows-integration` **11 项通过**（1 项需原生计划任务忽略），集成测试 **31 项通过**，完整覆盖 `geosite.dat`/`geoip.dat` 解析与母域折叠、`AutoRules`/清单模板、PAC 自动随激活配置联动热同步、Windows `PacServer` 阻塞连接与大脚本响应、5,000 条域名与 2,000 条虚拟滚动、SSH 凭证 DPAPI/脱敏存储/内联原子创建/只读 `TestSshHost` 握手校验与 Mock SSH `direct-tcpip` 端到端转发、`ssh -L` 解析/预设/冲突一键修复/Xray JSON 异常解耦与批量启停交互、总览操作归拢与 4 字简洁文案对齐、全界面按钮风格与 `36 px` 高度统一对齐、Windows 无盘符根路径便携判定修复、弹出框边框与 `18 px` 标题字号布局、顶栏版本号右上角对齐、草稿保存后重启 Core 无 `ASSET_REVISION_CONFLICT`、`--background` 二帧隐藏与托盘唤醒、后台 IPC 并发就绪检测、日志级别调节与导出、外部代理冲突解除、登录自启 `STARTUP_CONFLICT` 迁移容错与重新接管解除及恢复期取消开机自启等场景。已交叉编译构建 `dist/proxy-pilot-0.1.1-rc.46-windows-x64.zip` 并完成 CRC 与逐文件一致性校验。
+当前基线（`v0.1.1-rc.47`）全工作区 `--locked` 常规回归为 **299 项通过，7 项需显式 `XRAY_TEST_CORE` 环境用例忽略**；其中 `proxy-pilot`（`proxy-manager-app`）单元/无窗口回归 **139 项通过**（1 项需显式 Core 忽略），`proxy-supervisor` 库测试 **52 项通过**（1 项需显式 Core 忽略），`windows-integration` **11 项通过**（1 项需原生计划任务忽略），集成测试 **31 项通过**，完整覆盖 `geosite.dat`/`geoip.dat` 解析与母域折叠、`AutoRules`/清单模板、PAC 自动随激活配置联动热同步、Windows `PacServer` 阻塞连接与大脚本响应、5,000 条域名与 2,000 条虚拟滚动、SSH 凭证 DPAPI/脱敏存储/内联原子创建/只读 `TestSshHost` 握手校验与 Mock SSH `direct-tcpip` 端到端转发、`ssh -L` 解析/预设/冲突一键修复/Xray JSON 异常解耦与批量启停交互、总览原子化状态胶囊与结构化隧道迷你卡片、全界面 19 个视图 × 6 档窗口尺寸（`760×500`–`1920×1040`）× 双主题无重叠/无水平溢出响应式回归、总览操作归拢与 4 字简洁文案对齐、全界面按钮风格与 `36 px` 高度统一对齐、Windows 无盘符根路径便携判定修复、弹出框边框与 `18 px` 标题字号布局、顶栏版本号右上角对齐、草稿保存后重启 Core 无 `ASSET_REVISION_CONFLICT`、`--background` 二帧隐藏与托盘唤醒、后台 IPC 并发就绪检测、日志级别调节与导出、外部代理冲突解除、登录自启 `STARTUP_CONFLICT` 迁移容错与重新接管解除及恢复期取消开机自启等场景。已交叉编译构建 `dist/proxy-pilot-0.1.1-rc.47-windows-x64.zip` 并完成 CRC 与逐文件一致性校验。
 
 Windows GNU 原生验证使用用户指定的 `C:\v2rayN\bin\Xray\xray.exe`，已通过：
 
@@ -84,8 +84,8 @@ Windows GNU 原生验证使用用户指定的 `C:\v2rayN\bin\Xray\xray.exe`，�
 ## 重要文件入口
 
 - [README.md](../README.md)：用户安装、配置和部署说明。
-- [validation-guide.md](validation-guide.md)：当前验证包实操指南（`v0.1.1-rc.46`）。
-- [releases/v0.1.1-rc.46.md](releases/v0.1.1-rc.46.md)：`rc.46` 变更与测试摘要（另见 `v0.1.1-rc.19.md`–`v0.1.1-rc.45.md`）。
+- [validation-guide.md](validation-guide.md)：当前验证包实操指南（`v0.1.1-rc.47`）。
+- [releases/v0.1.1-rc.47.md](releases/v0.1.1-rc.47.md)：`rc.47` 变更与测试摘要（另见 `v0.1.1-rc.19.md`–`v0.1.1-rc.46.md`）。
 - [phase0-2-backlog.md](phase0-2-backlog.md)：验收编号和剩余能力清单。
 - [phase0-2-remaining-closeout.md](phase0-2-remaining-closeout.md)：本轮收口内容与证据。
 - [phase0-2-design-crosscheck.md](phase0-2-design-crosscheck.md)：按设计文档逐项核对后的剩余项、未登记设计项和证据边界。
@@ -108,7 +108,7 @@ Windows GNU 原生验证使用用户指定的 `C:\v2rayN\bin\Xray\xray.exe`，�
 ## 接手后的建议顺序
 
 1. 保持当前用户模式不变，先运行 Linux 全工作区 `--locked` 测试和双目标 Clippy。
-2. 在干净 Windows 测试账户实机验证 **`v0.1.1-rc.46`**（若从 `rc.38` 升级，注意旧版名为 `xray-manager.exe` 与 `XrayPilot-*` 自启任务，请先完全退出旧版并取消旧自启后再解压新目录并按需拷贝 `data/`）：重点验证 **SSH 隧道全链路交互（总览/配置页 `+ SSH 隧道`、`ssh -L` 命令解析、一站式跳板机内联创建凭证、只读 `测试连接`、常见端口预设、`user@host:port` 拆分、冲突「改用空闲端口」、留空自动命名、「保存并立即启动」、跳板机 `+ 转发`、隧道克隆/复制/批量启停及 Xray JSON 异常解耦）、总览卡片归拢后的「停止 Core」「重启 Core」「启动 Core」「管理配置」「路由诊断」「管理转发」交互与排版、全界面操作按钮统一风格、拷贝 `data/` 或重设登录自启不再触发 `STARTUP_CONFLICT` 死锁及「重新接管自启计划任务…」恢复流程、PAC 大脚本与切换不再触发 `PAC_SERVICE_UNAVAILABLE`、SSH 凭证账号密码/私钥 DPAPI 持久化、真实 SSH 跳板机指纹探测与 TCP 转发、保留原 Xray `dokodemo-door` 转发、配置自动保存后重启 Core、PAC 自动联动激活配置与热同步、总览默认隐藏「最近活动与版本」、顶栏右上角版本显示、优化后的弹出框边框/字号比例、Windows 冷启动 `--background` 防闪烁托盘唤醒与 `PROXY_LEASE_CONFLICT` 解除**。
+2. 在干净 Windows 测试账户实机验证 **`v0.1.1-rc.47`**（若从 `rc.38` 升级，注意旧版名为 `xray-manager.exe` 与 `XrayPilot-*` 自启任务，请先完全退出旧版并取消旧自启后再解压新目录并按需拷贝 `data/`）：重点验证 **总览页原子化状态徽章无竖排挤压及右侧出界、Xray/SSH 隧道结构化迷你卡片与紧凑操作按钮、左卡 SSH 隧道汇总、拖拽主窗口在窄屏/中屏/宽屏（约 `760×500`–`1920×1040`）下全六页自适应换行且不裁剪控件、SSH 隧道全链路交互（总览/配置页 `+ SSH 隧道`、`ssh -L` 命令解析、一站式跳板机内联创建凭证、只读 `测试连接`、常见端口预设、`user@host:port` 拆分、冲突「改用空闲端口」、留空自动命名、「保存并立即启动」、跳板机 `+ 转发`、隧道克隆/复制/批量启停及 Xray JSON 异常解耦）、总览卡片归拢后的交互与排版、全界面操作按钮统一风格、拷贝 `data/` 或重设登录自启不再触发 `STARTUP_CONFLICT` 死锁及「重新接管自启计划任务…」恢复流程、PAC 大脚本与切换不再触发 `PAC_SERVICE_UNAVAILABLE`、SSH 凭证账号密码/私钥 DPAPI 持久化、真实 SSH 跳板机指纹探测与 TCP 转发、保留原 Xray `dokodemo-door` 转发、配置自动保存后重启 Core、PAC 自动联动激活配置与热同步、总览默认隐藏「最近活动与版本」、顶栏右上角版本显示、优化后的弹出框边框/字号比例、Windows 冷启动 `--background` 防闪烁托盘唤醒与 `PROXY_LEASE_CONFLICT` 解除**。
 3. 单独安排真实 WinINet（V01/V10）、注销/登录（V02）、跨 SID（V06）、磁盘满和断电测试（V04/V05）；测试前保存代理设置及数据目录备份。
-4. 当前代码基线已更新至 `v0.1.1-rc.46`；推送并运行远端 GitHub Actions CI（V09）后，再生成正式发布包和 SHA-256 校验文件。
+4. 当前代码基线已更新至 `v0.1.1-rc.47`；推送并运行远端 GitHub Actions CI（V09）后，再生成正式发布包和 SHA-256 校验文件。
 5. 只有在对应真实环境证据完成后，才更新 V01/V02/V04–V10 状态；不要用单元测试或 GNU 本机构建替代 MSVC、真实系统代理、PAC 客户端和人工交互验收。
