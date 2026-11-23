@@ -1217,7 +1217,7 @@ impl App {
                             }
                         });
                         ui.horizontal_wrapped(|ui| {
-                            let cmd_w = (ui.available_width() - 96.0).max(160.0);
+                            let cmd_w = (ui.available_width() - 104.0).max(160.0);
                             crate::widgets::singleline_select_all(
                                 ui,
                                 &mut self.ui.pf_form.ssh_cmd_input,
@@ -1261,8 +1261,13 @@ impl App {
                             }
                         });
                     ui.horizontal_wrapped(|ui| {
+                        let combo_w = if ui.max_rect().width().is_finite() {
+                            (ui.max_rect().width() - 148.0).clamp(180.0, 430.0)
+                        } else {
+                            300.0
+                        };
                         egui::ComboBox::from_id_salt("pf-ssh-host-select")
-                            .width((ui.available_width() - 140.0).clamp(200.0, 440.0))
+                            .width(combo_w)
                             .selected_text(selected_host_label)
                             .show_ui(ui, |ui| {
                                 for host in &ssh_hosts {

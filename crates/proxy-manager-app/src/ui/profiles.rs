@@ -25,15 +25,16 @@ impl App {
             "编辑内容自动保存，不影响当前运行中的 Core；点击「检查并应用」校验并切换。",
         );
         let enabled = self.write_blocker().is_none();
-        if ui.available_width() >= 780.0 {
-            let picker_width = 216.0;
+        if ui.available_width() >= 840.0 {
+            let picker_width = (ui.available_width() * 0.20).clamp(204.0, 256.0).floor();
             let height = (viewport_height - (ui.cursor().top() - page_top)).max(400.0);
+            let list_max_height = (height - 196.0).clamp(150.0, 700.0);
             let editor_width = ui.available_width() - picker_width - ui.spacing().item_spacing.x;
             ui.horizontal_top(|ui| {
                 let picker = ui.allocate_ui_with_layout(
                     egui::vec2(picker_width, height),
                     egui::Layout::top_down(egui::Align::Min),
-                    |ui| self.profile_picker(ui, enabled, true),
+                    |ui| self.profile_picker(ui, enabled, true, list_max_height),
                 );
                 ui.allocate_ui_with_layout(
                     egui::vec2(editor_width, height),
@@ -42,8 +43,8 @@ impl App {
                 );
             });
         } else {
-            self.profile_picker(ui, enabled, false);
-            ui.add_space(16.0);
+            self.profile_picker(ui, enabled, false, 0.0);
+            ui.add_space(10.0);
             let height = (viewport_height - (ui.cursor().top() - page_top)).max(400.0);
             ui.allocate_ui_with_layout(
                 egui::vec2(ui.available_width(), height),
@@ -52,65 +53,76 @@ impl App {
             );
         }
     }
-    fn profile_picker(&mut self, ui: &mut egui::Ui, enabled: bool, vertical: bool) {
+    fn profile_picker(
+        &mut self,
+        ui: &mut egui::Ui,
+        enabled: bool,
+        vertical: bool,
+        list_max_height: f32,
+    ) {
         card(ui, |ui| {
-            ui.label(
-                RichText::new(format!("我的配置 · {}", self.profiles.len()))
-                    .small()
-                    .weak(),
-            );
-            if vertical && !self.profiles.is_empty() {
-                egui::ScrollArea::vertical()
-                    .max_height(430.0)
-                    .id_salt("profile-list")
-                    .show(ui, |ui| {
-                        for profile in self.profiles.clone() {
-                            self.profile_choice(ui, profile);
-                        }
-                    });
-            } else if !self.profiles.is_empty() {
-                egui::ScrollArea::horizontal()
-                    .id_salt("profile-strip")
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
+            if vertical {
+                ui.label(
+                    RichText::new(format!("我的配置 · {}", self.profiles.len()))
+                        .small()
+                        .weak(),
+                );
+                if !self.profiles.is_empty() {
+                    egui::ScrollArea::vertical()
+                        .max_height(list_max_height)
+                        .id_salt("profile-list")
+                        .show(ui, |ui| {
                             for profile in self.profiles.clone() {
-                                self.profile_choice(ui, profile);
+                                self.profile_choice(ui, profile, true);
                             }
                         });
-                    });
-            }
-            if vertical {
-                self.profile_actions(ui, enabled, ui.available_width());
+                }
+                let action = profile_action_buttons(ui, enabled, ui.available_width(), false);
+                self.apply_profile_picker_action(action);
             } else {
-                ui.horizontal(|ui| self.profile_actions(ui, enabled, 80.0));
+                let count_label = format!("我的配置 · {}", self.profiles.len());
+                let mut action = None;
+                crate::widgets::responsive_header(
+                    ui,
+                    420.0,
+                    |ui| {
+                        ui.label(RichText::new(&count_label).small().weak());
+                    },
+                    |ui, rtl| {
+                        action = profile_action_buttons(ui, enabled, 80.0, rtl);
+                    },
+                );
+                self.apply_profile_picker_action(action);
+                if !self.profiles.is_empty() {
+                    egui::ScrollArea::horizontal()
+                        .id_salt("profile-strip")
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                for profile in self.profiles.clone() {
+                                    self.profile_choice(ui, profile, false);
+                                }
+                            });
+                        });
+                }
             }
         });
     }
-    fn profile_actions(&mut self, ui: &mut egui::Ui, enabled: bool, width: f32) {
-        for label in ["新建", "导入", "刷新"] {
-            if ui
-                .add_enabled(
-                    enabled || label == "刷新",
-                    egui::Button::new(label).min_size(egui::vec2(width, CONTROL_HEIGHT)),
-                )
-                .clicked()
-            {
-                match label {
-                    "新建" => self.begin_create(false, false),
-                    "导入" => self.begin_create(true, false),
-                    _ => {
-                        self.refresh_profiles();
-                        if !self.profile_id.is_empty() {
-                            self.send(Command::GetProfile {
-                                profile_id: self.profile_id.clone(),
-                            });
-                        }
-                    }
+    fn apply_profile_picker_action(&mut self, action: Option<usize>) {
+        match action {
+            Some(0) => self.begin_create(false, false),
+            Some(1) => self.begin_create(true, false),
+            Some(2) => {
+                self.refresh_profiles();
+                if !self.profile_id.is_empty() {
+                    self.send(Command::GetProfile {
+                        profile_id: self.profile_id.clone(),
+                    });
                 }
             }
+            _ => {}
         }
     }
-    fn profile_choice(&mut self, ui: &mut egui::Ui, p: ProfileSummary) {
+    fn profile_choice(&mut self, ui: &mut egui::Ui, p: ProfileSummary, vertical: bool) {
         let dirty = if p.id == self.profile_id {
             self.has_draft_edits()
         } else {
@@ -157,7 +169,12 @@ impl App {
                 crate::widgets::border_color(ui)
             },
         );
-        let card_width = ui.available_width().clamp(140.0, 184.0);
+        let hover_text = format!("{title}\n{meta}");
+        let card_width = if vertical {
+            (ui.available_width() - 2.0).max(140.0)
+        } else {
+            188.0
+        };
         let frame_resp = egui::Frame::new()
             .fill(fill)
             .stroke(stroke)
@@ -175,6 +192,7 @@ impl App {
                 ui.make_persistent_id(("profile-item", &p.id)),
                 egui::Sense::click(),
             )
+            .on_hover_text(hover_text)
             .on_hover_cursor(egui::CursorIcon::PointingHand);
         if click_resp.clicked() && self.selected_profile != p.id {
             if self.ui.draft_conflict || self.ui.unreadable_drafts.contains(&self.profile_id) {
@@ -183,7 +201,9 @@ impl App {
                 self.switch_profile(p.id);
             }
         }
-        ui.add_space(4.0);
+        if vertical {
+            ui.add_space(4.0);
+        }
     }
     fn profile_editor(&mut self, ui: &mut egui::Ui, enabled: bool, min_height: f32) {
         if self.profile_id.is_empty() {
@@ -196,7 +216,8 @@ impl App {
         card_with_min_height(ui, min_height, |ui| {
             ui.horizontal_wrapped(|ui| {
                 if let Some(mut name) = self.ui.inline_rename.clone() {
-                    let response = ui.add(singleline(&mut name, 220.0).char_limit(80));
+                    let rename_w = ui.available_width().clamp(120.0, 220.0);
+                    let response = ui.add(singleline(&mut name, rename_w).char_limit(80));
                     let enter =
                         response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if ui.button("确定").clicked() || enter {
@@ -297,31 +318,48 @@ impl App {
             } else {
                 "端口转发".into()
             };
-            if ui.available_width() >= 760.0 {
+            if ui.available_width() >= 750.0 {
                 let mut next_tab = self.ui.profile_tab;
-                egui::Sides::new().show(
+                let before = (self.mode, self.http_tag.clone());
+                let mut next_mode = self.mode;
+                let mut next_http = self.http_tag.clone();
+                let listeners = self.compatible_http_listeners();
+                if matches!(next_mode, ProxyMode::Global | ProxyMode::Pac)
+                    && !listeners.iter().any(|(tag, _)| tag == &next_http)
+                    && let Some((first, _)) = listeners.first()
+                {
+                    next_http = first.clone();
+                }
+                egui::Sides::new().shrink_left().wrap().show(
                     ui,
                     |ui| {
-                        for (tab, title) in [
-                            (ProfileTab::Outbounds, "节点"),
-                            (ProfileTab::Routing, "分流规则"),
-                            (ProfileTab::PortForward, pf_title.as_str()),
-                            (ProfileTab::Advanced, "更多与源码"),
-                        ] {
-                            if crate::widgets::pill_tab(ui, title, next_tab == tab).clicked() {
-                                next_tab = tab;
+                        ui.horizontal_wrapped(|ui| {
+                            for (tab, title) in [
+                                (ProfileTab::Outbounds, "节点"),
+                                (ProfileTab::Routing, "分流规则"),
+                                (ProfileTab::PortForward, pf_title.as_str()),
+                                (ProfileTab::Advanced, "更多与源码"),
+                            ] {
+                                if crate::widgets::pill_tab(ui, title, next_tab == tab).clicked() {
+                                    next_tab = tab;
+                                }
                             }
-                        }
+                        });
                     },
                     |ui| {
-                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            ui.add_enabled_ui(enabled, |ui| {
-                                self.proxy_draft_controls_inline(ui);
-                            });
+                        ui.add_enabled_ui(enabled, |ui| {
+                            render_proxy_draft_controls(
+                                ui,
+                                &listeners,
+                                &mut next_mode,
+                                &mut next_http,
+                                true,
+                            );
                         });
                     },
                 );
                 self.ui.profile_tab = next_tab;
+                self.apply_proxy_draft_selection(before, next_mode, next_http);
             } else {
                 ui.horizontal_wrapped(|ui| {
                     for (tab, title) in [
@@ -366,6 +404,7 @@ impl App {
                             .id_salt("profile-body")
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
+                                ui.set_max_width(ui.available_width());
                                 self.profile_body(
                                     ui,
                                     enabled && self.selected_profile == self.profile_id,
@@ -399,29 +438,23 @@ impl App {
             );
             ui.add_space(4.0);
         }
-        let current = self
+        let current_full = self
             .committed_id()
             .map(|id| self.ui.workspace.name(id))
             .unwrap_or("无");
-        let status_hint = if self.has_draft_edits() || self.has_unapplied_runtime_diff() {
-            format!(
-                "待点击「检查并应用」生效到 Core · 当前{}：{current}",
-                if self.is_running() {
-                    "运行"
-                } else {
-                    "上次应用"
-                }
-            )
+        let current_short = crate::widgets::ellipsize(current_full, 24);
+        let state_label = if self.is_running() {
+            "运行"
         } else {
-            format!(
-                "当前编辑内容与正在运行的 Core 一致 · 当前{}：{current}",
-                if self.is_running() {
-                    "运行"
-                } else {
-                    "上次应用"
-                }
-            )
+            "上次应用"
         };
+        let prefix = if self.has_draft_edits() || self.has_unapplied_runtime_diff() {
+            "待点击「检查并应用」生效到 Core"
+        } else {
+            "当前编辑内容与正在运行的 Core 一致"
+        };
+        let status_hint = format!("{prefix} · 当前{state_label}：{current_short}");
+        let full_status_hint = format!("{prefix} · 当前{state_label}：{current_full}");
         let hint_tone = if self.has_draft_edits() || self.has_unapplied_runtime_diff() {
             crate::widgets::BadgeTone::Warn
         } else {
@@ -436,8 +469,9 @@ impl App {
                     ui.visuals().weak_text_color()
                 },
             ))
-            .truncate(),
-        );
+            .wrap(),
+        )
+        .on_hover_text(full_status_hint);
         ui.horizontal_wrapped(|ui| {
             if ui
                 .add_enabled(
@@ -1153,137 +1187,160 @@ impl App {
             entries.len()
         );
         crate::widgets::subcard(ui, None, true, |ui| {
-            let add_buttons = |app: &mut App, ui: &mut egui::Ui| {
-                if primary(ui, "+ SSH 隧道", ssh_ctl_enabled) {
-                    app.ui.pf_form = crate::port_forward::PortForwardForm::from_new_ssh(
-                        parsed_value.as_ref(),
-                        &paused,
-                        &ssh_forwards,
-                        default_ssh_host,
-                    );
-                    app.ui.pf_error = None;
-                    app.ui.dialog = Some(Dialog::PortForward);
-                }
-                let xray_btn = ui
-                    .add_enabled(
-                        enabled && parsed_value.is_some(),
-                        egui::Button::new("+ Xray 转发"),
-                    )
-                    .on_hover_text(if parsed_value.is_none() {
-                        "当前 Xray 草稿存在 JSON 语法错误，请先修正语法；SSH 隧道仍可正常使用"
-                    } else {
-                        "新增 Xray (dokodemo-door) 端口转发"
-                    });
-                if xray_btn.clicked()
-                    && let Some(ref val) = parsed_value
-                {
-                    app.ui.pf_form = crate::port_forward::PortForwardForm::from_new_with_ssh(
-                        val,
-                        &paused,
-                        &ssh_forwards,
-                    );
-                    app.ui.pf_error = None;
-                    app.ui.dialog = Some(Dialog::PortForward);
-                }
-            };
-            if ui.available_width() >= 600.0 {
-                egui::Sides::new().show(
-                    ui,
-                    |ui| {
-                        ui.vertical(|ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(
-                                    RichText::new("本地端口转发（SSH 隧道 / Xray Core）")
-                                        .strong()
-                                        .size(15.5),
-                                );
-                                crate::widgets::badge(
-                                    ui,
-                                    &summary_text,
-                                    crate::widgets::BadgeTone::Muted,
-                                );
-                            });
+            let mut open_new_ssh = false;
+            let mut open_new_xray = false;
+            crate::widgets::responsive_header(
+                ui,
+                640.0,
+                |ui| {
+                    ui.vertical(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.label(
+                                RichText::new("本地端口转发（SSH 隧道 / Xray Core）")
+                                    .strong()
+                                    .size(15.5),
+                            );
+                            crate::widgets::badge(
+                                ui,
+                                &summary_text,
+                                crate::widgets::BadgeTone::Muted,
+                            );
+                        });
+                        ui.add(
+                            egui::Label::new(
                                 RichText::new(
                                     "SSH 隧道独立于 Xray Core，可随时按需启停；Xray 转发写入当前配置并随 Core 运行。",
                                 )
                                 .small()
                                 .weak(),
-                            );
-                        });
-                    },
-                    |ui| {
-                        ui.horizontal_wrapped(|ui| add_buttons(self, ui));
-                    },
+                            )
+                            .wrap(),
+                        );
+                    });
+                },
+                |ui, rtl| {
+                    let xray_hover = if parsed_value.is_none() {
+                        "当前 Xray 草稿存在 JSON 语法错误，请先修正语法；SSH 隧道仍可正常使用"
+                    } else {
+                        "新增 Xray (dokodemo-door) 端口转发"
+                    };
+                    for idx in if rtl { [1, 0] } else { [0, 1] } {
+                        match idx {
+                            0 if primary(ui, "+ SSH 隧道", ssh_ctl_enabled) => {
+                                open_new_ssh = true;
+                            }
+                            1 if ui
+                                .add_enabled(
+                                    enabled && parsed_value.is_some(),
+                                    egui::Button::new("+ Xray 转发"),
+                                )
+                                .on_hover_text(xray_hover)
+                                .clicked() =>
+                            {
+                                open_new_xray = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                },
+            );
+            if open_new_ssh {
+                self.ui.pf_form = crate::port_forward::PortForwardForm::from_new_ssh(
+                    parsed_value.as_ref(),
+                    &paused,
+                    &ssh_forwards,
+                    default_ssh_host,
                 );
-            } else {
-                ui.label(
-                    RichText::new("本地端口转发（SSH 隧道 / Xray Core）")
-                        .strong()
-                        .size(15.5),
+                self.ui.pf_error = None;
+                self.ui.dialog = Some(Dialog::PortForward);
+            }
+            if open_new_xray && let Some(ref val) = parsed_value {
+                self.ui.pf_form = crate::port_forward::PortForwardForm::from_new_with_ssh(
+                    val,
+                    &paused,
+                    &ssh_forwards,
                 );
-                ui.label(
-                    RichText::new(
-                        "SSH 隧道独立于 Xray Core，可随时按需启停；Xray 转发写入当前配置并随 Core 运行。",
-                    )
-                    .small()
-                    .weak(),
-                );
-                ui.horizontal_wrapped(|ui| {
-                    add_buttons(self, ui);
-                    crate::widgets::badge(ui, &summary_text, crate::widgets::BadgeTone::Muted);
-                });
+                self.ui.pf_error = None;
+                self.ui.dialog = Some(Dialog::PortForward);
             }
         });
         ui.add_space(10.0);
 
         if !ssh_forwards.is_empty() || entries.is_empty() || parsed_value.is_none() {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(
-                    RichText::new("SSH 隧道（独立按需转发，不受 Xray JSON 影响）")
-                        .strong()
-                        .size(14.5),
-                );
-                crate::widgets::badge(ui, "独立于 Core", crate::widgets::BadgeTone::Success);
-                if ssh_forwards.len() >= 2 {
-                    let all_running = ssh_forwards.iter().all(|f| {
-                        ssh_runtime
-                            .iter()
-                            .find(|r| r.forward_id == f.id)
-                            .is_some_and(|r| r.state == SshForwardState::Running)
-                    });
-                    let any_active = ssh_runtime.iter().any(|r| {
-                        matches!(
-                            r.state,
-                            SshForwardState::Running | SshForwardState::Connecting
-                        )
-                    });
-                    if ui
-                        .add_enabled(
-                            ssh_ctl_enabled && !all_running,
-                            egui::Button::new("全部启动"),
-                        )
-                        .clicked()
-                    {
-                        self.send(Command::StartAllSshForwards);
-                    }
-                    if ui
-                        .add_enabled(ssh_ctl_enabled && any_active, egui::Button::new("全部停止"))
-                        .clicked()
-                    {
-                        self.send(Command::StopAllSshForwards);
-                    }
-                }
+            let all_running = !ssh_forwards.is_empty()
+                && ssh_forwards.iter().all(|f| {
+                    ssh_runtime
+                        .iter()
+                        .find(|r| r.forward_id == f.id)
+                        .is_some_and(|r| r.state == SshForwardState::Running)
+                });
+            let any_active = ssh_runtime.iter().any(|r| {
+                matches!(
+                    r.state,
+                    SshForwardState::Running | SshForwardState::Connecting
+                )
             });
+            let mut start_all = false;
+            let mut stop_all = false;
+            crate::widgets::responsive_header(
+                ui,
+                480.0,
+                |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new("SSH 隧道").strong().size(14.5));
+                        crate::widgets::badge(
+                            ui,
+                            "独立于 Core",
+                            crate::widgets::BadgeTone::Success,
+                        );
+                    });
+                },
+                |ui, rtl| {
+                    if ssh_forwards.len() >= 2 {
+                        for idx in if rtl { [1, 0] } else { [0, 1] } {
+                            match idx {
+                                0 if ui
+                                    .add_enabled(
+                                        ssh_ctl_enabled && !all_running,
+                                        egui::Button::new("全部启动"),
+                                    )
+                                    .clicked() =>
+                                {
+                                    start_all = true;
+                                }
+                                1 if ui
+                                    .add_enabled(
+                                        ssh_ctl_enabled && any_active,
+                                        egui::Button::new("全部停止"),
+                                    )
+                                    .clicked() =>
+                                {
+                                    stop_all = true;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                },
+            );
+            if start_all {
+                self.send(Command::StartAllSshForwards);
+            }
+            if stop_all {
+                self.send(Command::StopAllSshForwards);
+            }
             ui.add_space(6.0);
 
             if ssh_forwards.is_empty() {
-                ui.label(
-                    RichText::new(
-                        "暂无 SSH 隧道；点击上方「+ SSH 隧道」新增（支持粘贴 ssh -L 命令并独立按需启停）。",
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(
+                            "暂无 SSH 隧道；点击上方「+ SSH 隧道」新增（支持粘贴 ssh -L 命令并独立按需启停）。",
+                        )
+                        .small()
+                        .weak(),
                     )
-                    .small()
-                    .weak(),
+                    .wrap(),
                 );
                 ui.add_space(6.0);
             }
@@ -1301,78 +1358,118 @@ impl App {
                     None
                 };
                 crate::widgets::subcard(ui, border_tone, state == SshForwardState::Stopped, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(RichText::new(&fwd.name).strong().size(15.0));
-                        crate::widgets::badge(ui, "SSH 隧道", crate::widgets::BadgeTone::Accent);
-                        crate::widgets::badge(ui, "TCP", crate::widgets::BadgeTone::Muted);
-                        match state {
-                            SshForwardState::Running => {
+                    let copy_ip = if fwd.listen == crate::port_forward::LISTEN_LAN {
+                        crate::port_forward::LISTEN_LOCAL
+                    } else {
+                        fwd.listen.as_str()
+                    };
+                    let copy_addr = format!("{copy_ip}:{}", fwd.port);
+                    let lan_exposed = !crate::port_forward::is_loopback_listen(&fwd.listen);
+                    let mut action_idx = None;
+                    crate::widgets::responsive_header(
+                        ui,
+                        700.0,
+                        |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new(&fwd.name).strong().size(15.0));
                                 crate::widgets::badge(
                                     ui,
-                                    "运行中",
-                                    crate::widgets::BadgeTone::Success,
-                                );
-                            }
-                            SshForwardState::Connecting => {
-                                crate::widgets::badge(
-                                    ui,
-                                    "连接中…",
+                                    "SSH 隧道",
                                     crate::widgets::BadgeTone::Accent,
                                 );
+                                crate::widgets::badge(ui, "TCP", crate::widgets::BadgeTone::Muted);
+                                match state {
+                                    SshForwardState::Running => crate::widgets::badge(
+                                        ui,
+                                        "运行中",
+                                        crate::widgets::BadgeTone::Success,
+                                    ),
+                                    SshForwardState::Connecting => crate::widgets::badge(
+                                        ui,
+                                        "连接中…",
+                                        crate::widgets::BadgeTone::Accent,
+                                    ),
+                                    SshForwardState::Error => crate::widgets::badge(
+                                        ui,
+                                        "连接失败",
+                                        crate::widgets::BadgeTone::Danger,
+                                    ),
+                                    SshForwardState::Stopped => crate::widgets::badge(
+                                        ui,
+                                        "已停止",
+                                        crate::widgets::BadgeTone::Muted,
+                                    ),
+                                }
+                                if lan_exposed {
+                                    crate::widgets::badge(
+                                        ui,
+                                        "局域网暴露 · 无认证",
+                                        crate::widgets::BadgeTone::Warn,
+                                    );
+                                }
+                            });
+                        },
+                        |ui, rtl| {
+                            let toggle_label = if state == SshForwardState::Running {
+                                "停止"
+                            } else {
+                                "启动"
+                            };
+                            let toggle_enabled = ssh_ctl_enabled
+                                && (state == SshForwardState::Running || !missing_host);
+                            for idx in if rtl {
+                                [4, 3, 2, 1, 0]
+                            } else {
+                                [0, 1, 2, 3, 4]
+                            } {
+                                match idx {
+                                    0 if ui
+                                        .add_enabled(
+                                            toggle_enabled,
+                                            egui::Button::new(toggle_label),
+                                        )
+                                        .clicked() =>
+                                    {
+                                        action_idx = Some(0);
+                                    }
+                                    1 if ui.button("复制地址").clicked() => {
+                                        action_idx = Some(1)
+                                    }
+                                    2 if ui
+                                        .add_enabled(ssh_ctl_enabled, egui::Button::new("克隆"))
+                                        .clicked() =>
+                                    {
+                                        action_idx = Some(2);
+                                    }
+                                    3 if ui
+                                        .add_enabled(ssh_ctl_enabled, egui::Button::new("编辑"))
+                                        .clicked() =>
+                                    {
+                                        action_idx = Some(3);
+                                    }
+                                    4 if ui
+                                        .add_enabled(ssh_ctl_enabled, egui::Button::new("删除"))
+                                        .clicked() =>
+                                    {
+                                        action_idx = Some(4);
+                                    }
+                                    _ => {}
+                                }
                             }
-                            SshForwardState::Error => {
-                                crate::widgets::badge(
-                                    ui,
-                                    "连接失败",
-                                    crate::widgets::BadgeTone::Danger,
-                                );
-                            }
-                            SshForwardState::Stopped => {
-                                crate::widgets::badge(
-                                    ui,
-                                    "已停止",
-                                    crate::widgets::BadgeTone::Muted,
-                                );
-                            }
+                        },
+                    );
+                    match action_idx {
+                        Some(0) if state == SshForwardState::Running => {
+                            self.send(Command::StopSshForward { id: fwd.id.clone() });
                         }
-                        if !crate::port_forward::is_loopback_listen(&fwd.listen) {
-                            crate::widgets::badge(
-                                ui,
-                                "局域网暴露 · 无认证",
-                                crate::widgets::BadgeTone::Warn,
-                            );
-                        }
-                        ui.add_space(6.0);
-                        if state == SshForwardState::Running {
-                            if ui
-                                .add_enabled(ssh_ctl_enabled, egui::Button::new("停止"))
-                                .clicked()
-                            {
-                                self.send(Command::StopSshForward { id: fwd.id.clone() });
-                            }
-                        } else if ui
-                            .add_enabled(
-                                ssh_ctl_enabled && !missing_host,
-                                egui::Button::new("启动"),
-                            )
-                            .clicked()
-                        {
+                        Some(0) => {
                             self.send(Command::StartSshForward { id: fwd.id.clone() });
                         }
-                        let copy_ip = if fwd.listen == crate::port_forward::LISTEN_LAN {
-                            crate::port_forward::LISTEN_LOCAL
-                        } else {
-                            fwd.listen.as_str()
-                        };
-                        let copy_addr = format!("{copy_ip}:{}", fwd.port);
-                        if ui.button("复制地址").clicked() {
+                        Some(1) => {
                             ui.ctx().copy_text(copy_addr.clone());
                             self.message = format!("已复制监听地址：{copy_addr}");
                         }
-                        if ui
-                            .add_enabled(ssh_ctl_enabled, egui::Button::new("克隆"))
-                            .clicked()
-                        {
+                        Some(2) => {
                             self.ui.pf_form = crate::port_forward::PortForwardForm::from_clone_ssh(
                                 fwd,
                                 parsed_value.as_ref(),
@@ -1382,10 +1479,7 @@ impl App {
                             self.ui.pf_error = None;
                             self.ui.dialog = Some(Dialog::PortForward);
                         }
-                        if ui
-                            .add_enabled(ssh_ctl_enabled, egui::Button::new("编辑"))
-                            .clicked()
-                        {
+                        Some(3) => {
                             self.ui.pf_form =
                                 crate::port_forward::PortForwardForm::from_ssh_forward_with_running(
                                     fwd,
@@ -1394,13 +1488,11 @@ impl App {
                             self.ui.pf_error = None;
                             self.ui.dialog = Some(Dialog::PortForward);
                         }
-                        if ui
-                            .add_enabled(ssh_ctl_enabled, egui::Button::new("删除"))
-                            .clicked()
-                        {
+                        Some(4) => {
                             self.send(Command::DeleteSshForward { id: fwd.id.clone() });
                         }
-                    });
+                        _ => {}
+                    }
                     let host_label = host_info
                         .map(|h| format!("SSH · {} ({}:{})", h.name, h.host, h.port))
                         .unwrap_or_else(|| "跳板机已删除".into());
@@ -1484,125 +1576,147 @@ impl App {
                         });
                     let private_target_via_proxy = !outbound_is_direct
                         && crate::port_forward::is_private_or_loopback_host(&entry.target_host);
+                    let copy_ip = if entry.listen == crate::port_forward::LISTEN_LAN {
+                        crate::port_forward::LISTEN_LOCAL
+                    } else {
+                        entry.listen.as_str()
+                    };
+                    let copy_addr = format!("{copy_ip}:{}", entry.port);
+                    let title = if entry.name.is_empty() {
+                        format!("转发 {} -> {}", entry.port, entry.target_port)
+                    } else {
+                        entry.name.clone()
+                    };
+                    let is_running_match = entry.enabled
+                        && runtime_entries.iter().any(|r| {
+                            r.enabled
+                                && r.tag == entry.tag
+                                && r.listen == entry.listen
+                                && r.port == entry.port
+                                && r.network == entry.network
+                                && r.target_host == entry.target_host
+                                && r.target_port == entry.target_port
+                                && r.outbound_tag == entry.outbound_tag
+                        });
+                    let mut toggle_active: Option<bool> = None;
+                    let mut xray_action = None;
 
-                    ui.horizontal_wrapped(|ui| {
-                        let mut active = entry.enabled;
-                        if ui
-                            .add_enabled(enabled, egui::Checkbox::new(&mut active, ""))
-                            .on_hover_text("取消勾选可保留参数但暂停该端口监听")
-                            .changed()
-                        {
-                            match crate::port_forward::set_entry_enabled(
-                                &mut value,
-                                &mut self.ui.workspace,
-                                &self.profile_id,
-                                &entry,
-                                active,
-                            ) {
-                                Ok(()) => {
-                                    if active {
-                                        json_changed = true;
-                                        ws_changed = true;
-                                        self.message = format!(
-                                            "已启用端口转发：{}（请点击底栏「检查并应用」生效）",
-                                            entry.tag
-                                        );
-                                    } else {
-                                        json_changed = true;
-                                        ws_changed = true;
-                                        self.message = format!(
-                                            "已停用端口转发：{}（参数已保留于工作区）",
-                                            entry.tag
-                                        );
-                                    }
+                    crate::widgets::responsive_header(
+                        ui,
+                        700.0,
+                        |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                let mut active = entry.enabled;
+                                if ui
+                                    .add_enabled(enabled, egui::Checkbox::new(&mut active, ""))
+                                    .on_hover_text("取消勾选可保留参数但暂停该端口监听")
+                                    .changed()
+                                {
+                                    toggle_active = Some(active);
                                 }
-                                Err(err) => self.message = err,
-                            }
-                        }
-                        let title = if entry.name.is_empty() {
-                            format!("转发 {} -> {}", entry.port, entry.target_port)
-                        } else {
-                            entry.name.clone()
-                        };
-                        ui.label(RichText::new(title).strong().size(15.0));
-                        crate::widgets::badge(
-                            ui,
-                            crate::port_forward::network_label(&entry.network),
-                            crate::widgets::BadgeTone::Accent,
-                        );
-                        crate::widgets::mono_badge(
-                            ui,
-                            &entry.tag,
-                            crate::widgets::BadgeTone::Muted,
-                        );
-
-                        let is_running_match = entry.enabled
-                            && runtime_entries.iter().any(|r| {
-                                r.enabled
-                                    && r.tag == entry.tag
-                                    && r.listen == entry.listen
-                                    && r.port == entry.port
-                                    && r.network == entry.network
-                                    && r.target_host == entry.target_host
-                                    && r.target_port == entry.target_port
-                                    && r.outbound_tag == entry.outbound_tag
+                                ui.label(RichText::new(&title).strong().size(15.0));
+                                crate::widgets::badge(
+                                    ui,
+                                    crate::port_forward::network_label(&entry.network),
+                                    crate::widgets::BadgeTone::Accent,
+                                );
+                                crate::widgets::mono_badge(
+                                    ui,
+                                    &entry.tag,
+                                    crate::widgets::BadgeTone::Muted,
+                                );
+                                if !entry.enabled {
+                                    crate::widgets::badge(
+                                        ui,
+                                        "已停用（参数保留）",
+                                        crate::widgets::BadgeTone::Muted,
+                                    );
+                                } else if conflict_msg.is_some() || missing_outbound {
+                                    crate::widgets::badge(
+                                        ui,
+                                        "配置异常",
+                                        crate::widgets::BadgeTone::Danger,
+                                    );
+                                } else if is_running_match {
+                                    crate::widgets::badge(
+                                        ui,
+                                        "生效中",
+                                        crate::widgets::BadgeTone::Success,
+                                    );
+                                } else {
+                                    crate::widgets::badge(
+                                        ui,
+                                        "待应用",
+                                        crate::widgets::BadgeTone::Warn,
+                                    );
+                                }
+                                if expose_lan {
+                                    crate::widgets::badge(
+                                        ui,
+                                        "局域网暴露 · 无认证",
+                                        crate::widgets::BadgeTone::Warn,
+                                    );
+                                }
                             });
-                        if !entry.enabled {
-                            crate::widgets::badge(
-                                ui,
-                                "已停用（参数保留）",
-                                crate::widgets::BadgeTone::Muted,
-                            );
-                        } else if conflict_msg.is_some() || missing_outbound {
-                            crate::widgets::badge(
-                                ui,
-                                "配置异常",
-                                crate::widgets::BadgeTone::Danger,
-                            );
-                        } else if is_running_match {
-                            crate::widgets::badge(
-                                ui,
-                                "生效中",
-                                crate::widgets::BadgeTone::Success,
-                            );
-                        } else {
-                            crate::widgets::badge(
-                                ui,
-                                "待应用",
-                                crate::widgets::BadgeTone::Warn,
-                            );
+                        },
+                        |ui, rtl| {
+                            for idx in if rtl { [2, 1, 0] } else { [0, 1, 2] } {
+                                match idx {
+                                    0 if ui.button("复制监听地址").clicked() => {
+                                        xray_action = Some(0);
+                                    }
+                                    1 if ui
+                                        .add_enabled(enabled, egui::Button::new("编辑"))
+                                        .clicked() =>
+                                    {
+                                        xray_action = Some(1);
+                                    }
+                                    2 if ui
+                                        .add_enabled(enabled, egui::Button::new("删除"))
+                                        .clicked() =>
+                                    {
+                                        xray_action = Some(2);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        },
+                    );
+                    if let Some(active) = toggle_active {
+                        match crate::port_forward::set_entry_enabled(
+                            &mut value,
+                            &mut self.ui.workspace,
+                            &self.profile_id,
+                            &entry,
+                            active,
+                        ) {
+                            Ok(()) => {
+                                json_changed = true;
+                                ws_changed = true;
+                                self.message = if active {
+                                    format!(
+                                        "已启用端口转发：{}（请点击底栏「检查并应用」生效）",
+                                        entry.tag
+                                    )
+                                } else {
+                                    format!("已停用端口转发：{}（参数已保留于工作区）", entry.tag)
+                                };
+                            }
+                            Err(err) => self.message = err,
                         }
-                        if expose_lan {
-                            crate::widgets::badge(
-                                ui,
-                                "局域网暴露 · 无认证",
-                                crate::widgets::BadgeTone::Warn,
-                            );
-                        }
-                        ui.add_space(6.0);
-                        let copy_ip = if entry.listen == crate::port_forward::LISTEN_LAN {
-                            crate::port_forward::LISTEN_LOCAL
-                        } else {
-                            entry.listen.as_str()
-                        };
-                        let copy_addr = format!("{copy_ip}:{}", entry.port);
-                        if ui.button("复制监听地址").clicked() {
+                    }
+                    match xray_action {
+                        Some(0) => {
                             ui.ctx().copy_text(copy_addr.clone());
                             self.message = format!("已复制监听地址：{copy_addr}");
                         }
-                        if ui
-                            .add_enabled(enabled, egui::Button::new("编辑"))
-                            .clicked()
-                        {
+                        Some(1) => {
                             self.ui.pf_form =
                                 crate::port_forward::PortForwardForm::from_entry(&entry);
                             self.ui.pf_error = None;
                             self.ui.dialog = Some(Dialog::PortForward);
                         }
-                        if ui
-                            .add_enabled(enabled, egui::Button::new("删除"))
-                            .clicked()
-                        {
+                        Some(2) => {
                             crate::port_forward::remove_entry(
                                 &mut value,
                                 &mut self.ui.workspace,
@@ -1615,7 +1729,8 @@ impl App {
                             ws_changed = true;
                             self.message = format!("已移除端口转发：{}", entry.tag);
                         }
-                    });
+                        _ => {}
+                    }
 
                     let outbound_display = available_outbounds
                         .iter()
@@ -1710,38 +1825,49 @@ impl App {
         let credentials = self.ui.ssh_state.credentials.clone();
         let forwards = self.ui.ssh_state.forwards.clone();
         crate::widgets::subcard(ui, None, true, |ui| {
-            egui::Sides::new().show(
+            let mut open_new_host = false;
+            crate::widgets::responsive_header(
                 ui,
+                520.0,
                 |ui| {
                     ui.vertical(|ui| {
                         ui.label(RichText::new("SSH 跳板机管理").strong().size(15.5));
-                        ui.label(
-                            RichText::new(
-                                "配置服务器地址、关联 SSH 凭证并核对 SHA256 Host Key 指纹；多条端口转发可复用同一跳板机连接。",
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(
+                                    "管理跳板机地址、关联凭证与 Host Key 指纹（多条隧道可复用）。",
+                                )
+                                .small()
+                                .weak(),
                             )
-                            .small()
-                            .weak(),
+                            .wrap(),
                         );
                     });
                 },
-                |ui| {
+                |ui, _rtl| {
                     if primary(ui, "+ 新增 SSH 跳板机", ctl_ok) {
-                        self.ui.ssh_host_form = ui::SshHostForm::for_new(&credentials, false);
-                        self.ui.dialog = Some(Dialog::SshHost);
+                        open_new_host = true;
                     }
                 },
             );
+            if open_new_host {
+                self.ui.ssh_host_form = ui::SshHostForm::for_new(&credentials, false);
+                self.ui.dialog = Some(Dialog::SshHost);
+            }
         });
         ui.add_space(8.0);
         if hosts.is_empty() {
             crate::widgets::subcard(ui, None, false, |ui| {
                 ui.label(RichText::new("尚未配置 SSH 跳板机。").weak());
-                ui.label(
-                    RichText::new(
-                        "提示：点击右上角「+ 新增 SSH 跳板机」可直接在同一弹窗内填写新凭证，无需先跳转「SSH 凭证」。",
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(
+                            "提示：点击右上角「+ 新增 SSH 跳板机」可直接在同一弹窗内填写新凭证，无需先跳转「SSH 凭证」。",
+                        )
+                        .small()
+                        .weak(),
                     )
-                    .small()
-                    .weak(),
+                    .wrap(),
                 );
             });
             return;
@@ -1767,38 +1893,91 @@ impl App {
                     None
                 };
                 crate::widgets::subcard(ui, border, false, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(RichText::new(&host.name).strong().size(15.0));
-                        crate::widgets::mono_badge(
-                            ui,
-                            &format!("{}:{}", host.host, host.port),
-                            crate::widgets::BadgeTone::Accent,
-                        );
-                        if missing_fp {
-                            crate::widgets::badge(
-                                ui,
-                                "未验证指纹",
-                                crate::widgets::BadgeTone::Warn,
-                            );
-                        } else {
-                            crate::widgets::badge(
-                                ui,
-                                "指纹已固定",
-                                crate::widgets::BadgeTone::Success,
-                            );
-                        }
-                        if ref_count > 0 {
-                            crate::widgets::badge(
-                                ui,
-                                &format!("被 {ref_count} 条转发引用"),
-                                crate::widgets::BadgeTone::Muted,
-                            );
-                        }
-                        if ui
-                            .add_enabled(ctl_ok, egui::Button::new("+ 转发"))
-                            .on_hover_text("使用此跳板机新建一条 SSH 本地隧道")
-                            .clicked()
-                        {
+                    let mut host_action = None;
+                    crate::widgets::responsive_header(
+                        ui,
+                        680.0,
+                        |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new(&host.name).strong().size(15.0));
+                                crate::widgets::mono_badge(
+                                    ui,
+                                    &format!("{}:{}", host.host, host.port),
+                                    crate::widgets::BadgeTone::Accent,
+                                );
+                                if missing_fp {
+                                    crate::widgets::badge(
+                                        ui,
+                                        "未验证指纹",
+                                        crate::widgets::BadgeTone::Warn,
+                                    );
+                                } else {
+                                    crate::widgets::badge(
+                                        ui,
+                                        "指纹已固定",
+                                        crate::widgets::BadgeTone::Success,
+                                    );
+                                }
+                                if ref_count > 0 {
+                                    crate::widgets::badge(
+                                        ui,
+                                        &format!("被 {ref_count} 条转发引用"),
+                                        crate::widgets::BadgeTone::Muted,
+                                    );
+                                }
+                            });
+                        },
+                        |ui, rtl| {
+                            let test_label = if is_testing {
+                                "测试中…"
+                            } else {
+                                "测试连接"
+                            };
+                            for idx in if rtl { [3, 2, 1, 0] } else { [0, 1, 2, 3] } {
+                                match idx {
+                                    0 if ui
+                                        .add_enabled(ctl_ok, egui::Button::new("+ 转发"))
+                                        .on_hover_text("使用此跳板机新建一条 SSH 本地隧道")
+                                        .clicked() =>
+                                    {
+                                        host_action = Some(0);
+                                    }
+                                    1 if ui
+                                        .add_enabled(
+                                            ctl_ok && !is_testing,
+                                            egui::Button::new(test_label),
+                                        )
+                                        .clicked() =>
+                                    {
+                                        host_action = Some(1);
+                                    }
+                                    2 if ui
+                                        .add_enabled(ctl_ok, egui::Button::new("编辑"))
+                                        .clicked() =>
+                                    {
+                                        host_action = Some(2);
+                                    }
+                                    3 if ui
+                                        .add_enabled(
+                                            ctl_ok && ref_count == 0,
+                                            egui::Button::new("删除"),
+                                        )
+                                        .on_hover_text(if ref_count > 0 {
+                                            "请先删除或修改引用此跳板机的转发规则"
+                                        } else {
+                                            "删除此 SSH 跳板机"
+                                        })
+                                        .clicked() =>
+                                    {
+                                        host_action = Some(3);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        },
+                    );
+                    match host_action {
+                        Some(0) => {
                             self.ui.pf_form = crate::port_forward::PortForwardForm::from_new_ssh(
                                 parsed_editor.as_ref(),
                                 &paused_pf,
@@ -1808,17 +1987,7 @@ impl App {
                             self.ui.pf_error = None;
                             self.ui.dialog = Some(Dialog::PortForward);
                         }
-                        if ui
-                            .add_enabled(
-                                ctl_ok && !is_testing,
-                                egui::Button::new(if is_testing {
-                                    "测试中…"
-                                } else {
-                                    "测试连接"
-                                }),
-                            )
-                            .clicked()
-                        {
+                        Some(1) => {
                             self.ui
                                 .ssh_host_tests
                                 .insert(host.id.clone(), ui::SshHostTestStatus::Testing);
@@ -1828,7 +1997,7 @@ impl App {
                                 inline_credential: None,
                             });
                         }
-                        if ui.add_enabled(ctl_ok, egui::Button::new("编辑")).clicked() {
+                        Some(2) => {
                             self.ui.ssh_host_form = ui::SshHostForm {
                                 editing_id: Some(host.id.clone()),
                                 name: host.name.clone(),
@@ -1841,20 +2010,13 @@ impl App {
                             };
                             self.ui.dialog = Some(Dialog::SshHost);
                         }
-                        if ui
-                            .add_enabled(ctl_ok && ref_count == 0, egui::Button::new("删除"))
-                            .on_hover_text(if ref_count > 0 {
-                                "请先删除或修改引用此跳板机的转发规则"
-                            } else {
-                                "删除此 SSH 跳板机"
-                            })
-                            .clicked()
-                        {
+                        Some(3) => {
                             self.send(Command::DeleteSshHost {
                                 id: host.id.clone(),
                             });
                         }
-                    });
+                        _ => {}
+                    }
                     if let Some(c) = cred {
                         line(
                             ui,
@@ -1907,8 +2069,10 @@ impl App {
         let credentials = self.ui.ssh_state.credentials.clone();
         let hosts = self.ui.ssh_state.hosts.clone();
         crate::widgets::subcard(ui, None, true, |ui| {
-            egui::Sides::new().show(
+            let mut open_new_cred = false;
+            crate::widgets::responsive_header(
                 ui,
+                520.0,
                 |ui| {
                     ui.vertical(|ui| {
                         ui.label(
@@ -1916,31 +2080,40 @@ impl App {
                                 .strong()
                                 .size(15.5),
                         );
-                        ui.label(
-                            RichText::new(
-                                "集中管理 SSH 登录账号、密码或私钥文件。密码与口令加密保存且永不回显，可跨多台跳板机复用。",
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(
+                                    "管理 SSH 账号、密码与私钥（加密保存、永不回显，可跨跳板机复用）。",
+                                )
+                                .small()
+                                .weak(),
                             )
-                            .small()
-                            .weak(),
+                            .wrap(),
                         );
                     });
                 },
-                |ui| {
+                |ui, _rtl| {
                     if primary(ui, "+ 新增 SSH 凭证", ctl_ok) {
-                        self.ui.ssh_cred_form = Default::default();
-                        self.ui.dialog = Some(Dialog::SshCredential);
+                        open_new_cred = true;
                     }
                 },
             );
+            if open_new_cred {
+                self.ui.ssh_cred_form = Default::default();
+                self.ui.dialog = Some(Dialog::SshCredential);
+            }
         });
         ui.add_space(8.0);
         if credentials.is_empty() {
             crate::widgets::subcard(ui, None, false, |ui| {
-                ui.label(
-                    RichText::new(
-                        "尚未创建任何 SSH 凭证。点击右上角「+ 新增 SSH 凭证」，或在新建跳板机时直接填写凭证。",
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(
+                            "尚未创建任何 SSH 凭证。点击右上角「+ 新增 SSH 凭证」，或在新建跳板机时直接填写凭证。",
+                        )
+                        .weak(),
                     )
-                    .weak(),
+                    .wrap(),
                 );
             });
             return;
@@ -1949,49 +2122,85 @@ impl App {
             ui.push_id(("ssh-cred-card", &cred.id), |ui| {
                 let ref_count = hosts.iter().filter(|h| h.credential_id == cred.id).count();
                 crate::widgets::subcard(ui, None, false, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(RichText::new(&cred.name).strong().size(15.0));
-                        crate::widgets::mono_badge(
-                            ui,
-                            &format!("账号: {}", cred.username),
-                            crate::widgets::BadgeTone::Accent,
-                        );
-                        match cred.auth_kind {
-                            SshAuthKind::Password => {
-                                crate::widgets::badge(
+                    let mut cred_action = None;
+                    crate::widgets::responsive_header(
+                        ui,
+                        600.0,
+                        |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new(&cred.name).strong().size(15.0));
+                                crate::widgets::mono_badge(
                                     ui,
-                                    if cred.has_password {
-                                        "密码认证（已加密保存）"
-                                    } else {
-                                        "密码认证（未设置密码）"
-                                    },
-                                    if cred.has_password {
-                                        crate::widgets::BadgeTone::Success
-                                    } else {
-                                        crate::widgets::BadgeTone::Warn
-                                    },
+                                    &format!("账号: {}", cred.username),
+                                    crate::widgets::BadgeTone::Accent,
                                 );
+                                match cred.auth_kind {
+                                    SshAuthKind::Password => {
+                                        crate::widgets::badge(
+                                            ui,
+                                            if cred.has_password {
+                                                "密码认证（已加密保存）"
+                                            } else {
+                                                "密码认证（未设置密码）"
+                                            },
+                                            if cred.has_password {
+                                                crate::widgets::BadgeTone::Success
+                                            } else {
+                                                crate::widgets::BadgeTone::Warn
+                                            },
+                                        );
+                                    }
+                                    SshAuthKind::PrivateKey => {
+                                        crate::widgets::badge(
+                                            ui,
+                                            if cred.has_passphrase {
+                                                "私钥认证（含加密口令）"
+                                            } else {
+                                                "私钥认证"
+                                            },
+                                            crate::widgets::BadgeTone::Success,
+                                        );
+                                    }
+                                }
+                                if ref_count > 0 {
+                                    crate::widgets::badge(
+                                        ui,
+                                        &format!("被 {ref_count} 台跳板机引用"),
+                                        crate::widgets::BadgeTone::Muted,
+                                    );
+                                }
+                            });
+                        },
+                        |ui, rtl| {
+                            for idx in if rtl { [1, 0] } else { [0, 1] } {
+                                match idx {
+                                    0 if ui
+                                        .add_enabled(ctl_ok, egui::Button::new("编辑"))
+                                        .clicked() =>
+                                    {
+                                        cred_action = Some(0);
+                                    }
+                                    1 if ui
+                                        .add_enabled(
+                                            ctl_ok && ref_count == 0,
+                                            egui::Button::new("删除"),
+                                        )
+                                        .on_hover_text(if ref_count > 0 {
+                                            "请先修改或删除引用此凭证的跳板机"
+                                        } else {
+                                            "删除此 SSH 凭证"
+                                        })
+                                        .clicked() =>
+                                    {
+                                        cred_action = Some(1);
+                                    }
+                                    _ => {}
+                                }
                             }
-                            SshAuthKind::PrivateKey => {
-                                crate::widgets::badge(
-                                    ui,
-                                    if cred.has_passphrase {
-                                        "私钥认证（含加密口令）"
-                                    } else {
-                                        "私钥认证"
-                                    },
-                                    crate::widgets::BadgeTone::Success,
-                                );
-                            }
-                        }
-                        if ref_count > 0 {
-                            crate::widgets::badge(
-                                ui,
-                                &format!("被 {ref_count} 台跳板机引用"),
-                                crate::widgets::BadgeTone::Muted,
-                            );
-                        }
-                        if ui.add_enabled(ctl_ok, egui::Button::new("编辑")).clicked() {
+                        },
+                    );
+                    match cred_action {
+                        Some(0) => {
                             self.ui.ssh_cred_form = ui::SshCredentialForm {
                                 editing_id: Some(cred.id.clone()),
                                 name: cred.name.clone(),
@@ -2007,20 +2216,13 @@ impl App {
                             };
                             self.ui.dialog = Some(Dialog::SshCredential);
                         }
-                        if ui
-                            .add_enabled(ctl_ok && ref_count == 0, egui::Button::new("删除"))
-                            .on_hover_text(if ref_count > 0 {
-                                "请先修改或删除引用此凭证的跳板机"
-                            } else {
-                                "删除此 SSH 凭证"
-                            })
-                            .clicked()
-                        {
+                        Some(1) => {
                             self.send(Command::DeleteSshCredential {
                                 id: cred.id.clone(),
                             });
                         }
-                    });
+                        _ => {}
+                    }
                     if cred.auth_kind == SshAuthKind::PrivateKey
                         && !cred.private_key_path.as_os_str().is_empty()
                     {
@@ -2275,41 +2477,66 @@ impl App {
         }
     }
     pub(in crate::app) fn proxy_draft_controls(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| self.proxy_draft_controls_inline(ui));
-    }
-    fn proxy_draft_controls_inline(&mut self, ui: &mut egui::Ui) {
         let before = (self.mode, self.http_tag.clone());
+        let mut next_mode = self.mode;
+        let mut next_http = self.http_tag.clone();
         let listeners = self.compatible_http_listeners();
-        if matches!(self.mode, ProxyMode::Global | ProxyMode::Pac)
-            && !listeners.iter().any(|(tag, _)| tag == &self.http_tag)
+        if matches!(next_mode, ProxyMode::Global | ProxyMode::Pac)
+            && !listeners.iter().any(|(tag, _)| tag == &next_http)
             && let Some((first, _)) = listeners.first()
         {
-            self.http_tag = first.clone();
+            next_http = first.clone();
         }
-        let has_http = !listeners.is_empty();
-        ui.label(RichText::new("代理方式：").small().weak());
-        for (mode, short_label) in [
-            (ProxyMode::Direct, "直连"),
-            (ProxyMode::Pac, "PAC"),
-            (ProxyMode::Global, "全局"),
-        ] {
-            let allowed = mode == ProxyMode::Direct || has_http;
-            if crate::widgets::seg_button(ui, short_label, self.mode == mode, allowed).clicked() {
-                self.mode = mode;
-            }
+        ui.horizontal_wrapped(|ui| {
+            render_proxy_draft_controls(ui, &listeners, &mut next_mode, &mut next_http, false);
+        });
+        self.apply_proxy_draft_selection(before, next_mode, next_http);
+    }
+
+    fn apply_proxy_draft_selection(
+        &mut self,
+        before: (ProxyMode, String),
+        next_mode: ProxyMode,
+        next_http: String,
+    ) {
+        self.mode = next_mode;
+        self.http_tag = next_http;
+        if before.0 != self.mode {
+            let profile_id = self.profile_id.clone();
+            self.save_profile_proxy_mode(&profile_id, self.mode);
         }
+        if before != (self.mode, self.http_tag.clone()) {
+            self.invalidate_candidate();
+        }
+    }
+}
+
+fn render_proxy_draft_controls(
+    ui: &mut egui::Ui,
+    listeners: &[(String, String)],
+    mode: &mut ProxyMode,
+    http_tag: &mut String,
+    rtl: bool,
+) {
+    let has_http = !listeners.is_empty();
+    let mut render_http = |ui: &mut egui::Ui| {
         if listeners.len() > 1 {
             let selected = listeners
                 .iter()
-                .find(|(tag, _)| tag == &self.http_tag)
+                .find(|(tag, _)| tag == http_tag)
                 .map(|(_, label)| label.clone())
                 .unwrap_or_else(|| "请选择本地 HTTP 入口".into());
+            let combo_w = if ui.max_rect().width().is_finite() {
+                (ui.max_rect().width() - 24.0).clamp(130.0, 210.0)
+            } else {
+                190.0
+            };
             egui::ComboBox::from_id_salt("proxy-http-listener")
-                .width(ui.available_width().min(190.0))
+                .width(combo_w)
                 .selected_text(selected)
                 .show_ui(ui, |ui| {
-                    for (tag, label) in &listeners {
-                        ui.selectable_value(&mut self.http_tag, tag.clone(), label);
+                    for (tag, label) in listeners {
+                        ui.selectable_value(http_tag, tag.clone(), label);
                     }
                 });
         } else if let Some((_, label)) = listeners.first() {
@@ -2321,12 +2548,56 @@ impl App {
         } else {
             crate::widgets::badge(ui, "无 HTTP 入口", crate::widgets::BadgeTone::Warn);
         }
-        if before.0 != self.mode {
-            let profile_id = self.profile_id.clone();
-            self.save_profile_proxy_mode(&profile_id, self.mode);
+    };
+    let modes = [
+        (ProxyMode::Direct, "直连"),
+        (ProxyMode::Pac, "PAC"),
+        (ProxyMode::Global, "全局"),
+    ];
+    let mut render_modes = |ui: &mut egui::Ui| {
+        for idx in if rtl { [2, 1, 0] } else { [0, 1, 2] } {
+            let (target_mode, short_label) = modes[idx];
+            let allowed = target_mode == ProxyMode::Direct || has_http;
+            if crate::widgets::seg_button(ui, short_label, *mode == target_mode, allowed).clicked()
+            {
+                *mode = target_mode;
+            }
         }
-        if before != (self.mode, self.http_tag.clone()) {
-            self.invalidate_candidate();
+    };
+    if rtl {
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            render_http(ui);
+            render_modes(ui);
+            ui.label(RichText::new("代理：").small().weak());
+        });
+    } else {
+        ui.label(RichText::new("代理方式：").small().weak());
+        render_modes(ui);
+        render_http(ui);
+    }
+}
+
+fn profile_action_buttons(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    width: f32,
+    reverse: bool,
+) -> Option<usize> {
+    let mut clicked = None;
+    let labels = ["新建", "导入", "刷新"];
+    let order = if reverse { [2, 1, 0] } else { [0, 1, 2] };
+    for idx in order {
+        let label = labels[idx];
+        if ui
+            .add_enabled(
+                enabled || label == "刷新",
+                egui::Button::new(label).min_size(egui::vec2(width, CONTROL_HEIGHT)),
+            )
+            .clicked()
+        {
+            clicked = Some(idx);
         }
     }
+    clicked
 }

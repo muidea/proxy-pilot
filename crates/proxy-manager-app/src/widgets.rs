@@ -275,6 +275,80 @@ pub fn compact_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     compact_chip(ui, label, false)
 }
 
+/// Compact bordered button with explicit enabled state for dense header or card action rows.
+pub fn compact_button_enabled(ui: &mut egui::Ui, enabled: bool, label: &str) -> egui::Response {
+    ui.add_enabled_ui(enabled, |ui| compact_chip(ui, label, false))
+        .inner
+}
+
+/// Truncates `text` to `max_chars` characters, appending an ellipsis only when shortened.
+pub fn ellipsize(text: &str, max_chars: usize) -> String {
+    let mut iter = text.chars();
+    let prefix: String = iter.by_ref().take(max_chars).collect();
+    if iter.next().is_some() {
+        format!("{prefix}…")
+    } else {
+        prefix
+    }
+}
+
+fn responsive_sides_header(
+    ui: &mut egui::Ui,
+    min_inline_width: f32,
+    height: Option<f32>,
+    left: impl FnOnce(&mut egui::Ui),
+    right: impl FnOnce(&mut egui::Ui, bool),
+) {
+    let apply_height = |ui: &mut egui::Ui| {
+        if let Some(h) = height {
+            ui.spacing_mut().interact_size.y = (h - 2.0).max(20.0);
+        }
+    };
+    if ui.available_width() >= min_inline_width {
+        let mut sides = egui::Sides::new().shrink_left().wrap();
+        if let Some(h) = height {
+            sides = sides.height(h);
+        }
+        sides.show(
+            ui,
+            |ui| {
+                apply_height(ui);
+                left(ui);
+            },
+            |ui| {
+                apply_height(ui);
+                right(ui, true);
+            },
+        );
+    } else {
+        ui.scope(|ui| {
+            apply_height(ui);
+            left(ui);
+            ui.horizontal_wrapped(|ui| right(ui, false));
+        });
+    }
+}
+
+/// Renders a two-sided header inline above `min_inline_width`, stacking actions below on narrower widths.
+pub fn responsive_header(
+    ui: &mut egui::Ui,
+    min_inline_width: f32,
+    left: impl FnOnce(&mut egui::Ui),
+    right: impl FnOnce(&mut egui::Ui, bool),
+) {
+    responsive_sides_header(ui, min_inline_width, None, left, right);
+}
+
+/// Compact variant of `responsive_header` tuned for 24 px compact controls inside overview/dense cards.
+pub fn responsive_compact_header(
+    ui: &mut egui::Ui,
+    min_inline_width: f32,
+    left: impl FnOnce(&mut egui::Ui),
+    right: impl FnOnce(&mut egui::Ui, bool),
+) {
+    responsive_sides_header(ui, min_inline_width, Some(26.0), left, right);
+}
+
 /// Compact 24 px selectable pill/chip for dense quick-preset rows inside modals and lists.
 pub fn compact_chip(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
     let accent = accent_color(ui);
@@ -312,10 +386,12 @@ pub fn compact_chip(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Respo
     .inner
 }
 
-pub fn subcard<R>(
+fn subcard_with_style<R>(
     ui: &mut egui::Ui,
     border_tone: Option<BadgeTone>,
     dimmed: bool,
+    corner_radius: u8,
+    margin: egui::Margin,
     body: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
     let fill = if dimmed {
@@ -330,8 +406,8 @@ pub fn subcard<R>(
     egui::Frame::new()
         .fill(fill)
         .stroke(egui::Stroke::new(1.0, border))
-        .corner_radius(10)
-        .inner_margin(egui::Margin::symmetric(14, 11))
+        .corner_radius(corner_radius)
+        .inner_margin(margin)
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             body(ui)
@@ -339,8 +415,41 @@ pub fn subcard<R>(
         .inner
 }
 
+pub fn subcard<R>(
+    ui: &mut egui::Ui,
+    border_tone: Option<BadgeTone>,
+    dimmed: bool,
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    subcard_with_style(
+        ui,
+        border_tone,
+        dimmed,
+        10,
+        egui::Margin::symmetric(14, 11),
+        body,
+    )
+}
+
+/// Compact subcard variant for dense Overview tunnel items and secondary nested blocks.
+pub fn compact_subcard<R>(
+    ui: &mut egui::Ui,
+    border_tone: Option<BadgeTone>,
+    dimmed: bool,
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    subcard_with_style(
+        ui,
+        border_tone,
+        dimmed,
+        8,
+        egui::Margin::symmetric(12, 9),
+        body,
+    )
+}
+
 pub fn kv_row(ui: &mut egui::Ui, key: &str, value: egui::RichText) {
-    let label_width = 148.0_f32.min(ui.available_width() * 0.42);
+    let label_width = 112.0_f32.min(ui.available_width() * 0.34);
     ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(
             egui::vec2(label_width, 0.0),
@@ -350,24 +459,49 @@ pub fn kv_row(ui: &mut egui::Ui, key: &str, value: egui::RichText) {
                 ui.add(egui::Label::new(egui::RichText::new(key).small().weak()).wrap());
             },
         );
-        ui.add(egui::Label::new(value).wrap());
+        ui.vertical(|ui| {
+            ui.set_min_width(ui.available_width());
+            ui.add(egui::Label::new(value).wrap());
+        });
     });
 }
 
 fn render_badge(ui: &mut egui::Ui, text: &str, tone: BadgeTone, monospace: bool) {
     let (fg, bg, border) = tone_palette(ui, tone);
-    egui::Frame::new()
-        .fill(bg)
-        .stroke(egui::Stroke::new(1.0, border))
-        .corner_radius(egui::CornerRadius::same(255))
-        .inner_margin(egui::Margin::symmetric(8, 2))
-        .show(ui, |ui| {
-            let mut rich = egui::RichText::new(text).small().strong().color(fg);
-            if monospace {
-                rich = rich.monospace();
-            }
-            ui.label(rich);
-        });
+    let mut rich = egui::RichText::new(text).small().strong().color(fg);
+    if monospace {
+        rich = rich.monospace();
+    }
+    let max_text_w = if ui.max_rect().width().is_finite() {
+        (ui.max_rect().width() - 18.0).max(48.0)
+    } else {
+        f32::INFINITY
+    };
+    let galley = egui::WidgetText::from(rich).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Wrap),
+        max_text_w,
+        egui::TextStyle::Small,
+    );
+    let pad = egui::vec2(8.0, 3.0);
+    let desired = galley.size() + pad * 2.0;
+    let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        let radius = if galley.rows.len() <= 1 {
+            egui::CornerRadius::same(255)
+        } else {
+            egui::CornerRadius::same(10)
+        };
+        ui.painter().rect(
+            rect,
+            radius,
+            bg,
+            egui::Stroke::new(1.0, border),
+            egui::StrokeKind::Inside,
+        );
+        let text_pos = egui::pos2(rect.min.x + pad.x, rect.center().y - galley.size().y * 0.5);
+        ui.painter().galley(text_pos, galley, fg);
+    }
 }
 
 pub fn badge(ui: &mut egui::Ui, text: &str, tone: BadgeTone) {

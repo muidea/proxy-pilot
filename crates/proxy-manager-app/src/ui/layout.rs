@@ -86,10 +86,11 @@ impl App {
                     if !connected {
                         crate::widgets::badge(ui, "后台未连接", crate::widgets::BadgeTone::Warn);
                     } else if running {
-                        let prof_part = if running_profile_name.is_empty() {
+                        let short_prof = crate::widgets::ellipsize(&running_profile_name, 18);
+                        let prof_part = if short_prof.is_empty() {
                             format!("{mode_short}模式")
                         } else {
-                            format!("{running_profile_name} ({mode_short})")
+                            format!("{short_prof} ({mode_short})")
                         };
                         let status_text = if total_running_pf > 0 {
                             format!("Core 运行中 · {prof_part} · {total_running_pf} 条转发监听")
@@ -139,13 +140,17 @@ impl App {
                     }
                 };
                 if ui.available_width() >= 960.0 {
-                    egui::Sides::new().show(ui, render_brand, |ui| {
-                        render_version(ui);
-                        ui.add_space(4.0);
-                        render_nav(ui, &mut next_page, true);
-                    });
+                    egui::Sides::new()
+                        .shrink_left()
+                        .show(ui, render_brand, |ui| {
+                            render_version(ui);
+                            ui.add_space(4.0);
+                            render_nav(ui, &mut next_page, true);
+                        });
                 } else {
-                    egui::Sides::new().show(ui, render_brand, render_version);
+                    egui::Sides::new()
+                        .shrink_left()
+                        .show(ui, render_brand, render_version);
                     ui.add_space(4.0);
                     ui.horizontal_wrapped(|ui| {
                         render_nav(ui, &mut next_page, false);
@@ -210,7 +215,7 @@ impl App {
                                 Page::Profiles => self.profiles_page(ui, page_height),
                                 Page::Pac => self.pac_page(ui),
                                 Page::Diagnostics => self.diagnostics(ui),
-                                Page::Logs => self.logs_page(ui),
+                                Page::Logs => self.logs_page(ui, page_height),
                                 Page::Settings => self.settings_page(ui),
                             }
                         }
@@ -386,6 +391,13 @@ impl App {
             Vec::new()
         };
         let pf_count = active_forwards.len();
+        let running_ssh_count = self
+            .ui
+            .ssh_state
+            .runtime
+            .iter()
+            .filter(|r| r.state == SshForwardState::Running)
+            .count();
         let endpoint = runtime
             .and_then(|r| serde_json::from_str::<serde_json::Value>(&r.json).ok())
             .and_then(|v| {
@@ -419,7 +431,7 @@ impl App {
             .as_ref()
             .and_then(|s| s.generation.as_ref())
             .map(|g| g.proxy_mode);
-        let wide = ui.available_width() >= 760.0;
+        let wide = ui.available_width() >= 860.0;
         let render_connection_card = |app: &mut App, ui: &mut egui::Ui| {
             card(ui, |ui| {
                 ui.label(RichText::new("连接与系统代理状态").strong().size(16.0));
@@ -490,6 +502,20 @@ impl App {
                 };
                 crate::widgets::kv_row(ui, "Xray 端口转发", RichText::new(pf_summary).strong());
                 ui.separator();
+                let ssh_total = app.ui.ssh_state.forwards.len();
+                let ssh_summary = if ssh_total == 0 {
+                    RichText::new("0 条配置").weak()
+                } else if running_ssh_count > 0 {
+                    let (fg, _, _) =
+                        crate::widgets::tone_palette(ui, crate::widgets::BadgeTone::Success);
+                    RichText::new(format!("{running_ssh_count} / {ssh_total} 条运行中"))
+                        .strong()
+                        .color(fg)
+                } else {
+                    RichText::new(format!("0 / {ssh_total} 条运行中")).strong()
+                };
+                crate::widgets::kv_row(ui, "SSH 隧道", ssh_summary);
+                ui.separator();
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new("代理模式").small().weak());
                     for (mode, label) in [
@@ -555,121 +581,239 @@ impl App {
         let render_forwards_card = |app: &mut App, ui: &mut egui::Ui| {
             let ssh_ctl = app.ui.connected && !app.busy && app.ui.uncertain.is_none();
             card(ui, |ui| {
+                let mut open_new_ssh = false;
+                let mut open_manage = false;
+                crate::widgets::responsive_header(
+                    ui,
+                    380.0,
+                    |ui| {
+                        ui.label(RichText::new("端口转发与隧道").strong().size(16.0));
+                    },
+                    |ui, rtl| {
+                        for idx in if rtl { [1, 0] } else { [0, 1] } {
+                            match idx {
+                                0 if primary(ui, "+ SSH 隧道", ssh_ctl) => {
+                                    open_new_ssh = true;
+                                }
+                                1 if ui.button("管理转发").clicked() => {
+                                    open_manage = true;
+                                }
+                                _ => {}
+                            }
+                        }
+                    },
+                );
+                if open_new_ssh {
+                    let parsed = serde_json::from_str::<serde_json::Value>(&app.editor).ok();
+                    let paused = app
+                        .ui
+                        .workspace
+                        .paused_port_forwards
+                        .get(&app.profile_id)
+                        .cloned()
+                        .unwrap_or_default();
+                    let default_host = app.ui.ssh_state.hosts.first().map(|h| h.id.as_str());
+                    app.ui.pf_form = crate::port_forward::PortForwardForm::from_new_ssh(
+                        parsed.as_ref(),
+                        &paused,
+                        &app.ui.ssh_state.forwards,
+                        default_host,
+                    );
+                    app.ui.pf_error = None;
+                    app.ui.dialog = Some(Dialog::PortForward);
+                }
+                if open_manage {
+                    app.ui.page = Page::Profiles;
+                    app.ui.profile_tab = ProfileTab::PortForward;
+                    app.ui.pf_subtab = PortForwardSubTab::Forwards;
+                }
+                ui.add_space(4.0);
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("端口转发与隧道").strong().size(16.0));
-                    if primary(ui, "+ SSH 隧道", ssh_ctl) {
-                        let parsed = serde_json::from_str::<serde_json::Value>(&app.editor).ok();
-                        let paused = app
-                            .ui
-                            .workspace
-                            .paused_port_forwards
-                            .get(&app.profile_id)
-                            .cloned()
-                            .unwrap_or_default();
-                        let default_host = app.ui.ssh_state.hosts.first().map(|h| h.id.as_str());
-                        app.ui.pf_form = crate::port_forward::PortForwardForm::from_new_ssh(
-                            parsed.as_ref(),
-                            &paused,
-                            &app.ui.ssh_state.forwards,
-                            default_host,
+                    ui.label(RichText::new("Xray 端口转发").strong().small());
+                    if running && pf_count > 0 {
+                        crate::widgets::badge(
+                            ui,
+                            &format!("{pf_count} 条生效中"),
+                            crate::widgets::BadgeTone::Success,
                         );
-                        app.ui.pf_error = None;
-                        app.ui.dialog = Some(Dialog::PortForward);
-                    }
-                    if ui.button("管理转发").clicked() {
-                        app.ui.page = Page::Profiles;
-                        app.ui.profile_tab = ProfileTab::PortForward;
-                        app.ui.pf_subtab = PortForwardSubTab::Forwards;
+                    } else {
+                        crate::widgets::badge(ui, "随 Core 运行", crate::widgets::BadgeTone::Muted);
                     }
                 });
-                ui.add_space(4.0);
                 if !running {
                     let msg = if generation.is_some() {
                         "Core 当前未运行。点击左侧「启动 Core」后将自动恢复 Xray 端口转发监听。"
                     } else {
                         "尚未应用配置。点击左侧「选择配置」并应用后，已启用的 Xray 端口转发将随 Core 启动。"
                     };
-                    ui.label(RichText::new(msg).weak());
+                    ui.add(egui::Label::new(RichText::new(msg).small().weak()).wrap());
                 } else if active_forwards.is_empty() {
-                    ui.label(RichText::new("当前运行配置暂无已启用的 Xray 端口转发。").weak());
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new("当前运行配置暂无已启用的 Xray 端口转发。")
+                                .small()
+                                .weak(),
+                        )
+                        .wrap(),
+                    );
                 } else {
-                    for (i, entry) in active_forwards.iter().enumerate() {
-                        if i > 0 {
-                            ui.separator();
-                        }
-                        let display = if entry.name.is_empty() {
-                            entry.tag.as_str()
-                        } else {
-                            entry.name.as_str()
-                        };
-                        let net = crate::port_forward::network_label(&entry.network);
-                        crate::widgets::kv_row(
-                            ui,
-                            &format!("{display} ({net})"),
-                            RichText::new(format!(
-                                "{}:{} -> {}:{} ({})",
-                                entry.listen,
-                                entry.port,
-                                entry.target_host,
-                                entry.target_port,
-                                entry.outbound_tag
-                            ))
-                            .monospace(),
-                        );
+                    for entry in &active_forwards {
+                        ui.push_id(("ov-xray-fwd", &entry.tag), |ui| {
+                            let display = if entry.name.is_empty() {
+                                entry.tag.as_str()
+                            } else {
+                                entry.name.as_str()
+                            };
+                            let net = crate::port_forward::network_label(&entry.network);
+                            let copy_ip = if entry.listen == crate::port_forward::LISTEN_LAN {
+                                crate::port_forward::LISTEN_LOCAL
+                            } else {
+                                entry.listen.as_str()
+                            };
+                            let copy_addr = format!("{copy_ip}:{}", entry.port);
+                            crate::widgets::compact_subcard(ui, None, false, |ui| {
+                                let mut copy_clicked = false;
+                                crate::widgets::responsive_compact_header(
+                                    ui,
+                                    300.0,
+                                    |ui| {
+                                        ui.horizontal_wrapped(|ui| {
+                                            ui.label(
+                                                RichText::new(format!("{display} ({net})"))
+                                                    .strong()
+                                                    .size(13.5),
+                                            );
+                                            crate::widgets::badge(
+                                                ui,
+                                                "生效中",
+                                                crate::widgets::BadgeTone::Success,
+                                            );
+                                        });
+                                    },
+                                    |ui, _rtl| {
+                                        if crate::widgets::compact_button(ui, "复制")
+                                            .on_hover_text(&copy_addr)
+                                            .clicked()
+                                        {
+                                            copy_clicked = true;
+                                        }
+                                    },
+                                );
+                                if copy_clicked {
+                                    ui.ctx().copy_text(copy_addr.clone());
+                                    app.message = format!("已复制监听地址：{copy_addr}");
+                                }
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "{}:{} -> {}:{}",
+                                            entry.listen,
+                                            entry.port,
+                                            entry.target_host,
+                                            entry.target_port
+                                        ))
+                                        .monospace()
+                                        .small(),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!("经由 {}", entry.outbound_tag))
+                                            .small()
+                                            .weak(),
+                                    );
+                                });
+                            });
+                            ui.add_space(6.0);
+                        });
                     }
                 }
                 let ssh_forwards = app.ui.ssh_state.forwards.clone();
+                let ssh_hosts = app.ui.ssh_state.hosts.clone();
+                let ssh_runtime = app.ui.ssh_state.runtime.clone();
                 ui.add_space(6.0);
                 ui.separator();
-                if ssh_forwards.is_empty() {
-                    ui.label(
-                        RichText::new("SSH 隧道按需转发（独立于 Core）")
-                            .strong()
-                            .small(),
-                    );
-                    ui.label(
-                        RichText::new(
-                            "暂无 SSH 隧道；点击上方「+ SSH 隧道」可快速新建并按需启停。",
-                        )
-                        .small()
-                        .weak(),
-                    );
-                } else {
-                    let ssh_hosts = app.ui.ssh_state.hosts.clone();
-                    let ssh_runtime = app.ui.ssh_state.runtime.clone();
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(
-                            RichText::new("SSH 隧道按需转发（独立于 Core）")
-                                .strong()
-                                .small(),
-                        );
-                        if ssh_forwards.len() >= 2 {
-                            let all_running = ssh_forwards.iter().all(|f| {
-                                ssh_runtime
-                                    .iter()
-                                    .find(|r| r.forward_id == f.id)
-                                    .is_some_and(|r| r.state == SshForwardState::Running)
-                            });
-                            let any_active = ssh_runtime.iter().any(|r| {
-                                matches!(
-                                    r.state,
-                                    SshForwardState::Running | SshForwardState::Connecting
-                                )
-                            });
-                            if ui
-                                .add_enabled(ssh_ctl && !all_running, egui::Button::new("全部启动"))
-                                .clicked()
-                            {
-                                app.send(Command::StartAllSshForwards);
+                ui.add_space(4.0);
+                let mut start_all = false;
+                let mut stop_all = false;
+                let all_running = !ssh_forwards.is_empty()
+                    && ssh_forwards.iter().all(|f| {
+                        ssh_runtime
+                            .iter()
+                            .find(|r| r.forward_id == f.id)
+                            .is_some_and(|r| r.state == SshForwardState::Running)
+                    });
+                let any_active = ssh_runtime.iter().any(|r| {
+                    matches!(
+                        r.state,
+                        SshForwardState::Running | SshForwardState::Connecting
+                    )
+                });
+                crate::widgets::responsive_compact_header(
+                    ui,
+                    320.0,
+                    |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new("SSH 隧道").strong().small());
+                            if !ssh_forwards.is_empty() && running_ssh_count > 0 {
+                                crate::widgets::badge(
+                                    ui,
+                                    &format!("{running_ssh_count}/{} 运行中", ssh_forwards.len()),
+                                    crate::widgets::BadgeTone::Success,
+                                );
+                            } else {
+                                crate::widgets::badge(
+                                    ui,
+                                    "独立于 Core",
+                                    crate::widgets::BadgeTone::Muted,
+                                );
                             }
-                            if ui
-                                .add_enabled(ssh_ctl && any_active, egui::Button::new("全部停止"))
-                                .clicked()
-                            {
-                                app.send(Command::StopAllSshForwards);
+                        });
+                    },
+                    |ui, rtl| {
+                        if ssh_forwards.len() >= 2 {
+                            for idx in if rtl { [1, 0] } else { [0, 1] } {
+                                match idx {
+                                    0 if crate::widgets::compact_button_enabled(
+                                        ui,
+                                        ssh_ctl && !all_running,
+                                        "全部启动",
+                                    )
+                                    .clicked() =>
+                                    {
+                                        start_all = true;
+                                    }
+                                    1 if crate::widgets::compact_button_enabled(
+                                        ui,
+                                        ssh_ctl && any_active,
+                                        "全部停止",
+                                    )
+                                    .clicked() =>
+                                    {
+                                        stop_all = true;
+                                    }
+                                    _ => {}
+                                }
                             }
                         }
-                    });
+                    },
+                );
+                if start_all {
+                    app.send(Command::StartAllSshForwards);
+                }
+                if stop_all {
+                    app.send(Command::StopAllSshForwards);
+                }
+                if ssh_forwards.is_empty() {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(
+                                "暂无 SSH 隧道；点击上方「+ SSH 隧道」可快速新建并按需启停。",
+                            )
+                            .small()
+                            .weak(),
+                        )
+                        .wrap(),
+                    );
+                } else {
                     for fwd in &ssh_forwards {
                         ui.push_id(("ov-ssh-fwd", &fwd.id), |ui| {
                             let rt = ssh_runtime.iter().find(|r| r.forward_id == fwd.id);
@@ -685,66 +829,135 @@ impl App {
                                 fwd.listen.as_str()
                             };
                             let copy_addr = format!("{copy_ip}:{}", fwd.port);
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(
-                                    RichText::new(format!("{} (TCP · SSH)", fwd.name)).strong(),
-                                );
-                                ui.label(
-                                    RichText::new(format!(
-                                        "{}:{} -> {}:{} ({host_name})",
-                                        fwd.listen, fwd.port, fwd.target_host, fwd.target_port
-                                    ))
-                                    .monospace()
-                                    .small(),
-                                );
-                                match state {
-                                    SshForwardState::Running => crate::widgets::badge(
+                            let lan_exposed = !crate::port_forward::is_loopback_listen(&fwd.listen);
+                            let border_tone = (state == SshForwardState::Error)
+                                .then_some(crate::widgets::BadgeTone::Danger);
+                            crate::widgets::compact_subcard(
+                                ui,
+                                border_tone,
+                                state == SshForwardState::Stopped,
+                                |ui| {
+                                    let mut copy_clicked = false;
+                                    let mut toggle_clicked = false;
+                                    let is_running = state == SshForwardState::Running;
+                                    crate::widgets::responsive_compact_header(
                                         ui,
-                                        "运行中",
-                                        crate::widgets::BadgeTone::Success,
-                                    ),
-                                    SshForwardState::Connecting => crate::widgets::badge(
-                                        ui,
-                                        "连接中",
-                                        crate::widgets::BadgeTone::Accent,
-                                    ),
-                                    SshForwardState::Error => crate::widgets::badge(
-                                        ui,
-                                        "失败",
-                                        crate::widgets::BadgeTone::Danger,
-                                    ),
-                                    SshForwardState::Stopped => crate::widgets::badge(
-                                        ui,
-                                        "已停止",
-                                        crate::widgets::BadgeTone::Muted,
-                                    ),
-                                }
-                                if !crate::port_forward::is_loopback_listen(&fwd.listen) {
-                                    crate::widgets::badge(
-                                        ui,
-                                        "局域网",
-                                        crate::widgets::BadgeTone::Warn,
+                                        300.0,
+                                        |ui| {
+                                            ui.horizontal_wrapped(|ui| {
+                                                ui.label(
+                                                    RichText::new(&fwd.name).strong().size(13.5),
+                                                );
+                                                match state {
+                                                    SshForwardState::Running => {
+                                                        crate::widgets::badge(
+                                                            ui,
+                                                            "运行中",
+                                                            crate::widgets::BadgeTone::Success,
+                                                        )
+                                                    }
+                                                    SshForwardState::Connecting => {
+                                                        crate::widgets::badge(
+                                                            ui,
+                                                            "连接中",
+                                                            crate::widgets::BadgeTone::Accent,
+                                                        )
+                                                    }
+                                                    SshForwardState::Error => {
+                                                        crate::widgets::badge(
+                                                            ui,
+                                                            "失败",
+                                                            crate::widgets::BadgeTone::Danger,
+                                                        )
+                                                    }
+                                                    SshForwardState::Stopped => {
+                                                        crate::widgets::badge(
+                                                            ui,
+                                                            "已停止",
+                                                            crate::widgets::BadgeTone::Muted,
+                                                        )
+                                                    }
+                                                }
+                                                if lan_exposed {
+                                                    crate::widgets::badge(
+                                                        ui,
+                                                        "局域网",
+                                                        crate::widgets::BadgeTone::Warn,
+                                                    );
+                                                }
+                                            });
+                                        },
+                                        |ui, rtl| {
+                                            let action_label =
+                                                if is_running { "停止" } else { "启动" };
+                                            for idx in if rtl { [1, 0] } else { [0, 1] } {
+                                                match idx {
+                                                    0 if crate::widgets::compact_button(ui, "复制")
+                                                        .on_hover_text(&copy_addr)
+                                                        .clicked() =>
+                                                    {
+                                                        copy_clicked = true;
+                                                    }
+                                                    1 if crate::widgets::compact_button_enabled(
+                                                        ui,
+                                                        ssh_ctl,
+                                                        action_label,
+                                                    )
+                                                    .clicked() =>
+                                                    {
+                                                        toggle_clicked = true;
+                                                    }
+                                                    _ => {}
+                                                }
+                                            }
+                                        },
                                     );
-                                }
-                                if ui.button("复制").on_hover_text(&copy_addr).clicked() {
-                                    ui.ctx().copy_text(copy_addr.clone());
-                                    app.message = format!("已复制监听地址：{copy_addr}");
-                                }
-                                if state == SshForwardState::Running {
-                                    if ui.add_enabled(ssh_ctl, egui::Button::new("停止")).clicked()
-                                    {
-                                        app.send(Command::StopSshForward { id: fwd.id.clone() });
+                                    if copy_clicked {
+                                        ui.ctx().copy_text(copy_addr.clone());
+                                        app.message = format!("已复制监听地址：{copy_addr}");
                                     }
-                                } else if ui
-                                    .add_enabled(ssh_ctl, egui::Button::new("启动"))
-                                    .clicked()
-                                {
-                                    app.send(Command::StartSshForward { id: fwd.id.clone() });
-                                }
-                            });
-                            if let Some(err) = rt.and_then(|r| r.last_error.as_deref()) {
-                                ui.colored_label(ui.visuals().error_fg_color, err);
-                            }
+                                    if toggle_clicked {
+                                        if is_running {
+                                            app.send(Command::StopSshForward {
+                                                id: fwd.id.clone(),
+                                            });
+                                        } else {
+                                            app.send(Command::StartSshForward {
+                                                id: fwd.id.clone(),
+                                            });
+                                        }
+                                    }
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "{}:{} -> {}:{}",
+                                                fwd.listen,
+                                                fwd.port,
+                                                fwd.target_host,
+                                                fwd.target_port
+                                            ))
+                                            .monospace()
+                                            .small(),
+                                        );
+                                        ui.label(
+                                            RichText::new(format!("经由 {host_name}"))
+                                                .small()
+                                                .weak(),
+                                        );
+                                    });
+                                    if let Some(err) = rt.and_then(|r| r.last_error.as_deref()) {
+                                        ui.add(
+                                            egui::Label::new(
+                                                RichText::new(err)
+                                                    .small()
+                                                    .color(ui.visuals().error_fg_color),
+                                            )
+                                            .wrap(),
+                                        );
+                                    }
+                                },
+                            );
+                            ui.add_space(6.0);
                         });
                     }
                 }
@@ -757,9 +970,31 @@ impl App {
             });
         };
         if wide {
-            ui.columns(2, |columns| {
-                render_connection_card(self, &mut columns[0]);
-                render_forwards_card(self, &mut columns[1]);
+            let prev_spacing_x = ui.spacing().item_spacing.x;
+            let gap = 14.0;
+            let total = (ui.available_width() - gap).max(0.0);
+            let left_w = (total * 0.46).clamp(400.0, 560.0).min(total * 0.5);
+            let right_w = (total - left_w).max(0.0);
+            ui.scope(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                ui.horizontal_top(|ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(left_w, 0.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.spacing_mut().item_spacing.x = prev_spacing_x;
+                            render_connection_card(self, ui);
+                        },
+                    );
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(right_w, 0.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.spacing_mut().item_spacing.x = prev_spacing_x;
+                            render_forwards_card(self, ui);
+                        },
+                    );
+                });
             });
         } else {
             render_connection_card(self, ui);

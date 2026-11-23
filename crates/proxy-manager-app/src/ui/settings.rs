@@ -99,7 +99,10 @@ impl App {
                     ui.label(RichText::new("数据与存储").strong().size(18.0));
                     ui.label("Windows 默认使用程序安装目录下的 data；显式 --data-dir 参数优先。");
                     ui.label("当前数据目录");
-                    ui.monospace(display_path(&self.root));
+                    ui.add(
+                        egui::Label::new(RichText::new(display_path(&self.root)).monospace())
+                            .wrap(),
+                    );
                     if ui.button("复制目录路径").clicked() {
                         ui.ctx().copy_text(display_path(&self.root));
                     }
@@ -114,7 +117,9 @@ impl App {
                     ui.separator();
                     ui.label("会话日志");
                     let log_path = self.root.join("logs/supervisor.log");
-                    ui.monospace(display_path(&log_path));
+                    ui.add(
+                        egui::Label::new(RichText::new(display_path(&log_path)).monospace()).wrap(),
+                    );
                     ui.horizontal_wrapped(|ui| {
                         if ui.button("复制日志路径").clicked() {
                             ui.ctx().copy_text(display_path(&log_path));
@@ -186,7 +191,7 @@ impl App {
                 .weak(),
             );
         }
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label("官方版本");
             ui.add(singleline(&mut self.dependency_version, 160.0));
         });

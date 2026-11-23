@@ -3822,7 +3822,7 @@ fn ssh_credentials_hosts_forwards_and_overview_on_demand_start_stop() {
     app.ui.page = Page::Overview;
     let ov1 = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
     assert!(overlapping_visible_text(&ov1).is_empty());
-    let _ = text_bounds(&ov1, "测试数据库 (TCP · SSH)");
+    let _ = text_bounds(&ov1, "测试数据库");
     let _ = text_bounds(&ov1, "已停止");
     guided_click(&mut app, &ctx, "启动", 1100.0, 900.0);
     assert!(matches!(
@@ -4623,5 +4623,752 @@ fn overview_action_buttons_match_standard_control_height() {
     for label in ["选择配置", "路由诊断"] {
         let rect = enclosing_rect(&fresh_out, label, CONTROL_HEIGHT);
         assert!((rect.height() - CONTROL_HEIGHT).abs() < 1.0);
+    }
+}
+
+#[test]
+fn overview_ssh_tunnel_cards_and_badges_never_clip_or_collapse_vertically() {
+    let mut app = app();
+    app.ui.ssh_loaded = true;
+    app.ui
+        .workspace
+        .names
+        .insert("work".into(), "75-x600".into());
+    app.status.as_mut().unwrap().proxy_state = "Owned".into();
+    if let Some(ref mut g) = app.status.as_mut().unwrap().generation {
+        g.proxy_mode = ProxyMode::Pac;
+    }
+    app.ui.ssh_state = SshState {
+        credentials: vec![SshCredentialSummary {
+            id: "cred-1".into(),
+            name: "ops · 密码".into(),
+            username: "ops".into(),
+            auth_kind: SshAuthKind::Password,
+            has_password: true,
+            private_key_path: PathBuf::new(),
+            has_passphrase: false,
+        }],
+        hosts: vec![
+            SshHost {
+                id: "host-vpc".into(),
+                name: "workstation.vpc".into(),
+                host: "10.1.0.2".into(),
+                port: DEFAULT_SSH_PORT,
+                credential_id: "cred-1".into(),
+                host_key_fingerprint: "SHA256:vpc".into(),
+            },
+            SshHost {
+                id: "host-edge".into(),
+                name: "edge.mulife.vip".into(),
+                host: "198.51.100.10".into(),
+                port: DEFAULT_SSH_PORT,
+                credential_id: "cred-1".into(),
+                host_key_fingerprint: "SHA256:edge".into(),
+            },
+        ],
+        forwards: vec![
+            SshForward {
+                id: "sf-1".into(),
+                name: "Web (127.0.0.1:8080)".into(),
+                listen: "127.0.0.1".into(),
+                port: 18010,
+                target_host: "127.0.0.1".into(),
+                target_port: 8080,
+                ssh_host_id: "host-vpc".into(),
+            },
+            SshForward {
+                id: "sf-2".into(),
+                name: "Web (127.0.0.1:8080)".into(),
+                listen: "127.0.0.1".into(),
+                port: 18020,
+                target_host: "127.0.0.1".into(),
+                target_port: 8080,
+                ssh_host_id: "host-edge".into(),
+            },
+        ],
+        runtime: vec![
+            SshForwardRuntime {
+                forward_id: "sf-1".into(),
+                state: SshForwardState::Stopped,
+                last_error: None,
+            },
+            SshForwardRuntime {
+                forward_id: "sf-2".into(),
+                state: SshForwardState::Running,
+                last_error: None,
+            },
+        ],
+    };
+
+    let ctx = egui::Context::default();
+    configure(&ctx);
+    app.ui.page = Page::Overview;
+
+    for appearance in [Appearance::Light, Appearance::Dark] {
+        appearance.apply(&ctx);
+        // At 760x500 the stacked second card can scroll below y=500; verify visible widgets
+        // don't overlap or crush, then verify full in-viewport placement across larger sizes.
+        let mut small_ov = guided_frame(&mut app, &ctx, vec![], 760.0, 500.0);
+        for _ in 0..3 {
+            small_ov = guided_frame(&mut app, &ctx, vec![], 760.0, 500.0);
+        }
+        assert!(overlapping_visible_text(&small_ov).is_empty());
+        for shape in &small_ov.shapes {
+            if let egui::Shape::Text(text) = &shape.shape
+                && matches!(text.galley.text(), "运行中" | "已停止")
+            {
+                assert_eq!(text.galley.rows.len(), 1);
+            }
+        }
+        for (w, h) in [
+            (760.0, 1200.0),
+            (980.0, 760.0),
+            (1100.0, 760.0),
+            (1440.0, 900.0),
+        ] {
+            let mut ov = guided_frame(&mut app, &ctx, vec![], w, h);
+            for _ in 0..3 {
+                ov = guided_frame(&mut app, &ctx, vec![], w, h);
+            }
+            assert!(
+                overlapping_visible_text(&ov).is_empty(),
+                "overlap at {appearance:?} {w}x{h}"
+            );
+            for shape in &ov.shapes {
+                if let egui::Shape::Text(text) = &shape.shape
+                    && matches!(text.galley.text(), "运行中" | "已停止")
+                {
+                    assert_eq!(
+                        text.galley.rows.len(),
+                        1,
+                        "badge collapsed at {appearance:?} {w}x{h}: rows={}",
+                        text.galley.rows.len()
+                    );
+                }
+            }
+            for label in [
+                "全部启动",
+                "全部停止",
+                "复制",
+                "启动",
+                "停止",
+                "+ SSH 隧道",
+                "管理转发",
+            ] {
+                let mut found = false;
+                for shape in &ov.shapes {
+                    if let egui::Shape::Text(text) = &shape.shape
+                        && text.galley.text() == label
+                    {
+                        found = true;
+                        let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
+                        assert!(
+                            rect.left() >= 0.0 && rect.right() <= w - 16.0,
+                            "{label} clipped at {appearance:?} {w}x{h}: {rect:?}"
+                        );
+                        assert!(
+                            shape.clip_rect.contains_rect(rect),
+                            "{label} clipped by parent at {appearance:?} {w}x{h}: rect={rect:?}, clip={:?}",
+                            shape.clip_rect
+                        );
+                    }
+                }
+                assert!(found, "missing {label} at {appearance:?} {w}x{h}");
+            }
+        }
+    }
+}
+
+#[test]
+fn profiles_page_adapts_across_window_sizes_without_clipping_headers_or_controls() {
+    let mut app = app();
+    app.ui.ssh_loaded = true;
+
+    // Populate a realistic profile with an extra outbound, routing rules, and Xray forward.
+    let mut value: serde_json::Value = serde_json::from_str(&app.editor).unwrap();
+    value["outbounds"].as_array_mut().unwrap().insert(
+        0,
+        serde_json::json!({
+            "tag": "node-1",
+            "protocol": "vless",
+            "settings": {
+                "vnext": [{
+                    "address": "hk-edge.example.com",
+                    "port": 443,
+                    "users": [{"id": "11111111-1111-1111-1111-111111111111", "encryption": "none"}]
+                }]
+            },
+            "streamSettings": {"network": "tcp", "security": "tls"}
+        }),
+    );
+    app.ui
+        .workspace
+        .node_names
+        .entry(app.profile_id.clone())
+        .or_default()
+        .insert("node-1".into(), "香港节点 01".into());
+
+    let mut form = crate::port_forward::PortForwardForm::from_new(&value, &[]);
+    form.name = "内网管理端".into();
+    form.local_port = "18443".into();
+    form.target_host = "10.0.0.8".into();
+    form.target_port = "443".into();
+    form.outbound_tag = "direct".into();
+    crate::port_forward::save_entry(&mut value, &mut app.ui.workspace, &app.profile_id, &form)
+        .unwrap();
+
+    value["routing"]["rules"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "type": "field",
+            "domain": ["geosite:cn"],
+            "outboundTag": "direct"
+        }));
+    app.editor = serde_json::to_string_pretty(&value).unwrap();
+
+    app.ui.ssh_state = SshState {
+        credentials: vec![SshCredentialSummary {
+            id: "cred-1".into(),
+            name: "ops · 密码".into(),
+            username: "ops".into(),
+            auth_kind: SshAuthKind::Password,
+            has_password: true,
+            private_key_path: PathBuf::new(),
+            has_passphrase: false,
+        }],
+        hosts: vec![SshHost {
+            id: "host-1".into(),
+            name: "prod-bastion.internal".into(),
+            host: "198.51.100.22".into(),
+            port: DEFAULT_SSH_PORT,
+            credential_id: "cred-1".into(),
+            host_key_fingerprint: "SHA256:fp-prod".into(),
+        }],
+        forwards: vec![
+            SshForward {
+                id: "sf-1".into(),
+                name: "PG (10.0.1.8:5432)".into(),
+                listen: "127.0.0.1".into(),
+                port: 15432,
+                target_host: "10.0.1.8".into(),
+                target_port: 5432,
+                ssh_host_id: "host-1".into(),
+            },
+            SshForward {
+                id: "sf-2".into(),
+                name: "Redis (10.0.1.9:6379)".into(),
+                listen: "0.0.0.0".into(),
+                port: 16379,
+                target_host: "10.0.1.9".into(),
+                target_port: 6379,
+                ssh_host_id: "host-1".into(),
+            },
+        ],
+        runtime: vec![
+            SshForwardRuntime {
+                forward_id: "sf-1".into(),
+                state: SshForwardState::Running,
+                last_error: None,
+            },
+            SshForwardRuntime {
+                forward_id: "sf-2".into(),
+                state: SshForwardState::Stopped,
+                last_error: None,
+            },
+        ],
+    };
+
+    let ctx = egui::Context::default();
+    configure(&ctx);
+    app.ui.page = Page::Profiles;
+
+    let views: &[(ProfileTab, PortForwardSubTab, AdvancedTab, &[&str])] = &[
+        (
+            ProfileTab::Outbounds,
+            PortForwardSubTab::Forwards,
+            AdvancedTab::Inbounds,
+            &["节点", "分流规则", "更多与源码", "直连", "PAC", "全局"],
+        ),
+        (
+            ProfileTab::Routing,
+            PortForwardSubTab::Forwards,
+            AdvancedTab::Inbounds,
+            &["节点", "分流规则", "更多与源码", "直连", "PAC", "全局"],
+        ),
+        (
+            ProfileTab::PortForward,
+            PortForwardSubTab::Forwards,
+            AdvancedTab::Inbounds,
+            &["+ SSH 隧道", "+ Xray 转发", "直连", "PAC", "全局"],
+        ),
+        (
+            ProfileTab::PortForward,
+            PortForwardSubTab::SshHosts,
+            AdvancedTab::Inbounds,
+            &["+ 新增 SSH 跳板机", "+ 转发", "测试连接"],
+        ),
+        (
+            ProfileTab::PortForward,
+            PortForwardSubTab::SshCredentials,
+            AdvancedTab::Inbounds,
+            &["+ 新增 SSH 凭证", "编辑", "删除"],
+        ),
+        (
+            ProfileTab::Advanced,
+            PortForwardSubTab::Forwards,
+            AdvancedTab::Inbounds,
+            &["节点", "分流规则", "更多与源码"],
+        ),
+        (
+            ProfileTab::Advanced,
+            PortForwardSubTab::Forwards,
+            AdvancedTab::Json,
+            &["格式化 JSON"],
+        ),
+        (
+            ProfileTab::Advanced,
+            PortForwardSubTab::Forwards,
+            AdvancedTab::History,
+            &["暂无已提交的历史版本。"],
+        ),
+    ];
+
+    for appearance in [Appearance::Light, Appearance::Dark] {
+        appearance.apply(&ctx);
+        for (w, h) in [
+            (760.0, 500.0),
+            (760.0, 1000.0),
+            (900.0, 650.0),
+            (980.0, 760.0),
+            (1100.0, 760.0),
+            (1440.0, 900.0),
+            (1920.0, 1040.0),
+        ] {
+            for &(tab, pf_sub, adv_sub, required_labels) in views {
+                app.ui.profile_tab = tab;
+                app.ui.pf_subtab = pf_sub;
+                app.ui.advanced_tab = adv_sub;
+                let mut out = guided_frame(&mut app, &ctx, vec![], w, h);
+                for _ in 0..4 {
+                    out = guided_frame(&mut app, &ctx, vec![], w, h);
+                }
+                assert!(
+                    overlapping_visible_text(&out).is_empty(),
+                    "overlap in {tab:?}/{pf_sub:?}/{adv_sub:?} at {appearance:?} {w}x{h}"
+                );
+                let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, h));
+                for shape in &out.shapes {
+                    if let egui::Shape::Text(text) = &shape.shape
+                        && matches!(
+                            text.galley.text(),
+                            "运行中"
+                                | "已停止"
+                                | "SSH 隧道"
+                                | "TCP"
+                                | "独立于 Core"
+                                | "指纹已固定"
+                                | "密码认证（已加密保存）"
+                                | "常规分流规则"
+                                | "默认访问"
+                                | "已保存"
+                        )
+                    {
+                        assert_eq!(
+                            text.galley.rows.len(),
+                            1,
+                            "badge crushed at {tab:?}/{pf_sub:?} {appearance:?} {w}x{h}: {:?}",
+                            text.galley.text()
+                        );
+                    }
+                }
+                // At 760x500 with vertical scroll inside main-scroll, lower rows scroll below the
+                // fold; verify the top tab bar stays above the fold & completely unclipped here.
+                let labels_to_check: &[&str] = if h <= 500.0 {
+                    &["节点", "分流规则", "更多与源码"]
+                } else {
+                    required_labels
+                };
+                for label in labels_to_check {
+                    let rect = text_bounds(&out, label);
+                    let clip = out
+                        .shapes
+                        .iter()
+                        .find_map(|s| match &s.shape {
+                            egui::Shape::Text(t) if t.galley.text() == *label => Some(s.clip_rect),
+                            _ => None,
+                        })
+                        .unwrap();
+                    assert!(
+                        viewport.contains_rect(rect),
+                        "{label} outside viewport in {tab:?}/{pf_sub:?} at {appearance:?} {w}x{h}: {rect:?}"
+                    );
+                    assert!(
+                        clip.contains_rect(rect),
+                        "{label} clipped in {tab:?}/{pf_sub:?} at {appearance:?} {w}x{h}: rect={rect:?}, clip={clip:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn all_pages_render_cleanly_without_overflow_or_overlap_across_window_sizes() {
+    let mut app = app();
+    app.ui.ssh_loaded = true;
+    app.logs = vec![
+        "[Info] xray core started successfully on 0.0.0.0:10809\n[Warning] slow upstream handshake on 198.51.100.22:443".into(),
+    ];
+    app.add_event("信息", "已启动 PAC 与 SSH 隧道服务", "req-audit-1");
+    app.ui.operation_details =
+        "request_id=req-audit-1 action=ApplyProfile status=Committed\n".repeat(4);
+    app.route_result = serde_json::to_string(&RouteResult {
+        kind: "StaticPrediction".into(),
+        match_state: "Matched".into(),
+        rule_index: Some(0),
+        expected_outbound: Some("direct".into()),
+        actual_outbound: "Unverified".into(),
+        reason: "命中第一条 domain 规则（geosite:cn）".into(),
+    })
+    .unwrap();
+    app.ui.route_tested = Some((
+        "generation-1".into(),
+        RouteContext {
+            host: "example.cn".into(),
+            port: Some(443),
+            inbound_tag: Some("http-in".into()),
+            network: Some("tcp".into()),
+            target_ip: None,
+            source_ip: None,
+            source_port: None,
+            user: None,
+            protocol: None,
+            attrs: Default::default(),
+        },
+    ));
+    app.ui.latency_host = "example.com".into();
+    app.ui.latency_result =
+        serde_json::to_string(&serde_json::json!({"address": "93.184.216.34:443", "ms": 42}))
+            .unwrap();
+    if let Some(status) = app.status.as_mut() {
+        status.proxy_state = "Owned".into();
+        status.pac_state = "Serving".into();
+        status.winhttp = Some(WinHttpConfig {
+            access_type: "DEFAULT_PROXY".into(),
+            proxy: String::new(),
+            bypass: "<local>".into(),
+        });
+        if let Some(g) = status.generation.as_mut() {
+            g.proxy_mode = ProxyMode::Pac;
+            g.pac = Some(PacPublication {
+                revision: "pac-rev-123456".into(),
+                sha256: "deadbeef".into(),
+                url: "http://127.0.0.1:18080/pac/pac-rev-123456.js".into(),
+                path: PathBuf::from("pac/pac-rev-123456.js"),
+                port: 18080,
+                mode: Some(proxy_model::PacMode::ProxyList),
+                summary: Some("2 个 GeoSite · 3 条域名".into()),
+            });
+        }
+    }
+    let mut pac_draft = app.pac_draft();
+    pac_draft.mode = proxy_model::PacMode::ProxyList;
+    pac_draft.geosites = vec!["geosite:cn".into(), "geosite:private".into()];
+    pac_draft.domains = vec![
+        "example.com".into(),
+        "*.internal.example".into(),
+        "full:exact.example.org".into(),
+    ];
+    let pid = app.profile_id.clone();
+    app.save_pac_draft_for(&pid, pac_draft);
+
+    app.ui.ssh_state = SshState {
+        credentials: vec![SshCredentialSummary {
+            id: "cred-1".into(),
+            name: "ops · 密码".into(),
+            username: "ops".into(),
+            auth_kind: SshAuthKind::Password,
+            has_password: true,
+            private_key_path: PathBuf::new(),
+            has_passphrase: false,
+        }],
+        hosts: vec![SshHost {
+            id: "host-1".into(),
+            name: "edge.mulife.vip".into(),
+            host: "198.51.100.10".into(),
+            port: DEFAULT_SSH_PORT,
+            credential_id: "cred-1".into(),
+            host_key_fingerprint: "SHA256:edge".into(),
+        }],
+        forwards: vec![SshForward {
+            id: "sf-1".into(),
+            name: "Web (127.0.0.1:8080)".into(),
+            listen: "127.0.0.1".into(),
+            port: 18020,
+            target_host: "127.0.0.1".into(),
+            target_port: 8080,
+            ssh_host_id: "host-1".into(),
+        }],
+        runtime: vec![SshForwardRuntime {
+            forward_id: "sf-1".into(),
+            state: SshForwardState::Running,
+            last_error: None,
+        }],
+    };
+
+    let ctx = egui::Context::default();
+    configure(&ctx);
+
+    for appearance in [Appearance::Light, Appearance::Dark] {
+        appearance.apply(&ctx);
+        for (w, h) in [
+            (760.0, 500.0),
+            (900.0, 650.0),
+            (980.0, 760.0),
+            (1100.0, 760.0),
+            (1440.0, 900.0),
+            (1920.0, 1040.0),
+        ] {
+            struct ScreenCase {
+                name: &'static str,
+                onboarding: bool,
+                setup_step: usize,
+                page: Page,
+                profile_tab: ProfileTab,
+                pf_subtab: PortForwardSubTab,
+                advanced_tab: AdvancedTab,
+                settings_tab: SettingsTab,
+            }
+            let case = |name: &'static str,
+                        onboarding: bool,
+                        setup_step: usize,
+                        page: Page,
+                        profile_tab: ProfileTab,
+                        pf_subtab: PortForwardSubTab,
+                        advanced_tab: AdvancedTab,
+                        settings_tab: SettingsTab| ScreenCase {
+                name,
+                onboarding,
+                setup_step,
+                page,
+                profile_tab,
+                pf_subtab,
+                advanced_tab,
+                settings_tab,
+            };
+            let mut screens = vec![
+                case(
+                    "setup-0",
+                    true,
+                    0,
+                    Page::Overview,
+                    ProfileTab::Outbounds,
+                    PortForwardSubTab::Forwards,
+                    AdvancedTab::Inbounds,
+                    SettingsTab::Core,
+                ),
+                case(
+                    "setup-1",
+                    true,
+                    1,
+                    Page::Overview,
+                    ProfileTab::Outbounds,
+                    PortForwardSubTab::Forwards,
+                    AdvancedTab::Inbounds,
+                    SettingsTab::Core,
+                ),
+                case(
+                    "setup-2",
+                    true,
+                    2,
+                    Page::Overview,
+                    ProfileTab::Outbounds,
+                    PortForwardSubTab::Forwards,
+                    AdvancedTab::Inbounds,
+                    SettingsTab::Core,
+                ),
+                case(
+                    "overview",
+                    false,
+                    0,
+                    Page::Overview,
+                    ProfileTab::Outbounds,
+                    PortForwardSubTab::Forwards,
+                    AdvancedTab::Inbounds,
+                    SettingsTab::Core,
+                ),
+                case(
+                    "pac",
+                    false,
+                    0,
+                    Page::Pac,
+                    ProfileTab::Outbounds,
+                    PortForwardSubTab::Forwards,
+                    AdvancedTab::Inbounds,
+                    SettingsTab::Core,
+                ),
+                case(
+                    "diagnostics",
+                    false,
+                    0,
+                    Page::Diagnostics,
+                    ProfileTab::Outbounds,
+                    PortForwardSubTab::Forwards,
+                    AdvancedTab::Inbounds,
+                    SettingsTab::Core,
+                ),
+                case(
+                    "logs",
+                    false,
+                    0,
+                    Page::Logs,
+                    ProfileTab::Outbounds,
+                    PortForwardSubTab::Forwards,
+                    AdvancedTab::Inbounds,
+                    SettingsTab::Core,
+                ),
+            ];
+            for (name, p_tab, pf_sub, adv_sub) in [
+                (
+                    "profiles-outbounds",
+                    ProfileTab::Outbounds,
+                    PortForwardSubTab::Forwards,
+                    AdvancedTab::Inbounds,
+                ),
+                (
+                    "profiles-routing",
+                    ProfileTab::Routing,
+                    PortForwardSubTab::Forwards,
+                    AdvancedTab::Inbounds,
+                ),
+                (
+                    "profiles-pf-forwards",
+                    ProfileTab::PortForward,
+                    PortForwardSubTab::Forwards,
+                    AdvancedTab::Inbounds,
+                ),
+                (
+                    "profiles-pf-hosts",
+                    ProfileTab::PortForward,
+                    PortForwardSubTab::SshHosts,
+                    AdvancedTab::Inbounds,
+                ),
+                (
+                    "profiles-pf-creds",
+                    ProfileTab::PortForward,
+                    PortForwardSubTab::SshCredentials,
+                    AdvancedTab::Inbounds,
+                ),
+                (
+                    "profiles-adv-inbounds",
+                    ProfileTab::Advanced,
+                    PortForwardSubTab::Forwards,
+                    AdvancedTab::Inbounds,
+                ),
+                (
+                    "profiles-adv-json",
+                    ProfileTab::Advanced,
+                    PortForwardSubTab::Forwards,
+                    AdvancedTab::Json,
+                ),
+                (
+                    "profiles-adv-history",
+                    ProfileTab::Advanced,
+                    PortForwardSubTab::Forwards,
+                    AdvancedTab::History,
+                ),
+            ] {
+                screens.push(case(
+                    name,
+                    false,
+                    0,
+                    Page::Profiles,
+                    p_tab,
+                    pf_sub,
+                    adv_sub,
+                    SettingsTab::Core,
+                ));
+            }
+            for (name, s_tab) in [
+                ("settings-core", SettingsTab::Core),
+                ("settings-startup", SettingsTab::Startup),
+                ("settings-appearance", SettingsTab::Appearance),
+                ("settings-storage", SettingsTab::Storage),
+            ] {
+                screens.push(case(
+                    name,
+                    false,
+                    0,
+                    Page::Settings,
+                    ProfileTab::Outbounds,
+                    PortForwardSubTab::Forwards,
+                    AdvancedTab::Inbounds,
+                    s_tab,
+                ));
+            }
+
+            for sc in screens {
+                let case_name = sc.name;
+                app.ui.onboarding = sc.onboarding;
+                app.ui.setup_step = sc.setup_step;
+                app.ui.page = sc.page;
+                app.ui.profile_tab = sc.profile_tab;
+                app.ui.pf_subtab = sc.pf_subtab;
+                app.ui.advanced_tab = sc.advanced_tab;
+                app.ui.settings_tab = sc.settings_tab;
+                let mut out = guided_frame(&mut app, &ctx, vec![], w, h);
+                for _ in 0..3 {
+                    out = guided_frame(&mut app, &ctx, vec![], w, h);
+                }
+                assert!(
+                    overlapping_visible_text(&out).is_empty(),
+                    "text overlap in {case_name} at {appearance:?} {w}x{h}: {:?}",
+                    overlapping_visible_text(&out)
+                );
+                for shape in &out.shapes {
+                    if let egui::Shape::Text(text) = &shape.shape {
+                        if text.galley.text().trim().is_empty() {
+                            continue;
+                        }
+                        if matches!(
+                            text.galley.text(),
+                            "运行中"
+                                | "已停止"
+                                | "SSH 隧道"
+                                | "TCP"
+                                | "独立于 Core"
+                                | "指纹已固定"
+                                | "密码认证（已加密保存）"
+                                | "常规分流规则"
+                                | "默认访问"
+                                | "已保存"
+                                | "协议握手就绪"
+                        ) {
+                            assert_eq!(
+                                text.galley.rows.len(),
+                                1,
+                                "badge crushed in {case_name} at {appearance:?} {w}x{h}: {:?}",
+                                text.galley.text()
+                            );
+                        }
+                        for row in &text.galley.rows {
+                            let rect = row
+                                .visuals
+                                .mesh_bounds
+                                .translate(text.pos.to_vec2() + row.pos.to_vec2())
+                                .intersect(shape.clip_rect);
+                            if rect.width() > 2.0 && rect.height() > 2.0 {
+                                assert!(
+                                    rect.left() >= -0.5 && rect.right() <= w + 0.5,
+                                    "horizontal text overflow in {case_name} at {appearance:?} {w}x{h}: {:?} rect={rect:?}",
+                                    text.galley.text()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

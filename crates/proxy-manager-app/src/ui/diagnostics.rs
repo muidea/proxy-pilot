@@ -144,7 +144,14 @@ impl App {
                     egui::ScrollArea::vertical()
                         .id_salt("operation-details")
                         .max_height(240.0)
-                        .show(ui, |ui| ui.monospace(&self.ui.operation_details));
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&self.ui.operation_details).monospace(),
+                                )
+                                .wrap(),
+                            );
+                        });
                 });
             }
             if let Some(request_id) = self.failed_request.clone()
@@ -248,60 +255,68 @@ impl App {
                         };
                         (format!("{proto} · {listen}:{port}"), status, tone)
                     };
-                    egui::Frame::new()
-                        .fill(ui.visuals().faint_bg_color)
-                        .stroke(egui::Stroke::new(
-                            1.0,
-                            ui.visuals().widgets.noninteractive.bg_stroke.color,
-                        ))
-                        .corner_radius(egui::CornerRadius::same(8))
-                        .inner_margin(egui::Margin::symmetric(10, 7))
-                        .show(ui, |ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                let clicked = crate::widgets::clickable_mono_badge(
-                                    ui,
-                                    tag,
-                                    if self.route_inbound.trim() == tag {
-                                        crate::widgets::BadgeTone::Accent
-                                    } else {
-                                        crate::widgets::BadgeTone::Muted
-                                    },
-                                )
-                                .on_hover_text("点击填入下方路由静态预测")
-                                .clicked();
-                                if clicked {
-                                    self.route_inbound = tag.to_owned();
-                                    if proto == "dokodemo-door" {
-                                        let net = if crate::port_forward::normalize_network(
-                                            ib.pointer("/settings/network")
-                                                .and_then(|v| v.as_str()),
-                                        ) == "udp"
-                                        {
-                                            "udp"
+                    crate::widgets::compact_subcard(ui, None, true, |ui| {
+                        let mut fill_clicked = false;
+                        crate::widgets::responsive_compact_header(
+                            ui,
+                            360.0,
+                            |ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    if crate::widgets::clickable_mono_badge(
+                                        ui,
+                                        tag,
+                                        if self.route_inbound.trim() == tag {
+                                            crate::widgets::BadgeTone::Accent
                                         } else {
-                                            "tcp"
-                                        };
-                                        let t_host = ib
-                                            .pointer("/settings/address")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("");
-                                        let t_port = ib
-                                            .pointer("/settings/port")
-                                            .and_then(|v| v.as_u64())
-                                            .unwrap_or(0);
-                                        if !t_host.is_empty() {
-                                            self.route_host = t_host.to_owned();
-                                        }
-                                        if t_port > 0 {
-                                            self.ui.route_port = t_port.to_string();
-                                        }
-                                        self.route_network = net.to_owned();
+                                            crate::widgets::BadgeTone::Muted
+                                        },
+                                    )
+                                    .on_hover_text("点击填入下方路由静态预测")
+                                    .clicked()
+                                    {
+                                        fill_clicked = true;
                                     }
-                                }
-                                ui.label(RichText::new(&detail).monospace().size(12.5));
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(&detail).monospace().size(12.5),
+                                        )
+                                        .wrap(),
+                                    );
+                                });
+                            },
+                            |ui, _rtl| {
                                 crate::widgets::badge(ui, status, tone);
-                            });
-                        });
+                            },
+                        );
+                        if fill_clicked {
+                            self.route_inbound = tag.to_owned();
+                            if proto == "dokodemo-door" {
+                                let net = if crate::port_forward::normalize_network(
+                                    ib.pointer("/settings/network").and_then(|v| v.as_str()),
+                                ) == "udp"
+                                {
+                                    "udp"
+                                } else {
+                                    "tcp"
+                                };
+                                let t_host = ib
+                                    .pointer("/settings/address")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                let t_port = ib
+                                    .pointer("/settings/port")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0);
+                                if !t_host.is_empty() {
+                                    self.route_host = t_host.to_owned();
+                                }
+                                if t_port > 0 {
+                                    self.ui.route_port = t_port.to_string();
+                                }
+                                self.route_network = net.to_owned();
+                            }
+                        }
+                    });
                     ui.add_space(4.0);
                 }
             }
@@ -323,10 +338,11 @@ impl App {
                 .small()
                 .weak(),
             );
-            let field_width = (ui.available_width() - 164.0).max(140.0);
+            let label_col = 116.0_f32.min(ui.available_width() * 0.30);
+            let field_width = (ui.available_width() - label_col - 16.0).max(140.0);
             let (host_resp, port_resp) = egui::Grid::new("route-fields")
                 .num_columns(2)
-                .min_col_width(148.0)
+                .min_col_width(label_col)
                 .min_row_height(CONTROL_HEIGHT)
                 .spacing(egui::vec2(16.0, 10.0))
                 .show(ui, |ui| {
@@ -445,9 +461,12 @@ impl App {
                 });
             }
             egui::CollapsingHeader::new("高级匹配条件（可选）").show(ui, |ui| {
+                let adv_label_col = 116.0_f32.min(ui.available_width() * 0.30);
+                let adv_field_width = (ui.available_width() - adv_label_col - 16.0).max(140.0);
+                let gap_x = ui.spacing().item_spacing.x;
                 egui::Grid::new("route-advanced-fields")
                     .num_columns(2)
-                    .min_col_width(148.0)
+                    .min_col_width(adv_label_col)
                     .min_row_height(CONTROL_HEIGHT)
                     .spacing(egui::vec2(16.0, 10.0))
                     .show(ui, |ui| {
@@ -456,7 +475,7 @@ impl App {
                             crate::widgets::singleline_select_all(
                                 ui,
                                 &mut self.route_inbound,
-                                field_width,
+                                adv_field_width,
                                 "",
                             );
                             if !runtime_inbounds_route.is_empty() {
@@ -471,28 +490,26 @@ impl App {
                         });
                         ui.end_row();
                         ui.label("已知目标 IP");
-                        ui.add(singleline(&mut self.ui.route_ip, field_width));
+                        ui.add(singleline(&mut self.ui.route_ip, adv_field_width));
                         ui.end_row();
                         ui.label("来源 IP / 端口");
                         ui.horizontal(|ui| {
-                            ui.add(singleline(&mut self.ui.route_source, field_width - 110.0));
+                            ui.add(singleline(
+                                &mut self.ui.route_source,
+                                (adv_field_width - 100.0 - gap_x).max(80.0),
+                            ));
                             ui.add(singleline(&mut self.ui.route_source_port, 100.0));
                         });
                         ui.end_row();
                         ui.label("用户 / 协议");
+                        let half_w = ((adv_field_width - gap_x) * 0.5).max(80.0);
                         ui.horizontal(|ui| {
-                            ui.add(singleline(
-                                &mut self.ui.route_user,
-                                field_width / 2.0 - 4.0,
-                            ));
-                            ui.add(singleline(
-                                &mut self.ui.route_protocol,
-                                field_width / 2.0 - 4.0,
-                            ));
+                            ui.add(singleline(&mut self.ui.route_user, half_w));
+                            ui.add(singleline(&mut self.ui.route_protocol, half_w));
                         });
                         ui.end_row();
                         ui.label("属性 key=value");
-                        ui.add(singleline(&mut self.ui.route_attrs, field_width));
+                        ui.add(singleline(&mut self.ui.route_attrs, adv_field_width));
                         ui.end_row();
                     });
                 ui.label(
@@ -618,7 +635,7 @@ impl App {
                 );
                 egui::CollapsingHeader::new("预测依据与限制").show(ui, |ui| {
                     ui.label(result.reason);
-                    ui.monospace(&self.route_result);
+                    ui.add(egui::Label::new(RichText::new(&self.route_result).monospace()).wrap());
                 });
             }
         });
@@ -634,7 +651,12 @@ impl App {
             );
             ui.horizontal_wrapped(|ui| {
                 ui.label("主机");
-                ui.add(singleline(&mut self.ui.latency_host, 260.0));
+                let host_w = if ui.max_rect().width().is_finite() {
+                    (ui.max_rect().width() * 0.42).clamp(180.0, 360.0)
+                } else {
+                    260.0
+                };
+                ui.add(singleline(&mut self.ui.latency_host, host_w));
                 ui.label("端口");
                 ui.add(singleline(&mut self.ui.latency_port, 80.0));
                 if primary(
@@ -809,7 +831,8 @@ impl App {
         }
     }
 
-    pub(in crate::app) fn logs_page(&mut self, ui: &mut egui::Ui) {
+    pub(in crate::app) fn logs_page(&mut self, ui: &mut egui::Ui, viewport_height: f32) {
+        let page_top = ui.cursor().top();
         heading(
             ui,
             "日志",
@@ -847,7 +870,7 @@ impl App {
             });
             ui.add_space(6.0);
         }
-        let search_width = (ui.available_width() - 298.0).max(120.0);
+        let search_width = (ui.available_width() - 312.0).max(120.0);
         ui.horizontal(|ui| {
             ui.label("搜索");
             ui.add(
@@ -882,66 +905,99 @@ impl App {
                     && text.to_lowercase().contains(&search)
             })
             .collect();
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(format!(
-                    "{} 条结果{}",
-                    rows.len(),
-                    if self.ui.logs_paused {
-                        " · 显示已暂停"
-                    } else {
-                        ""
-                    }
-                ))
-                .small()
-                .weak(),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let stats_text = format!(
+            "{} 条结果{}",
+            rows.len(),
+            if self.ui.logs_paused {
+                " · 显示已暂停"
+            } else {
+                ""
+            }
+        );
+        enum LogBarAction {
+            TogglePause,
+            GetLogs,
+            CopyRows,
+            #[cfg(windows)]
+            ExportLogs,
+        }
+        let mut log_action = None;
+        let pause_label = if self.ui.logs_paused {
+            "继续显示"
+        } else {
+            "暂停显示"
+        };
+        let has_rows = !rows.is_empty();
+        crate::widgets::responsive_header(
+            ui,
+            560.0,
+            |ui| {
+                ui.label(RichText::new(&stats_text).small().weak());
+            },
+            |ui, rtl| {
                 #[cfg(windows)]
-                if ui
-                    .add_enabled(!rows.is_empty(), egui::Button::new("导出日志…"))
-                    .clicked()
-                {
-                    let content = Self::format_log_rows(&rows);
-                    let count = rows.len();
-                    self.export_text_with_dialog(
-                        "proxy-pilot-logs.txt",
-                        &content,
-                        &format!("已导出 {count} 条日志。"),
-                    );
-                }
-                if ui
-                    .add_enabled(!rows.is_empty(), egui::Button::new("复制筛选结果"))
-                    .clicked()
-                {
-                    ui.ctx().copy_text(Self::format_log_rows(&rows));
-                    self.message = format!("已复制 {} 条日志到剪贴板。", rows.len());
-                }
-                if ui.button("读取 Core 日志").clicked() {
-                    self.send(Command::GetLogs);
-                }
-                if ui
-                    .button(if self.ui.logs_paused {
-                        "继续显示"
-                    } else {
-                        "暂停显示"
-                    })
-                    .clicked()
-                {
-                    if !self.ui.logs_paused {
-                        self.ui.frozen_logs = self.log_rows();
+                let indices: &[usize] = if rtl { &[3, 2, 1, 0] } else { &[0, 1, 2, 3] };
+                #[cfg(not(windows))]
+                let indices: &[usize] = if rtl { &[2, 1, 0] } else { &[0, 1, 2] };
+                for &idx in indices {
+                    match idx {
+                        0 if ui.button(pause_label).clicked() => {
+                            log_action = Some(LogBarAction::TogglePause);
+                        }
+                        1 if ui.button("读取 Core 日志").clicked() => {
+                            log_action = Some(LogBarAction::GetLogs);
+                        }
+                        2 if ui
+                            .add_enabled(has_rows, egui::Button::new("复制筛选结果"))
+                            .clicked() =>
+                        {
+                            log_action = Some(LogBarAction::CopyRows);
+                        }
+                        #[cfg(windows)]
+                        3 if ui
+                            .add_enabled(has_rows, egui::Button::new("导出日志…"))
+                            .clicked() =>
+                        {
+                            log_action = Some(LogBarAction::ExportLogs);
+                        }
+                        _ => {}
                     }
-                    self.ui.logs_paused = !self.ui.logs_paused;
                 }
-            });
-        });
+            },
+        );
+        match log_action {
+            Some(LogBarAction::TogglePause) => {
+                if !self.ui.logs_paused {
+                    self.ui.frozen_logs = self.log_rows();
+                }
+                self.ui.logs_paused = !self.ui.logs_paused;
+            }
+            Some(LogBarAction::GetLogs) => self.send(Command::GetLogs),
+            Some(LogBarAction::CopyRows) => {
+                ui.ctx().copy_text(Self::format_log_rows(&rows));
+                self.message = format!("已复制 {} 条日志到剪贴板。", rows.len());
+            }
+            #[cfg(windows)]
+            Some(LogBarAction::ExportLogs) => {
+                let content = Self::format_log_rows(&rows);
+                let count = rows.len();
+                self.export_text_with_dialog(
+                    "proxy-pilot-logs.txt",
+                    &content,
+                    &format!("已导出 {count} 条日志。"),
+                );
+            }
+            None => {}
+        }
+        let log_height =
+            (viewport_height - (ui.cursor().top() - page_top) - 110.0).clamp(180.0, 760.0);
         card(ui, |ui| {
-            ui.set_min_height(230.0);
+            ui.set_min_height(log_height.min(230.0));
             if rows.is_empty() {
                 ui.label(RichText::new("暂无匹配的日志。").weak());
             }
             egui::ScrollArea::vertical()
-                .max_height(450.0)
+                .max_height(log_height)
                 .id_salt("log-content")
                 .show(ui, |ui| {
                     for (idx, (level, text)) in rows.iter().enumerate() {
@@ -954,7 +1010,7 @@ impl App {
                         };
                         ui.push_id(idx, |ui| {
                             ui.horizontal(|ui| {
-                                let text_width = (ui.available_width() - 56.0).max(120.0);
+                                let text_width = (ui.available_width() - 68.0).max(120.0);
                                 ui.allocate_ui(egui::vec2(text_width, 0.0), |ui| {
                                     ui.add(
                                         egui::Label::new(

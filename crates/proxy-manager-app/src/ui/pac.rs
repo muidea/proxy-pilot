@@ -680,8 +680,8 @@ impl App {
         );
         ui.add_space(6.0);
 
-        ui.horizontal(|ui| {
-            let input_width = (ui.available_width() - 88.0).max(160.0);
+        ui.horizontal_wrapped(|ui| {
+            let input_width = (ui.available_width() - 74.0).max(120.0);
             let response = crate::widgets::singleline_select_all(
                 ui,
                 &mut self.ui.pac_domain_input,
@@ -760,10 +760,15 @@ impl App {
         ui.add_space(8.0);
         ui.horizontal_wrapped(|ui| {
             ui.label("筛选");
+            let filter_w = if ui.max_rect().width().is_finite() {
+                (ui.max_rect().width() - 80.0).clamp(140.0, 220.0)
+            } else {
+                210.0
+            };
             crate::widgets::singleline_select_all(
                 ui,
                 &mut self.ui.pac_domain_filter,
-                210.0,
+                filter_w,
                 "按域名搜索",
             );
             if !self.ui.pac_domain_filter.is_empty() && ui.button("清除").clicked() {
@@ -873,7 +878,7 @@ impl App {
             .show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .id_salt("pac-domain-list")
-                    .max_height(240.0)
+                    .max_height((ui.ctx().content_rect().height() * 0.25).clamp(180.0, 320.0))
                     .auto_shrink([false, true])
                     .show_rows(ui, row_height, filtered.len(), |ui, range| {
                         ui.spacing_mut().item_spacing.y = 2.0;
@@ -1028,7 +1033,7 @@ impl App {
                                 if content.lines().count() > 120 {
                                     preview.push_str("\n// ...（已截断，仅展示前 120 行）");
                                 }
-                                egui::ScrollArea::vertical()
+                                egui::ScrollArea::both()
                                     .id_salt("active-pac-script-scroll")
                                     .max_height(180.0)
                                     .show(ui, |ui| {
@@ -1112,15 +1117,31 @@ impl App {
         card(ui, |ui| {
             ui.label(RichText::new("1 · 分流模式与 GeoSite").strong().size(18.0));
             if has_config {
-                ui.horizontal_wrapped(|ui| {
-                    line(ui, "联动配置", self.ui.workspace.name(&target_profile));
-                    if target_profile != self.profile_id && self.committed_id().is_some() {
-                        crate::widgets::badge(
-                            ui,
-                            "已自动跟随当前激活配置",
-                            crate::widgets::BadgeTone::Accent,
-                        );
-                    }
+                let label_width = 116.0_f32.min(ui.available_width() * 0.36);
+                ui.horizontal_top(|ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(label_width, 0.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.set_min_width(label_width);
+                            ui.add(egui::Label::new(RichText::new("联动配置").weak()).wrap());
+                        },
+                    );
+                    ui.vertical(|ui| {
+                        ui.set_min_width(ui.available_width());
+                        ui.horizontal_wrapped(|ui| {
+                            ui.add(
+                                egui::Label::new(self.ui.workspace.name(&target_profile)).wrap(),
+                            );
+                            if target_profile != self.profile_id && self.committed_id().is_some() {
+                                crate::widgets::badge(
+                                    ui,
+                                    "已自动跟随当前激活配置",
+                                    crate::widgets::BadgeTone::Accent,
+                                );
+                            }
+                        });
+                    });
                 });
             }
             if let Some(endpoint) = endpoint {
@@ -1138,8 +1159,13 @@ impl App {
 
             ui.horizontal_wrapped(|ui| {
                 ui.label("PAC 策略");
+                let combo_w = if ui.max_rect().width().is_finite() {
+                    (ui.max_rect().width() - 96.0).clamp(220.0, 380.0)
+                } else {
+                    280.0
+                };
                 egui::ComboBox::from_id_salt("pac-mode-select")
-                    .width(280.0)
+                    .width(combo_w)
                     .selected_text(mode_label(draft.mode))
                     .show_ui(ui, |ui| {
                         for mode in [
@@ -1282,9 +1308,9 @@ impl App {
             }
 
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label("测试 URL");
-                let input_w = (ui.available_width() - 190.0).max(160.0);
+                let input_w = (ui.available_width() - 134.0).max(120.0);
                 let resp = crate::widgets::singleline_select_all(
                     ui,
                     &mut self.ui.pac_test_url,
@@ -1446,7 +1472,7 @@ impl App {
             );
             let response = egui::ScrollArea::vertical()
                 .id_salt("pac-script")
-                .max_height(320.0)
+                .max_height((ui.ctx().content_rect().height() * 0.36).clamp(180.0, 460.0))
                 .show(ui, |ui| {
                     ui.add(
                         egui::TextEdit::multiline(&mut draft.script)

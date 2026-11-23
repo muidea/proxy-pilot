@@ -628,7 +628,7 @@ fn heading(ui: &mut egui::Ui, title: &str, note: &str) {
     ui.add_space(10.0);
 }
 fn line(ui: &mut egui::Ui, label: &str, value: &str) {
-    let label_width = 148.0_f32.min(ui.available_width() * 0.4);
+    let label_width = 116.0_f32.min(ui.available_width() * 0.36);
     ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(
             egui::vec2(label_width, 0.0),
@@ -638,7 +638,10 @@ fn line(ui: &mut egui::Ui, label: &str, value: &str) {
                 ui.add(egui::Label::new(RichText::new(label).weak()).wrap());
             },
         );
-        ui.add(egui::Label::new(value).wrap());
+        ui.vertical(|ui| {
+            ui.set_min_width(ui.available_width());
+            ui.add(egui::Label::new(value).wrap());
+        });
     });
 }
 fn path_input(ui: &mut egui::Ui, value: &mut String) -> egui::Response {
