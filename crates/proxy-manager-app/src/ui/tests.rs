@@ -3410,7 +3410,11 @@ fn port_forward_tab_creates_links_routing_skips_sniffing_and_pauses_cleanly() {
 
     // Card renders cleanly at desktop and compact widths without text overlap.
     for width in [1100.0, 880.0] {
-        let out = guided_frame(&mut app, &ctx, vec![], width, 860.0);
+        let _ = guided_frame(&mut app, &ctx, vec![], width, 860.0);
+        let mut out = guided_frame(&mut app, &ctx, vec![], width, 860.0);
+        for _ in 0..2 {
+            out = guided_frame(&mut app, &ctx, vec![], width, 860.0);
+        }
         assert!(overlapping_visible_text(&out).is_empty());
         let _ = text_bounds(&out, "内网 MySQL");
         let _ = text_bounds(&out, "待应用");
@@ -4942,6 +4946,7 @@ fn profiles_page_adapts_across_window_sizes_without_clipping_headers_or_controls
         for (w, h) in [
             (760.0, 500.0),
             (760.0, 1000.0),
+            (880.0, 860.0),
             (900.0, 650.0),
             (980.0, 760.0),
             (1100.0, 760.0),
@@ -5652,4 +5657,101 @@ fn proxy_availability_overview_diagnostics_and_settings_flow() {
             .iter()
             .any(|c| matches!(c, Command::SaveSettings { .. }))
     );
+}
+
+#[test]
+fn port_forward_tab_and_broken_json_remain_visible_without_system_cjk_font() {
+    // 1. PortForward creation and card visibility at 1100x860 & 880x860 without system CJK font.
+    {
+        let mut app = app();
+        app.ui.page = Page::Profiles;
+        app.ui.profile_tab = ProfileTab::PortForward;
+
+        let ctx = egui::Context::default();
+        configure_without_system_cjk(&ctx);
+        let _ = guided_frame(&mut app, &ctx, vec![], 1100.0, 860.0);
+
+        guided_click(&mut app, &ctx, "+ Xray 转发", 1100.0, 860.0);
+        assert!(matches!(app.ui.dialog, Some(Dialog::PortForward)));
+        app.ui.pf_form.name = "内网 MySQL".into();
+        app.ui.pf_form.local_port = "13306".into();
+        app.ui.pf_form.target_host = "10.0.0.5".into();
+        app.ui.pf_form.target_port = "3306".into();
+        app.ui.pf_form.outbound_tag = "direct".into();
+        guided_click(&mut app, &ctx, "保存草稿", 1100.0, 860.0);
+        assert!(app.ui.dialog.is_none());
+
+        for width in [1100.0, 880.0] {
+            let _ = guided_frame(&mut app, &ctx, vec![], width, 860.0);
+            let out = guided_frame(&mut app, &ctx, vec![], width, 860.0);
+            assert!(overlapping_visible_text(&out).is_empty());
+            let _ = text_bounds(&out, "内网 MySQL");
+            let _ = text_bounds(&out, "待应用");
+        }
+    }
+
+    // 2. Broken Xray JSON warning stays visible and "+ Xray 转发" stays disabled while SSH tunnel works.
+    {
+        let mut app = app();
+        let (tx, requests) = mpsc::sync_channel(MAX_PENDING);
+        app.tx = tx;
+        app.pending.clear();
+        app.editor = "{ invalid json".into();
+        app.ui.ssh_loaded = true;
+        app.ui.ssh_state = SshState {
+            credentials: vec![SshCredentialSummary {
+                id: "cred-1".into(),
+                name: "ops · 密码".into(),
+                username: "ops".into(),
+                auth_kind: SshAuthKind::Password,
+                has_password: true,
+                private_key_path: PathBuf::new(),
+                has_passphrase: false,
+            }],
+            hosts: vec![SshHost {
+                id: "host-1".into(),
+                name: "跳板机 A".into(),
+                host: "10.0.0.2".into(),
+                port: 22,
+                credential_id: "cred-1".into(),
+                host_key_fingerprint: "SHA256:abcdef".into(),
+            }],
+            forwards: vec![SshForward {
+                id: "fwd-ssh-1".into(),
+                name: "PG (10.0.1.8:5432)".into(),
+                listen: "127.0.0.1".into(),
+                port: 15432,
+                target_host: "10.0.1.8".into(),
+                target_port: 5432,
+                ssh_host_id: "host-1".into(),
+            }],
+            runtime: vec![SshForwardRuntime {
+                forward_id: "fwd-ssh-1".into(),
+                state: SshForwardState::Stopped,
+                last_error: None,
+            }],
+        };
+
+        let ctx = egui::Context::default();
+        configure_without_system_cjk(&ctx);
+        app.ui.page = Page::Profiles;
+        app.ui.profile_tab = ProfileTab::PortForward;
+        app.ui.pf_subtab = PortForwardSubTab::Forwards;
+
+        let out = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+        assert!(overlapping_visible_text(&out).is_empty());
+        assert!(out.shapes.iter().any(|shape| matches!(
+            &shape.shape,
+            egui::Shape::Text(text) if text.galley.text().contains("当前 Xray 草稿存在 JSON 语法错误")
+        )));
+        let _ = text_bounds(&out, "+ Xray 转发");
+        guided_click(&mut app, &ctx, "+ Xray 转发", 1100.0, 900.0);
+        assert!(app.ui.dialog.is_none());
+
+        guided_click(&mut app, &ctx, "启动", 1100.0, 900.0);
+        assert!(matches!(
+            requests.try_recv().unwrap().command,
+            Command::StartSshForward { ref id } if id == "fwd-ssh-1"
+        ));
+    }
 }

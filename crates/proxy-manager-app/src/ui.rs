@@ -519,6 +519,16 @@ pub(super) fn configure(ctx: &egui::Context) {
         }
     }
     ctx.set_fonts(fonts);
+    apply_base_style(ctx);
+}
+
+#[cfg(test)]
+pub(super) fn configure_without_system_cjk(ctx: &egui::Context) {
+    ctx.set_fonts(egui::FontDefinitions::default());
+    apply_base_style(ctx);
+}
+
+fn apply_base_style(ctx: &egui::Context) {
     ctx.all_styles_mut(|style| {
         style.spacing.item_spacing = egui::vec2(10.0, 10.0);
         style.spacing.button_padding = egui::vec2(12.0, 8.0);

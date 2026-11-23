@@ -1089,29 +1089,29 @@ impl App {
         } else {
             "SSH 凭证".into()
         };
-        ui.horizontal_wrapped(|ui| {
-            for (sub, label) in [
-                (PortForwardSubTab::Forwards, "转发规则".to_owned()),
-                (PortForwardSubTab::SshHosts, host_tab),
-                (PortForwardSubTab::SshCredentials, cred_tab),
-            ] {
-                if crate::widgets::seg_button(ui, &label, self.ui.pf_subtab == sub, true).clicked()
-                {
-                    self.ui.pf_subtab = sub;
+        let sub_tabs = [
+            (PortForwardSubTab::Forwards, "转发规则".to_owned()),
+            (PortForwardSubTab::SshHosts, host_tab),
+            (PortForwardSubTab::SshCredentials, cred_tab),
+        ];
+        let render_subtabs = |ui: &mut egui::Ui, current: &mut PortForwardSubTab| {
+            ui.horizontal_wrapped(|ui| {
+                for (sub, label) in &sub_tabs {
+                    if crate::widgets::seg_button(ui, label, *current == *sub, true).clicked() {
+                        *current = *sub;
+                    }
                 }
+            });
+        };
+        if self.ui.pf_subtab != PortForwardSubTab::Forwards {
+            render_subtabs(ui, &mut self.ui.pf_subtab);
+            ui.add_space(6.0);
+            match self.ui.pf_subtab {
+                PortForwardSubTab::SshHosts => self.ssh_hosts_subtab(ui),
+                PortForwardSubTab::SshCredentials => self.ssh_credentials_subtab(ui),
+                PortForwardSubTab::Forwards => {}
             }
-        });
-        ui.add_space(6.0);
-        match self.ui.pf_subtab {
-            PortForwardSubTab::SshHosts => {
-                self.ssh_hosts_subtab(ui);
-                return;
-            }
-            PortForwardSubTab::SshCredentials => {
-                self.ssh_credentials_subtab(ui);
-                return;
-            }
-            PortForwardSubTab::Forwards => {}
+            return;
         }
 
         let parsed_value = serde_json::from_str::<serde_json::Value>(&self.editor).ok();
@@ -1186,85 +1186,82 @@ impl App {
             ssh_forwards.len(),
             entries.len()
         );
-        crate::widgets::subcard(ui, None, true, |ui| {
-            let mut open_new_ssh = false;
-            let mut open_new_xray = false;
-            crate::widgets::responsive_header(
-                ui,
-                640.0,
-                |ui| {
-                    ui.vertical(|ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(
-                                RichText::new("本地端口转发（SSH 隧道 / Xray Core）")
-                                    .strong()
-                                    .size(15.5),
-                            );
-                            crate::widgets::badge(
-                                ui,
-                                &summary_text,
-                                crate::widgets::BadgeTone::Muted,
-                            );
-                        });
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(
-                                    "SSH 隧道独立于 Xray Core，可随时按需启停；Xray 转发写入当前配置并随 Core 运行。",
-                                )
-                                .small()
-                                .weak(),
-                            )
-                            .wrap(),
-                        );
-                    });
-                },
-                |ui, rtl| {
-                    let xray_hover = if parsed_value.is_none() {
-                        "当前 Xray 草稿存在 JSON 语法错误，请先修正语法；SSH 隧道仍可正常使用"
-                    } else {
-                        "新增 Xray (dokodemo-door) 端口转发"
-                    };
-                    for idx in if rtl { [1, 0] } else { [0, 1] } {
-                        match idx {
-                            0 if primary(ui, "+ SSH 隧道", ssh_ctl_enabled) => {
-                                open_new_ssh = true;
-                            }
-                            1 if ui
-                                .add_enabled(
-                                    enabled && parsed_value.is_some(),
-                                    egui::Button::new("+ Xray 转发"),
-                                )
-                                .on_hover_text(xray_hover)
-                                .clicked() =>
-                            {
-                                open_new_xray = true;
-                            }
-                            _ => {}
+        let mut next_sub = self.ui.pf_subtab;
+        let mut open_new_ssh = false;
+        let mut open_new_xray = false;
+        crate::widgets::responsive_header(
+            ui,
+            580.0,
+            |ui| {
+                render_subtabs(ui, &mut next_sub);
+            },
+            |ui, rtl| {
+                let xray_hover = if parsed_value.is_none() {
+                    "当前 Xray 草稿存在 JSON 语法错误，请先修正语法；SSH 隧道仍可正常使用"
+                } else {
+                    "新增 Xray (dokodemo-door) 端口转发"
+                };
+                for idx in if rtl { [1, 0] } else { [0, 1] } {
+                    match idx {
+                        0 if primary(ui, "+ SSH 隧道", ssh_ctl_enabled) => {
+                            open_new_ssh = true;
                         }
+                        1 if ui
+                            .add_enabled(
+                                enabled && parsed_value.is_some(),
+                                egui::Button::new("+ Xray 转发"),
+                            )
+                            .on_hover_text(xray_hover)
+                            .clicked() =>
+                        {
+                            open_new_xray = true;
+                        }
+                        _ => {}
                     }
-                },
+                }
+            },
+        );
+        self.ui.pf_subtab = next_sub;
+        if open_new_ssh {
+            self.ui.pf_form = crate::port_forward::PortForwardForm::from_new_ssh(
+                parsed_value.as_ref(),
+                &paused,
+                &ssh_forwards,
+                default_ssh_host,
             );
-            if open_new_ssh {
-                self.ui.pf_form = crate::port_forward::PortForwardForm::from_new_ssh(
-                    parsed_value.as_ref(),
-                    &paused,
-                    &ssh_forwards,
-                    default_ssh_host,
-                );
-                self.ui.pf_error = None;
-                self.ui.dialog = Some(Dialog::PortForward);
-            }
-            if open_new_xray && let Some(ref val) = parsed_value {
-                self.ui.pf_form = crate::port_forward::PortForwardForm::from_new_with_ssh(
-                    val,
-                    &paused,
-                    &ssh_forwards,
-                );
-                self.ui.pf_error = None;
-                self.ui.dialog = Some(Dialog::PortForward);
-            }
+            self.ui.pf_error = None;
+            self.ui.dialog = Some(Dialog::PortForward);
+        }
+        if open_new_xray && let Some(ref val) = parsed_value {
+            self.ui.pf_form = crate::port_forward::PortForwardForm::from_new_with_ssh(
+                val,
+                &paused,
+                &ssh_forwards,
+            );
+            self.ui.pf_error = None;
+            self.ui.dialog = Some(Dialog::PortForward);
+        }
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            crate::widgets::badge(ui, &summary_text, crate::widgets::BadgeTone::Muted);
+            ui.add(
+                egui::Label::new(
+                    RichText::new("SSH 隧道独立于 Core；Xray 转发随当前配置运行。")
+                        .small()
+                        .weak(),
+                )
+                .wrap(),
+            );
         });
-        ui.add_space(10.0);
+        ui.add_space(6.0);
+        if parsed_value.is_none() {
+            crate::widgets::banner_box(
+                ui,
+                crate::widgets::BadgeTone::Warn,
+                "当前 Xray 草稿存在 JSON 语法错误，Xray 转发暂不可编辑；下方 SSH 隧道完全不受影响。请前往「更多与源码 → 原始 JSON」修正语法。",
+            );
+            ui.add_space(6.0);
+        }
 
         if !ssh_forwards.is_empty() || entries.is_empty() || parsed_value.is_none() {
             let all_running = !ssh_forwards.is_empty()
@@ -1519,6 +1516,10 @@ impl App {
             });
         }
 
+        let Some(mut value) = parsed_value else {
+            return;
+        };
+
         ui.add_space(4.0);
         ui.label(
             RichText::new("Xray 端口转发（dokodemo-door，随当前配置下发）")
@@ -1526,15 +1527,6 @@ impl App {
                 .size(14.5),
         );
         ui.add_space(6.0);
-
-        let Some(mut value) = parsed_value else {
-            crate::widgets::banner_box(
-                ui,
-                crate::widgets::BadgeTone::Warn,
-                "当前 Xray 草稿存在 JSON 语法错误，Xray 转发暂不可编辑；上方 SSH 隧道完全不受影响。请前往「更多与源码 → 原始 JSON」修正语法。",
-            );
-            return;
-        };
 
         if entries.is_empty() {
             crate::widgets::subcard(ui, None, false, |ui| {
