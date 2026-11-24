@@ -214,86 +214,143 @@ impl App {
             return;
         }
         card_with_min_height(ui, min_height, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                if let Some(mut name) = self.ui.inline_rename.clone() {
-                    let rename_w = ui.available_width().clamp(120.0, 220.0);
-                    let response = ui.add(singleline(&mut name, rename_w).char_limit(80));
-                    let enter =
-                        response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if ui.button("确定").clicked() || enter {
-                        if !name.trim().is_empty() {
-                            self.ui.workspace.names.insert(
-                                self.profile_id.clone(),
-                                name.trim().chars().take(80).collect(),
-                            );
-                            self.save_workspace();
+            let (status_text, status_tone) = if self.has_draft_edits() {
+                ("未落盘修改", crate::widgets::BadgeTone::Warn)
+            } else if self.has_unapplied_runtime_diff() {
+                ("已保存 · 待应用", crate::widgets::BadgeTone::Warn)
+            } else if self.committed_id() == Some(self.profile_id.as_str()) && self.is_running() {
+                ("运行中", crate::widgets::BadgeTone::Success)
+            } else {
+                ("已保存", crate::widgets::BadgeTone::Muted)
+            };
+            let profile_name = self.ui.workspace.name(&self.profile_id).to_owned();
+            let mut rename_value = self.ui.inline_rename.clone();
+            let renaming = rename_value.is_some();
+            let mut start_rename = false;
+            let mut enter_confirm = false;
+            let mut btn_confirm = false;
+            let mut cancel_rename = false;
+            let mut duplicate_clicked = false;
+            let mut delete_clicked = false;
+            #[cfg(windows)]
+            let mut export_clicked = false;
+            let can_copy = enabled && self.ui.number_inputs.is_empty();
+            let can_delete = enabled
+                && self.selected_profile == self.profile_id
+                && self.committed_id() != Some(self.profile_id.as_str());
+            #[cfg(windows)]
+            let can_export = self.ui.number_inputs.is_empty();
+
+            crate::widgets::responsive_header(
+                ui,
+                560.0,
+                |ui| {
+                    ui.horizontal(|ui| {
+                        if let Some(name) = rename_value.as_mut() {
+                            let rename_w = (ui.available_width() - 128.0).clamp(120.0, 240.0);
+                            let response = ui.add(singleline(name, rename_w).char_limit(80));
+                            if response.lost_focus()
+                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                            {
+                                enter_confirm = true;
+                            }
+                        } else {
+                            let max_title_w = (ui.available_width() - 128.0).max(72.0);
+                            let title_resp = ui
+                                .scope(|ui| {
+                                    ui.set_max_width(max_title_w);
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(&profile_name).strong().size(20.0),
+                                        )
+                                        .truncate(),
+                                    )
+                                })
+                                .inner;
+                            title_resp.on_hover_text(&profile_name);
                         }
-                        self.ui.inline_rename = None;
-                    } else if ui.button("取消").clicked() {
-                        self.ui.inline_rename = None;
+                        crate::widgets::badge(ui, status_text, status_tone);
+                    });
+                },
+                |ui, rtl| {
+                    if renaming {
+                        for idx in if rtl { [1, 0] } else { [0, 1] } {
+                            match idx {
+                                0 if primary(ui, "确定", true) => btn_confirm = true,
+                                1 if ui.button("取消").clicked() => cancel_rename = true,
+                                _ => {}
+                            }
+                        }
                     } else {
-                        self.ui.inline_rename = Some(name);
+                        for idx in if rtl { [3, 2, 1, 0] } else { [0, 1, 2, 3] } {
+                            match idx {
+                                0 if ui.button("改名").clicked() => start_rename = true,
+                                1 if ui
+                                    .add_enabled(can_copy, egui::Button::new("复制"))
+                                    .on_disabled_hover_text("请先补全未完成的数值输入，再复制配置")
+                                    .clicked() =>
+                                {
+                                    duplicate_clicked = true;
+                                }
+                                2 if ui
+                                    .add_enabled(can_delete, egui::Button::new("删除"))
+                                    .on_disabled_hover_text(
+                                        "上次已应用的配置仍被运行记录引用，需先应用另一份配置",
+                                    )
+                                    .clicked() =>
+                                {
+                                    delete_clicked = true;
+                                }
+                                #[cfg(windows)]
+                                3 if ui
+                                    .add_enabled(can_export, egui::Button::new("导出 JSON"))
+                                    .on_disabled_hover_text(
+                                        "请先补全未完成的数值输入，再导出 JSON；输入已随草稿保留",
+                                    )
+                                    .clicked() =>
+                                {
+                                    export_clicked = true;
+                                }
+                                _ => {}
+                            }
+                        }
                     }
-                } else {
-                    ui.label(
-                        RichText::new(self.ui.workspace.name(&self.profile_id))
-                            .strong()
-                            .size(21.0),
-                    );
-                    if ui.button("改名").clicked() {
-                        self.ui.inline_rename =
-                            Some(self.ui.workspace.name(&self.profile_id).into());
+                },
+            );
+
+            if enter_confirm || btn_confirm {
+                if let Some(name) = rename_value {
+                    let trimmed = name.trim();
+                    if !trimmed.is_empty() {
+                        self.ui
+                            .workspace
+                            .names
+                            .insert(self.profile_id.clone(), trimmed.chars().take(80).collect());
+                        self.save_workspace();
                     }
                 }
-                let (status_text, status_tone) = if self.has_draft_edits() {
-                    ("未落盘修改", crate::widgets::BadgeTone::Warn)
-                } else if self.has_unapplied_runtime_diff() {
-                    ("已保存 · 待应用", crate::widgets::BadgeTone::Warn)
-                } else if self.committed_id() == Some(self.profile_id.as_str()) && self.is_running()
-                {
-                    ("运行中", crate::widgets::BadgeTone::Success)
-                } else {
-                    ("已保存", crate::widgets::BadgeTone::Muted)
-                };
-                crate::widgets::badge(ui, status_text, status_tone);
-                ui.add_space(4.0);
-                if ui
-                    .add_enabled(
-                        enabled && self.ui.number_inputs.is_empty(),
-                        egui::Button::new("复制"),
-                    )
-                    .on_hover_text("请先补全未完成的数值输入，再复制配置")
-                    .clicked()
-                {
-                    self.begin_create(false, true);
-                }
-                if ui
-                    .add_enabled(
-                        enabled
-                            && self.selected_profile == self.profile_id
-                            && self.committed_id() != Some(self.profile_id.as_str()),
-                        egui::Button::new("删除"),
-                    )
-                    .on_hover_text("上次已应用的配置仍被运行记录引用，需先应用另一份配置")
-                    .clicked()
-                {
-                    self.ui.dialog = Some(Dialog::Confirm(Action::Delete {
-                        profile: self.profile_id.clone(),
-                        revision: self.revision.clone(),
-                    }));
-                }
-                #[cfg(windows)]
-                if ui
-                    .add_enabled(
-                        self.ui.number_inputs.is_empty(),
-                        egui::Button::new("导出 JSON"),
-                    )
-                    .on_hover_text("请先补全未完成的数值输入，再导出 JSON；输入已随草稿保留")
-                    .clicked()
-                {
-                    self.ui.dialog = Some(Dialog::Confirm(Action::ExportJson));
-                }
-            });
+                self.ui.inline_rename = None;
+            } else if cancel_rename {
+                self.ui.inline_rename = None;
+            } else if rename_value.is_some() {
+                self.ui.inline_rename = rename_value;
+            }
+            if start_rename {
+                self.ui.inline_rename = Some(profile_name);
+            }
+            if duplicate_clicked {
+                self.begin_create(false, true);
+            }
+            if delete_clicked {
+                self.ui.dialog = Some(Dialog::Confirm(Action::Delete {
+                    profile: self.profile_id.clone(),
+                    revision: self.revision.clone(),
+                }));
+            }
+            #[cfg(windows)]
+            if export_clicked {
+                self.ui.dialog = Some(Dialog::Confirm(Action::ExportJson));
+            }
             if self.ui.draft_conflict {
                 ui.colored_label(
                     ui.visuals().warn_fg_color,

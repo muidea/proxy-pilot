@@ -277,7 +277,17 @@ pub fn compact_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
 
 /// Compact bordered button with explicit enabled state for dense header or card action rows.
 pub fn compact_button_enabled(ui: &mut egui::Ui, enabled: bool, label: &str) -> egui::Response {
-    ui.add_enabled_ui(enabled, |ui| compact_chip(ui, label, false))
+    compact_chip_enabled(ui, enabled, label, false)
+}
+
+/// Compact 24 px selectable pill/chip with explicit enabled state for dense headers and mode rows.
+pub fn compact_chip_enabled(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    label: &str,
+    active: bool,
+) -> egui::Response {
+    ui.add_enabled_ui(enabled, |ui| compact_chip(ui, label, active))
         .inner
 }
 
@@ -448,21 +458,22 @@ pub fn compact_subcard<R>(
     )
 }
 
-pub fn kv_row(ui: &mut egui::Ui, key: &str, value: egui::RichText) {
-    let label_width = 112.0_f32.min(ui.available_width() * 0.34);
-    ui.horizontal_top(|ui| {
+pub fn kv_row_singleline(ui: &mut egui::Ui, key: &str, value: egui::RichText, hover: Option<&str>) {
+    let label_width = 104.0_f32.min(ui.available_width() * 0.34);
+    ui.horizontal(|ui| {
         ui.allocate_ui_with_layout(
             egui::vec2(label_width, 0.0),
-            egui::Layout::top_down(egui::Align::Min),
+            egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
                 ui.set_min_width(label_width);
-                ui.add(egui::Label::new(egui::RichText::new(key).small().weak()).wrap());
+                ui.set_max_width(label_width);
+                ui.add(egui::Label::new(egui::RichText::new(key).small().weak()).truncate());
             },
         );
-        ui.vertical(|ui| {
-            ui.set_min_width(ui.available_width());
-            ui.add(egui::Label::new(value).wrap());
-        });
+        let resp = ui.add(egui::Label::new(value).truncate());
+        if let Some(tip) = hover.filter(|t| !t.is_empty()) {
+            resp.on_hover_text(tip);
+        }
     });
 }
 

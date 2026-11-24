@@ -16,6 +16,20 @@ impl Process {
             .kill_on_drop(true)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
+        #[cfg(unix)]
+        let mut child = {
+            let mut attempt = 0u32;
+            loop {
+                match cmd.spawn() {
+                    Err(err) if crate::is_executable_file_busy(&err) && attempt < 6 => {
+                        std::thread::sleep(std::time::Duration::from_millis(10u64 << attempt));
+                        attempt += 1;
+                    }
+                    other => break other?,
+                }
+            }
+        };
+        #[cfg(not(unix))]
         let mut child = cmd.spawn()?;
         fn drain<T: tokio::io::AsyncRead + Unpin + Send + 'static>(mut pipe: T, logs: Logs) {
             tokio::spawn(async move {

@@ -383,19 +383,31 @@ fn text_bounds(output: &egui::FullOutput, label: &str) -> egui::Rect {
 }
 
 fn enclosing_rect(output: &egui::FullOutput, label: &str, min_height: f32) -> egui::Rect {
-    let text = text_bounds(output, label);
-    let mut rects = vec![];
+    enclosing_rect_below(output, label, f32::NEG_INFINITY, min_height)
+}
+
+fn enclosing_rect_below(
+    output: &egui::FullOutput,
+    label: &str,
+    min_y: f32,
+    min_height: f32,
+) -> egui::Rect {
+    let mut rects: Vec<egui::Rect> = vec![];
     for shape in &output.shapes {
-        if matches!(&shape.shape, egui::Shape::Text(t) if t.galley.text() == label) {
-            break;
+        if let egui::Shape::Text(t) = &shape.shape
+            && t.galley.text() == label
+            && t.pos.y >= min_y
+        {
+            let text = egui::Rect::from_min_size(t.pos, t.galley.size());
+            return rects
+                .into_iter()
+                .rev()
+                .find(|rect| rect.contains(text.center()) && rect.height() >= min_height - 0.1)
+                .unwrap_or_else(|| panic!("Missing enclosing rect for {label} below {min_y}"));
         }
         painted_rects(&shape.shape, &mut rects);
     }
-    rects
-        .into_iter()
-        .rev()
-        .find(|rect| rect.contains(text.center()) && rect.height() >= min_height - 0.1)
-        .unwrap()
+    panic!("Missing rendered label: {label}");
 }
 
 fn painted_rects(shape: &egui::Shape, rects: &mut Vec<egui::Rect>) {
@@ -619,7 +631,7 @@ fn dialogs_stay_inside_the_smallest_window_in_both_themes() {
             // Modal shapes follow the underlying page; the page itself may also
             // contain the title's coordinates, so inspect paint order here.
             let title_bounds = text_bounds(&output, title);
-            let mut rects = vec![];
+            let mut rects: Vec<egui::Rect> = vec![];
             for shape in &output.shapes {
                 painted_rects(&shape.shape, &mut rects);
             }
@@ -4376,7 +4388,7 @@ fn modal_dialogs_use_balanced_widths_padding_and_harmonized_title_size() {
         }
         let output = output.unwrap();
         let title_rect = text_bounds(&output, title);
-        let mut rects = vec![];
+        let mut rects: Vec<egui::Rect> = vec![];
         for shape in &output.shapes {
             painted_rects(&shape.shape, &mut rects);
         }
@@ -4577,51 +4589,87 @@ fn startup_conflict_failure_offers_confirmation_and_sends_resolve_command() {
 
 #[test]
 fn overview_action_buttons_match_standard_control_height() {
+    const COMPACT_HEIGHT: f32 = 24.0;
     let mut app = app();
     app.ui.page = Page::Overview;
     app.ui.workspace.overview_show_activity = true;
     let ctx = egui::Context::default();
     configure(&ctx);
 
-    // 1. Running Core state: Core & profile controls live inside the left card alongside mode pills.
+    // 1. Running Core state: symmetric 3-tier layout across both Overview cards.
     let output = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
     assert!(overlapping_visible_text(&output).is_empty());
 
-    let running_expected = [
-        "停止 Core",
-        "重启 Core",
+    let header_expected = [
         "管理配置",
         "路由诊断",
+        "+ SSH 隧道",
         "管理转发",
-        "直连",
-        "PAC",
-        "全局",
         "查看日志",
         "隐藏",
     ];
-    for label in running_expected {
+    for label in header_expected {
         let rect = enclosing_rect(&output, label, CONTROL_HEIGHT);
         assert!(
             (rect.height() - CONTROL_HEIGHT).abs() < 1.0,
-            "overview button {label} height mismatch: {rect:?}"
+            "overview header button {label} height mismatch: {rect:?}"
         );
     }
-    let stop_rect = enclosing_rect(&output, "停止 Core", CONTROL_HEIGHT);
-    let restart_rect = enclosing_rect(&output, "重启 Core", CONTROL_HEIGHT);
+    let config_rect = enclosing_rect(&output, "管理配置", CONTROL_HEIGHT);
     let diag_rect = enclosing_rect(&output, "路由诊断", CONTROL_HEIGHT);
-    let mode_rect = enclosing_rect(&output, "全局", CONTROL_HEIGHT);
-    assert!(stop_rect.top() > mode_rect.bottom());
-    assert!((stop_rect.center().y - restart_rect.center().y).abs() < 1.0);
-    assert!((stop_rect.center().y - diag_rect.center().y).abs() < 1.0);
+    let add_ssh_rect = enclosing_rect(&output, "+ SSH 隧道", CONTROL_HEIGHT);
+    let manage_fwd_rect = enclosing_rect(&output, "管理转发", CONTROL_HEIGHT);
+    assert!((config_rect.center().y - manage_fwd_rect.center().y).abs() < 1.0);
+    assert!((diag_rect.center().y - manage_fwd_rect.center().y).abs() < 1.0);
+    assert!((add_ssh_rect.center().y - manage_fwd_rect.center().y).abs() < 1.0);
+    assert!(config_rect.right() < diag_rect.left());
+    assert!(add_ssh_rect.right() < manage_fwd_rect.left());
 
-    // 2. Stopped with saved generation: "启动 Core" + "管理配置" + "路由诊断".
+    let compact_expected = [
+        "重启 Core",
+        "停止 Core",
+        "重测",
+        "诊断详情",
+        "直连",
+        "PAC",
+        "全局",
+    ];
+    for label in compact_expected {
+        let rect = enclosing_rect_below(&output, label, 60.0, COMPACT_HEIGHT - 2.0);
+        assert!(
+            (rect.height() - COMPACT_HEIGHT).abs() < 1.5,
+            "overview compact button {label} height mismatch: {rect:?}"
+        );
+    }
+    let restart_rect = enclosing_rect_below(&output, "重启 Core", 60.0, COMPACT_HEIGHT - 2.0);
+    let stop_rect = enclosing_rect_below(&output, "停止 Core", 60.0, COMPACT_HEIGHT - 2.0);
+    let retest_rect = enclosing_rect_below(&output, "重测", 60.0, COMPACT_HEIGHT - 2.0);
+    let diag_detail_rect = enclosing_rect_below(&output, "诊断详情", 60.0, COMPACT_HEIGHT - 2.0);
+    let direct_rect = enclosing_rect_below(&output, "直连", 60.0, COMPACT_HEIGHT - 2.0);
+    let pac_rect = enclosing_rect_below(&output, "PAC", 60.0, COMPACT_HEIGHT - 2.0);
+    let global_rect = enclosing_rect_below(&output, "全局", 60.0, COMPACT_HEIGHT - 2.0);
+    assert!((restart_rect.center().y - stop_rect.center().y).abs() < 1.0);
+    assert!(restart_rect.right() < stop_rect.left());
+    assert!((retest_rect.center().y - diag_detail_rect.center().y).abs() < 1.0);
+    assert!(retest_rect.right() < diag_detail_rect.left());
+    assert!((direct_rect.center().y - pac_rect.center().y).abs() < 1.0);
+    assert!((pac_rect.center().y - global_rect.center().y).abs() < 1.0);
+    assert!(direct_rect.right() < pac_rect.left());
+    assert!(pac_rect.right() < global_rect.left());
+    assert!(config_rect.bottom() < restart_rect.top());
+    assert!(restart_rect.bottom() < retest_rect.top());
+    assert!(retest_rect.bottom() < direct_rect.top());
+
+    // 2. Stopped with saved generation: "管理配置" + "路由诊断" in header, compact "启动 Core" in Section 1.
     app.status.as_mut().unwrap().core_state = "Stopped".into();
     let stopped_gen_out = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
     assert!(overlapping_visible_text(&stopped_gen_out).is_empty());
-    for label in ["启动 Core", "管理配置", "路由诊断"] {
+    for label in ["管理配置", "路由诊断"] {
         let rect = enclosing_rect(&stopped_gen_out, label, CONTROL_HEIGHT);
         assert!((rect.height() - CONTROL_HEIGHT).abs() < 1.0);
     }
+    let start_rect = enclosing_rect(&stopped_gen_out, "启动 Core", COMPACT_HEIGHT - 2.0);
+    assert!((start_rect.height() - COMPACT_HEIGHT).abs() < 1.5);
 
     // 3. Stopped without any generation: "选择配置" + "路由诊断".
     app.status.as_mut().unwrap().generation = None;
@@ -4644,6 +4692,15 @@ fn overview_ssh_tunnel_cards_and_badges_never_clip_or_collapse_vertically() {
     app.status.as_mut().unwrap().proxy_state = "Owned".into();
     if let Some(ref mut g) = app.status.as_mut().unwrap().generation {
         g.proxy_mode = ProxyMode::Pac;
+        g.pac = Some(PacPublication {
+            revision: "pac-rev-24299".into(),
+            sha256: "bead".into(),
+            url: "http://127.0.0.1:18080/pac/active/proxy.pac".into(),
+            path: PathBuf::from("pac/active/proxy.pac"),
+            port: 18080,
+            mode: Some(proxy_model::PacMode::ProxyList),
+            summary: Some("1 个 GeoSite · 1 条代理域名（24299 条生效），其余直连".into()),
+        });
     }
     app.ui.ssh_state = SshState {
         credentials: vec![SshCredentialSummary {
@@ -4741,14 +4798,20 @@ fn overview_ssh_tunnel_cards_and_badges_never_clip_or_collapse_vertically() {
                 overlapping_visible_text(&ov).is_empty(),
                 "overlap at {appearance:?} {w}x{h}"
             );
+            let pac_bounds = text_bounds(&ov, "指定代理 · 24299 条生效");
+            assert!(pac_bounds.width() > 40.0);
             for shape in &ov.shapes {
                 if let egui::Shape::Text(text) = &shape.shape
-                    && matches!(text.galley.text(), "运行中" | "已停止")
+                    && (matches!(
+                        text.galley.text(),
+                        "运行中" | "已停止" | "Core 运行中" | "已接管"
+                    ) || text.galley.text() == "指定代理 · 24299 条生效")
                 {
                     assert_eq!(
                         text.galley.rows.len(),
                         1,
-                        "badge collapsed at {appearance:?} {w}x{h}: rows={}",
+                        "text wrapped unexpectedly at {appearance:?} {w}x{h}: {:?} rows={}",
+                        text.galley.text(),
                         text.galley.rows.len()
                     );
                 }
@@ -5019,6 +5082,115 @@ fn profiles_page_adapts_across_window_sizes_without_clipping_headers_or_controls
             }
         }
     }
+}
+
+#[test]
+fn profile_editor_header_keeps_status_beside_title_and_groups_actions() {
+    let find_row_shape = |out: &egui::FullOutput, row_y: f32, exact: &str| {
+        out.shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text() == exact => {
+                    let rect = egui::Rect::from_min_size(t.pos, t.galley.size());
+                    ((rect.center().y - row_y).abs() < 16.0).then(|| (rect, t.galley.rows.len()))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("Missing header label `{exact}` near y={row_y}"))
+    };
+
+    let mut app = app();
+    app.ui.page = Page::Profiles;
+    app.ui
+        .workspace
+        .names
+        .insert("work".into(), "183-entry".into());
+    let ctx = egui::Context::default();
+    configure(&ctx);
+
+    // 1. Normal running state: Title + Status on the left, all actions grouped on the right.
+    for w in [760.0, 880.0, 980.0, 1100.0, 1440.0] {
+        let mut out = guided_frame(&mut app, &ctx, vec![], w, 760.0);
+        for _ in 0..3 {
+            out = guided_frame(&mut app, &ctx, vec![], w, 760.0);
+        }
+        assert!(
+            overlapping_visible_text(&out).is_empty(),
+            "overlap in profile header at width {w}"
+        );
+        let rename_btn = enclosing_rect(&out, "改名", 24.0);
+        let row_y = rename_btn.center().y;
+        let (title_rect, title_rows) = find_row_shape(&out, row_y, "183-entry");
+        let (status_rect, status_rows) = find_row_shape(&out, row_y, "运行中");
+        let copy_btn = enclosing_rect_below(&out, "复制", rename_btn.top() - 8.0, 24.0);
+        let delete_btn = enclosing_rect_below(&out, "删除", rename_btn.top() - 8.0, 24.0);
+        assert_eq!(title_rows, 1);
+        assert_eq!(status_rows, 1);
+        assert!(title_rect.right() < status_rect.left());
+        assert!(status_rect.right() < rename_btn.left());
+        assert!(rename_btn.right() < copy_btn.left());
+        assert!(copy_btn.right() < delete_btn.left());
+        assert!((status_rect.center().y - row_y).abs() < 2.0);
+        assert!((copy_btn.center().y - row_y).abs() < 2.0);
+        assert!((delete_btn.center().y - row_y).abs() < 2.0);
+    }
+
+    // 2. Very long profile name + longest status badge ("已保存 · 待应用"): title truncates cleanly, badge stays single-line beside it.
+    app.ui.workspace.names.insert(
+        "work".into(),
+        "超长测试配置名称-prod-gateway-cluster-node-alpha-beta-gamma-0123456789".into(),
+    );
+    let mut edited = app.editor.clone();
+    edited.push('\n');
+    let rev = hash(edited.as_bytes());
+    app.load(Profile {
+        id: "work".into(),
+        json: edited,
+        revision: rev,
+    });
+    for w in [880.0, 1100.0] {
+        let mut out = guided_frame(&mut app, &ctx, vec![], w, 760.0);
+        for _ in 0..3 {
+            out = guided_frame(&mut app, &ctx, vec![], w, 760.0);
+        }
+        assert!(overlapping_visible_text(&out).is_empty());
+        let rename_btn = enclosing_rect(&out, "改名", 24.0);
+        let row_y = rename_btn.center().y;
+        let (status_rect, status_rows) = find_row_shape(&out, row_y, "已保存 · 待应用");
+        let title_rect = out
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text().starts_with("超长测试配置名称") => {
+                    let rect = egui::Rect::from_min_size(t.pos, t.galley.size());
+                    ((rect.center().y - row_y).abs() < 16.0).then_some((rect, t.galley.rows.len()))
+                }
+                _ => None,
+            })
+            .expect("Missing truncated profile title in header");
+        assert_eq!(title_rect.1, 1);
+        assert_eq!(status_rows, 1);
+        assert!(title_rect.0.right() < status_rect.left());
+        assert!(status_rect.right() < rename_btn.left());
+        assert!((status_rect.center().y - row_y).abs() < 2.0);
+    }
+
+    // 3. Inline rename state: status stays next to input field, [确定] [取消] grouped on the right.
+    app.ui.inline_rename = Some("183-entry".into());
+    let mut out = guided_frame(&mut app, &ctx, vec![], 1100.0, 760.0);
+    for _ in 0..3 {
+        out = guided_frame(&mut app, &ctx, vec![], 1100.0, 760.0);
+    }
+    assert!(overlapping_visible_text(&out).is_empty());
+    let ok_btn = enclosing_rect(&out, "确定", 24.0);
+    let cancel_btn = enclosing_rect(&out, "取消", 24.0);
+    let row_y = ok_btn.center().y;
+    let (status_rect, status_rows) = find_row_shape(&out, row_y, "已保存 · 待应用");
+    assert_eq!(status_rows, 1);
+    assert!(status_rect.right() < ok_btn.left());
+    assert!(ok_btn.right() < cancel_btn.left());
+    assert!((status_rect.center().y - row_y).abs() < 2.0);
+    assert!((cancel_btn.center().y - row_y).abs() < 2.0);
 }
 
 #[test]
@@ -5358,6 +5530,8 @@ fn all_pages_render_cleanly_without_overflow_or_overlap_across_window_sizes() {
                                 | "已保存"
                                 | "协议握手就绪"
                                 | "可用 · 128 ms"
+                                | "Core 运行中"
+                                | "已接管"
                         ) {
                             assert_eq!(
                                 text.galley.rows.len(),

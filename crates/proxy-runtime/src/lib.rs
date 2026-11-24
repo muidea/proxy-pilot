@@ -376,8 +376,27 @@ fn command(path: &Path) -> Command {
     }
     cmd
 }
+#[cfg(unix)]
+pub(crate) fn is_executable_file_busy(err: &std::io::Error) -> bool {
+    err.kind() == std::io::ErrorKind::ExecutableFileBusy
+}
+
 async fn output(mut cmd: Command) -> Result<std::process::Output> {
-    timeout(Duration::from_secs(15), cmd.output())
+    #[cfg(unix)]
+    let fut = async move {
+        for attempt in 0u32..6 {
+            match cmd.output().await {
+                Err(err) if is_executable_file_busy(&err) => {
+                    tokio::time::sleep(Duration::from_millis(10u64 << attempt)).await;
+                }
+                other => return other,
+            }
+        }
+        cmd.output().await
+    };
+    #[cfg(not(unix))]
+    let fut = cmd.output();
+    timeout(Duration::from_secs(15), fut)
         .await
         .map_err(|_| Error::new("CORE_TIMEOUT", "Core command timed out"))?
         .map_err(Into::into)
@@ -795,5 +814,24 @@ mod log_tests {
                 .code,
             "PROXY_ENDPOINT_INVALID"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn version_retries_transient_executable_file_busy() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("fake-xray.sh");
+        std::fs::write(&path, b"#!/bin/sh\necho \"Xray 1.8.24 (test)\"\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let writer = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(45)).await;
+            drop(writer);
+        });
+
+        assert_eq!(version(&path).await.unwrap(), "Xray 1.8.24 (test)");
     }
 }
