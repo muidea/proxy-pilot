@@ -766,6 +766,13 @@ impl App {
         self.message = message.into();
         self.send_command(command, true);
     }
+    pub(in crate::app) fn enqueue_write(&mut self, command: Command) {
+        if !self.busy && self.ui.pending_followups.is_empty() {
+            self.send(command);
+        } else {
+            self.ui.pending_followups.push_back(command);
+        }
+    }
     fn send(&mut self, command: Command) {
         self.send_command(command, false);
     }
@@ -1017,6 +1024,7 @@ impl App {
                     }
                     self.message = format!("{} 请求：{}", self.message, response.request_id);
                     if command.is_write() {
+                        self.ui.pending_followups.clear();
                         self.failed_request = Some(response.request_id);
                         if command.is_ssh_command() {
                             self.send(Command::GetSshState);
@@ -1028,477 +1036,501 @@ impl App {
                         self.ui.connected = false;
                     }
                 }
-                Ok(value) => match command {
-                    Command::GetStatus => {
-                        if let Ok(status) = serde_json::from_value::<Status>(value) {
-                            let old_identity = self.status.as_ref().map(|s| {
-                                (&s.supervisor_epoch, s.generation.as_ref().map(|g| &g.id))
-                            });
-                            let new_identity = Some((
-                                &status.supervisor_epoch,
-                                status.generation.as_ref().map(|g| &g.id),
-                            ));
-                            if old_identity != new_identity {
-                                self.invalidate_candidate();
-                                self.ui.route_tested = None;
-                                self.route_result.clear();
-                            }
-                            self.connection_restored();
-                            if !self.ui.settings_loaded
-                                && !self.pending.values().any(|p| p.settings_context.is_some())
-                            {
-                                self.send(Command::GetSettings);
-                            }
-                            if !self.ui.profiles_loaded
-                                && !self.pending.values().any(|p| p.poll == Some("profiles"))
-                            {
-                                self.refresh_profiles();
-                            }
-                            if !self.ui.ssh_loaded
-                                && !self.pending.values().any(|p| p.poll == Some("ssh"))
-                            {
-                                self.send(Command::GetSshState);
-                            }
-                            let generation = status.generation.as_ref().map(|g| g.id.clone());
-                            let running = status.core_state == "Running";
-                            if let Some(avail) = &status.proxy_availability {
-                                if !self.ui.probe_config_dirty {
-                                    self.ui.probe_config_draft = avail.config.clone();
+                Ok(value) => {
+                    let was_write = command.is_write();
+                    match command {
+                        Command::GetStatus => {
+                            if let Ok(status) = serde_json::from_value::<Status>(value) {
+                                let old_identity = self.status.as_ref().map(|s| {
+                                    (&s.supervisor_epoch, s.generation.as_ref().map(|g| &g.id))
+                                });
+                                let new_identity = Some((
+                                    &status.supervisor_epoch,
+                                    status.generation.as_ref().map(|g| &g.id),
+                                ));
+                                if old_identity != new_identity {
+                                    self.invalidate_candidate();
+                                    self.ui.route_tested = None;
+                                    self.route_result.clear();
                                 }
-                                if !self.ui.probe_config_loaded {
-                                    self.ui.probe_adhoc_url = avail.config.target_url.clone();
-                                    self.ui.probe_config_loaded = true;
-                                }
-                            }
-                            self.status = Some(status);
-                            self.sync_restore_state(running, false);
-                            self.maybe_restore_core();
-                            if let Some(generation_id) = generation {
-                                if self
-                                    .ui
-                                    .runtime
-                                    .as_ref()
-                                    .is_none_or(|r| r.generation_id != generation_id)
+                                self.connection_restored();
+                                if !self.ui.settings_loaded
+                                    && !self.pending.values().any(|p| p.settings_context.is_some())
                                 {
-                                    self.send(Command::GetRuntimeConfig { generation_id });
+                                    self.send(Command::GetSettings);
                                 }
-                            } else {
-                                self.ui.runtime = None;
+                                if !self.ui.profiles_loaded
+                                    && !self.pending.values().any(|p| p.poll == Some("profiles"))
+                                {
+                                    self.refresh_profiles();
+                                }
+                                if !self.ui.ssh_loaded
+                                    && !self.pending.values().any(|p| p.poll == Some("ssh"))
+                                {
+                                    self.send(Command::GetSshState);
+                                }
+                                let generation = status.generation.as_ref().map(|g| g.id.clone());
+                                let running = status.core_state == "Running";
+                                if let Some(avail) = &status.proxy_availability {
+                                    if !self.ui.probe_config_dirty {
+                                        self.ui.probe_config_draft = avail.config.clone();
+                                    }
+                                    if !self.ui.probe_config_loaded {
+                                        self.ui.probe_adhoc_url = avail.config.target_url.clone();
+                                        self.ui.probe_config_loaded = true;
+                                    }
+                                }
+                                self.status = Some(status);
+                                self.sync_restore_state(running, false);
+                                self.maybe_restore_core();
+                                if let Some(generation_id) = generation {
+                                    if self
+                                        .ui
+                                        .runtime
+                                        .as_ref()
+                                        .is_none_or(|r| r.generation_id != generation_id)
+                                    {
+                                        self.send(Command::GetRuntimeConfig { generation_id });
+                                    }
+                                } else {
+                                    self.ui.runtime = None;
+                                }
                             }
                         }
-                    }
-                    Command::GetRuntimeConfig { generation_id } => {
-                        if self
-                            .status
-                            .as_ref()
-                            .and_then(|s| s.generation.as_ref())
-                            .is_some_and(|g| g.id == generation_id)
-                            && let Ok(config) = serde_json::from_value::<RuntimeConfig>(value)
-                            && config.generation_id == generation_id
-                        {
-                            self.ui.runtime = Some(config);
-                        }
-                    }
-                    Command::ListProfileSummaries { after, .. } => {
-                        if let Ok(page) = serde_json::from_value::<ProfilePage>(value) {
-                            if after.is_none() {
-                                self.profiles.clear();
-                            }
-                            self.profiles.extend(page.items);
-                            self.ui.profiles_loaded = page.next_after.is_none();
-                            if after.is_none()
-                                && self.profile_id.is_empty()
-                                && self.selected_profile.is_empty()
-                                && let Some(p) = self.profiles.first()
+                        Command::GetRuntimeConfig { generation_id } => {
+                            if self
+                                .status
+                                .as_ref()
+                                .and_then(|s| s.generation.as_ref())
+                                .is_some_and(|g| g.id == generation_id)
+                                && let Ok(config) = serde_json::from_value::<RuntimeConfig>(value)
+                                && config.generation_id == generation_id
                             {
-                                self.send(Command::GetProfile {
-                                    profile_id: p.id.clone(),
-                                });
-                            }
-                            if let Some(after) = page.next_after {
-                                self.send(Command::ListProfileSummaries {
-                                    after: Some(after),
-                                    limit: 100,
-                                });
+                                self.ui.runtime = Some(config);
                             }
                         }
-                    }
-                    Command::GetProfile { .. } => {
-                        if let Ok(p) = serde_json::from_value(value) {
-                            self.load(p);
-                        }
-                    }
-                    Command::ListHistory { .. } => {
-                        self.history = serde_json::from_value(value).unwrap_or_default()
-                    }
-                    Command::StageHistory { .. } => {
-                        if let Some(json) = value.get("json").and_then(|v| v.as_str()) {
-                            let core = value
-                                .pointer("/candidate/core/version")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("历史版本")
-                                .to_owned();
-                            self.open_history_diff(ui::HistoryPreview {
-                                json: json.into(),
-                                core,
-                            });
-                            self.message =
-                                "已准备历史与当前草稿的比较；确认后才会替换草稿。".into();
-                        }
-                    }
-                    Command::GetSettings => {
-                        if let Ok(s) = serde_json::from_value::<Settings>(value) {
-                            // A read updates the saved baseline even when editing superseded it.
-                            // Completing initial loading prevents status polling from retrying forever.
-                            let can_replace_draft = !self.ui.settings_dirty
-                                && pending.settings_context.as_ref()
-                                    == Some(&self.settings_context());
-                            self.ui.saved_settings = Some(s.clone());
-                            self.ui.settings_loaded = true;
-                            if can_replace_draft {
-                                let raw_core = s.core_path.to_string_lossy().into_owned();
-                                self.core_path = to_portable_string(&self.root, &raw_core);
-                                let remembered_assets = self
-                                    .ui
-                                    .workspace
-                                    .asset_roots
-                                    .get(&self.core_path)
-                                    .or_else(|| self.ui.workspace.asset_roots.get(&raw_core))
-                                    .cloned();
-                                self.asset_root = remembered_assets
-                                    .map(|value| to_portable_string(&self.root, &value))
-                                    .unwrap_or_else(|| {
-                                        let fallback = s
-                                            .core_path
-                                            .parent()
-                                            .filter(|p| !p.as_os_str().is_empty())
-                                            .map(|p| p.to_string_lossy().into_owned())
-                                            .unwrap_or_else(|| ".".into());
-                                        to_portable_string(&self.root, &fallback)
+                        Command::ListProfileSummaries { after, .. } => {
+                            if let Ok(page) = serde_json::from_value::<ProfilePage>(value) {
+                                if after.is_none() {
+                                    self.profiles.clear();
+                                }
+                                self.profiles.extend(page.items);
+                                self.ui.profiles_loaded = page.next_after.is_none();
+                                if after.is_none()
+                                    && self.profile_id.is_empty()
+                                    && self.selected_profile.is_empty()
+                                    && let Some(p) = self.profiles.first()
+                                {
+                                    self.send(Command::GetProfile {
+                                        profile_id: p.id.clone(),
                                     });
-                                self.settings = s;
+                                }
+                                if let Some(after) = page.next_after {
+                                    self.send(Command::ListProfileSummaries {
+                                        after: Some(after),
+                                        limit: 100,
+                                    });
+                                }
                             }
-                            self.maybe_restore_core();
+                        }
+                        Command::GetProfile { .. } => {
+                            if let Ok(p) = serde_json::from_value(value) {
+                                self.load(p);
+                            }
+                        }
+                        Command::ListHistory { .. } => {
+                            self.history = serde_json::from_value(value).unwrap_or_default()
+                        }
+                        Command::StageHistory { .. } => {
+                            if let Some(json) = value.get("json").and_then(|v| v.as_str()) {
+                                let core = value
+                                    .pointer("/candidate/core/version")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("历史版本")
+                                    .to_owned();
+                                self.open_history_diff(ui::HistoryPreview {
+                                    json: json.into(),
+                                    core,
+                                });
+                                self.message =
+                                    "已准备历史与当前草稿的比较；确认后才会替换草稿。".into();
+                            }
+                        }
+                        Command::GetSettings => {
+                            if let Ok(s) = serde_json::from_value::<Settings>(value) {
+                                // A read updates the saved baseline even when editing superseded it.
+                                // Completing initial loading prevents status polling from retrying forever.
+                                let can_replace_draft = !self.ui.settings_dirty
+                                    && pending.settings_context.as_ref()
+                                        == Some(&self.settings_context());
+                                self.ui.saved_settings = Some(s.clone());
+                                self.ui.settings_loaded = true;
+                                if can_replace_draft {
+                                    let raw_core = s.core_path.to_string_lossy().into_owned();
+                                    self.core_path = to_portable_string(&self.root, &raw_core);
+                                    let remembered_assets = self
+                                        .ui
+                                        .workspace
+                                        .asset_roots
+                                        .get(&self.core_path)
+                                        .or_else(|| self.ui.workspace.asset_roots.get(&raw_core))
+                                        .cloned();
+                                    self.asset_root = remembered_assets
+                                        .map(|value| to_portable_string(&self.root, &value))
+                                        .unwrap_or_else(|| {
+                                            let fallback = s
+                                                .core_path
+                                                .parent()
+                                                .filter(|p| !p.as_os_str().is_empty())
+                                                .map(|p| p.to_string_lossy().into_owned())
+                                                .unwrap_or_else(|| ".".into());
+                                            to_portable_string(&self.root, &fallback)
+                                        });
+                                    self.settings = s;
+                                }
+                                self.maybe_restore_core();
 
-                            self.start_dependencies("Status", "", None);
-                        }
-                    }
-                    Command::ValidateDraft { .. } => {
-                        if let Ok(c) = serde_json::from_value::<Candidate>(value) {
-                            self.message = format!("Core 配置校验通过：{}", c.core.version);
-                            self.accept_candidate_with_mode(c, pending.auto_apply);
-                        }
-                    }
-                    Command::GetOperation { request_id } => {
-                        self.resolve_operation(&request_id, value);
-                    }
-                    Command::DeleteProfile { profile_id, .. } => self.profile_deleted(&profile_id),
-                    Command::GetLogs => {
-                        self.logs = serde_json::from_value(value).unwrap_or_default()
-                    }
-                    Command::TestRoute { .. } => {
-                        self.route_result = serde_json::to_string_pretty(&value).unwrap_or_default()
-                    }
-                    Command::TestPac { .. } => {
-                        self.ui.pac_test = serde_json::to_string_pretty(&value).unwrap_or_default();
-                        self.message = "PAC 执行测试完成。".into();
-                    }
-                    Command::TestLatency { .. } => {
-                        self.ui.latency_result =
-                            serde_json::to_string_pretty(&value).unwrap_or_default();
-                        self.message = "TCP 延迟探测完成。".into();
-                    }
-                    Command::ProbeSshHostKey { .. } => {
-                        self.ui.ssh_host_form.probing = false;
-                        if let Ok(probe) = serde_json::from_value::<SshHostKeyProbe>(value) {
-                            self.ui.ssh_host_form.host_key_fingerprint = probe.fingerprint.clone();
-                            self.ui.ssh_host_form.error = None;
-                            self.ui.ssh_host_form.probe_note = Some(format!(
-                                "已获取服务器指纹（{}）：{}",
-                                probe.algorithm, probe.fingerprint
-                            ));
-                            self.message = "已探测 SSH 服务器 Host Key 指纹。".into();
-                        }
-                    }
-                    Command::TestSshHost { ref host_id, .. } => {
-                        if let Ok(res) = serde_json::from_value::<SshHostTestResult>(value) {
-                            let msg = format!(
-                                "握手与身份校验通过（账号 {}，RTT {} ms）",
-                                res.username, res.latency_ms
-                            );
-                            if !host_id.is_empty() {
-                                self.ui.ssh_host_tests.insert(
-                                    host_id.clone(),
-                                    ui::SshHostTestStatus::Ok(msg.clone()),
-                                );
-                            } else {
-                                self.ui.ssh_host_form.testing = false;
-                                self.ui.ssh_host_form.test_result = Some((true, msg.clone()));
+                                self.start_dependencies("Status", "", None);
                             }
-                            self.message = format!("跳板机「{}:{}」{msg}", res.host, res.port);
-                            self.add_event("信息", self.message.clone(), response.request_id);
                         }
-                    }
-                    Command::GetSshState => {
-                        if let Ok(state) = serde_json::from_value::<SshState>(value) {
-                            self.ui.ssh_state = state;
-                            self.ui.ssh_loaded = true;
-                        }
-                    }
-                    Command::SaveSshCredential { ref credential } => {
-                        if let Ok(state) = serde_json::from_value::<SshState>(value) {
-                            let target_name = credential.name.trim().to_owned();
-                            let target_user = credential.username.trim().to_owned();
-                            let matched_id = if !credential.id.is_empty() {
-                                Some(credential.id.clone())
-                            } else {
-                                state
-                                    .credentials
-                                    .iter()
-                                    .rev()
-                                    .find(|c| c.name == target_name && c.username == target_user)
-                                    .map(|c| c.id.clone())
-                            };
-                            self.ui.ssh_state = state;
-                            self.ui.ssh_loaded = true;
-                            if self.ui.ssh_cred_form.return_to_host {
-                                self.ui.ssh_cred_form.return_to_host = false;
-                                if let Some(cid) = matched_id {
-                                    self.ui.ssh_host_form.cred_mode = ui::SshHostCredMode::Reuse;
-                                    self.ui.ssh_host_form.credential_id = cid;
-                                }
-                                self.ui.dialog = Some(ui::Dialog::SshHost);
+                        Command::ValidateDraft { .. } => {
+                            if let Ok(c) = serde_json::from_value::<Candidate>(value) {
+                                self.message = format!("Core 配置校验通过：{}", c.core.version);
+                                self.accept_candidate_with_mode(c, pending.auto_apply);
                             }
-                            self.clear_request_failure();
-                            self.message = "已保存 SSH 凭证。".into();
-                            self.add_event("信息", "已保存 SSH 凭证", response.request_id);
                         }
-                    }
-                    Command::SaveSshHost { ref host, .. } => {
-                        if let Ok(state) = serde_json::from_value::<SshState>(value) {
-                            let target_name = host.name.trim().to_owned();
-                            let target_addr = host.host.trim().to_owned();
-                            let matched_id = if !host.id.is_empty() {
-                                Some(host.id.clone())
-                            } else {
-                                state
-                                    .hosts
-                                    .iter()
-                                    .rev()
-                                    .find(|h| h.name == target_name && h.host == target_addr)
-                                    .map(|h| h.id.clone())
-                            };
-                            if let Some(ref hid) = matched_id {
-                                self.ui.ssh_host_tests.remove(hid);
-                            }
-                            self.ui.ssh_state = state;
-                            self.ui.ssh_loaded = true;
-                            if self.ui.ssh_host_form.return_to_pf {
-                                self.ui.ssh_host_form.return_to_pf = false;
-                                if let Some(hid) = matched_id {
-                                    self.ui.pf_form.outbound_is_ssh = true;
-                                    self.ui.pf_form.ssh_host_id = hid;
-                                    self.ui.pf_form.network = "tcp".into();
-                                    self.ui.pf_form.parsed_ssh_hint = None;
-                                }
-                                self.ui.dialog = Some(ui::Dialog::PortForward);
-                            }
-                            self.clear_request_failure();
-                            self.message = "已保存 SSH 跳板机。".into();
-                            self.add_event("信息", "已保存 SSH 跳板机", response.request_id);
+                        Command::GetOperation { request_id } => {
+                            self.resolve_operation(&request_id, value);
                         }
-                    }
-                    Command::SaveSshForward { start_now, .. } => {
-                        if let Ok(state) = serde_json::from_value::<SshState>(value) {
-                            self.ui.ssh_state = state;
-                            self.ui.ssh_loaded = true;
-                            self.clear_request_failure();
-                            let msg = if start_now {
-                                "SSH 隧道已保存并启动。"
-                            } else {
-                                "已保存 SSH 端口转发。"
-                            };
-                            self.message = msg.into();
-                            self.add_event("信息", msg, response.request_id);
+                        Command::DeleteProfile { profile_id, .. } => {
+                            self.profile_deleted(&profile_id)
                         }
-                    }
-                    Command::StartAllSshForwards => {
-                        if let Ok(state) = serde_json::from_value::<SshState>(value) {
-                            let running = state
-                                .runtime
-                                .iter()
-                                .filter(|r| r.state == SshForwardState::Running)
-                                .count();
-                            let err_count = state
-                                .runtime
-                                .iter()
-                                .filter(|r| r.state == SshForwardState::Error)
-                                .count();
-                            self.ui.ssh_state = state;
-                            self.ui.ssh_loaded = true;
-                            self.clear_request_failure();
-                            self.message = if err_count > 0 {
-                                format!("批量启动完成：运行中 {running} 条，{err_count} 条启动失败")
-                            } else {
-                                format!("已启动全部 SSH 隧道（运行中 {running} 条）")
-                            };
-                            self.add_event("信息", self.message.clone(), response.request_id);
+                        Command::GetLogs => {
+                            self.logs = serde_json::from_value(value).unwrap_or_default()
                         }
-                    }
-                    Command::StopAllSshForwards => {
-                        if let Ok(state) = serde_json::from_value::<SshState>(value) {
-                            self.ui.ssh_state = state;
-                            self.ui.ssh_loaded = true;
-                            self.clear_request_failure();
-                            self.message = "已停止全部 SSH 隧道。".into();
-                            self.add_event("信息", "已停止全部 SSH 隧道", response.request_id);
-                        }
-                    }
-                    Command::CheckProxyAvailability { .. } => {
-                        if let Ok(avail) = serde_json::from_value::<ProxyAvailability>(value) {
-                            let badge = avail.badge_text.clone();
-                            if let Some(status) = self.status.as_mut() {
-                                status.proxy_availability = Some(avail);
-                            }
-                            self.message = if badge == "检测中…" {
-                                "正在检测代理可用性…".into()
-                            } else {
-                                format!("代理可用性：{badge}")
-                            };
-                        }
-                    }
-                    Command::SaveProxyProbeConfig { .. } => {
-                        if let Ok(avail) = serde_json::from_value::<ProxyAvailability>(value) {
-                            self.ui.probe_config_draft = avail.config.clone();
-                            self.ui.probe_adhoc_url = avail.config.target_url.clone();
-                            self.ui.probe_config_dirty = false;
-                            self.ui.probe_config_loaded = true;
-                            if let Some(status) = self.status.as_mut() {
-                                status.proxy_availability = Some(avail);
-                            }
-                            self.clear_request_failure();
-                            self.message = "已保存代理探测设置（热生效，无需重启 Core）。".into();
-                            self.add_event("信息", "已保存代理探测设置", response.request_id);
-                        }
-                    }
-                    Command::DeleteSshCredential { .. }
-                    | Command::DeleteSshHost { .. }
-                    | Command::DeleteSshForward { .. }
-                    | Command::StartSshForward { .. }
-                    | Command::StopSshForward { .. } => {
-                        if let Ok(state) = serde_json::from_value::<SshState>(value) {
-                            self.ui.ssh_state = state;
-                            self.ui.ssh_loaded = true;
-                            self.clear_request_failure();
-                            let label = ui::command_name(&command);
-                            self.message = format!("{label}已完成。");
-                            self.add_event("信息", format!("{label}已完成"), response.request_id);
-                        }
-                    }
-                    Command::TestRunningRoute {
-                        generation_id,
-                        context,
-                    } => {
-                        if self
-                            .status
-                            .as_ref()
-                            .and_then(|s| s.generation.as_ref())
-                            .is_some_and(|g| g.id == generation_id)
-                        {
-                            self.ui.route_tested = Some((generation_id, context));
+                        Command::TestRoute { .. } => {
                             self.route_result =
+                                serde_json::to_string_pretty(&value).unwrap_or_default()
+                        }
+                        Command::TestPac { .. } => {
+                            self.ui.pac_test =
                                 serde_json::to_string_pretty(&value).unwrap_or_default();
+                            self.message = "PAC 执行测试完成。".into();
                         }
-                    }
-                    Command::Shutdown => {
-                        self.shutdown_requested = false;
-                        self.request_exit(ui::ExitKind::Gui);
-                    }
-                    Command::CreateProfile { .. } => {
-                        if let Ok(profile) = serde_json::from_value(value) {
-                            self.imported_profile(profile);
+                        Command::TestLatency { .. } => {
+                            self.ui.latency_result =
+                                serde_json::to_string_pretty(&value).unwrap_or_default();
+                            self.message = "TCP 延迟探测完成。".into();
                         }
-                        self.refresh_profiles();
-                    }
-                    Command::UpdateProfile { .. } => {
-                        if let Ok(profile) = serde_json::from_value::<Profile>(value) {
-                            self.profile_updated(profile);
-                            self.clear_request_failure();
+                        Command::ProbeSshHostKey { .. } => {
+                            self.ui.ssh_host_form.probing = false;
+                            if let Ok(probe) = serde_json::from_value::<SshHostKeyProbe>(value) {
+                                self.ui.ssh_host_form.host_key_fingerprint =
+                                    probe.fingerprint.clone();
+                                self.ui.ssh_host_form.error = None;
+                                self.ui.ssh_host_form.probe_note = Some(format!(
+                                    "已获取服务器指纹（{}）：{}",
+                                    probe.algorithm, probe.fingerprint
+                                ));
+                                self.message = "已探测 SSH 服务器 Host Key 指纹。".into();
+                            }
+                        }
+                        Command::TestSshHost { ref host_id, .. } => {
+                            if let Ok(res) = serde_json::from_value::<SshHostTestResult>(value) {
+                                let msg = format!(
+                                    "握手与身份校验通过（账号 {}，RTT {} ms）",
+                                    res.username, res.latency_ms
+                                );
+                                if !host_id.is_empty() {
+                                    self.ui.ssh_host_tests.insert(
+                                        host_id.clone(),
+                                        ui::SshHostTestStatus::Ok(msg.clone()),
+                                    );
+                                } else {
+                                    self.ui.ssh_host_form.testing = false;
+                                    self.ui.ssh_host_form.test_result = Some((true, msg.clone()));
+                                }
+                                self.message = format!("跳板机「{}:{}」{msg}", res.host, res.port);
+                                self.add_event("信息", self.message.clone(), response.request_id);
+                            }
+                        }
+                        Command::GetSshState => {
+                            if let Ok(state) = serde_json::from_value::<SshState>(value) {
+                                self.ui.ssh_state = state;
+                                self.ui.ssh_loaded = true;
+                            }
+                        }
+                        Command::SaveSshCredential { ref credential } => {
+                            if let Ok(state) = serde_json::from_value::<SshState>(value) {
+                                let target_name = credential.name.trim().to_owned();
+                                let target_user = credential.username.trim().to_owned();
+                                let matched_id = if !credential.id.is_empty() {
+                                    Some(credential.id.clone())
+                                } else {
+                                    state
+                                        .credentials
+                                        .iter()
+                                        .rev()
+                                        .find(|c| {
+                                            c.name == target_name && c.username == target_user
+                                        })
+                                        .map(|c| c.id.clone())
+                                };
+                                self.ui.ssh_state = state;
+                                self.ui.ssh_loaded = true;
+                                if self.ui.ssh_cred_form.return_to_host {
+                                    self.ui.ssh_cred_form.return_to_host = false;
+                                    if let Some(cid) = matched_id {
+                                        self.ui.ssh_host_form.cred_mode =
+                                            ui::SshHostCredMode::Reuse;
+                                        self.ui.ssh_host_form.credential_id = cid;
+                                    }
+                                    self.ui.dialog = Some(ui::Dialog::SshHost);
+                                }
+                                self.clear_request_failure();
+                                self.message = "已保存 SSH 凭证。".into();
+                                self.add_event("信息", "已保存 SSH 凭证", response.request_id);
+                            }
+                        }
+                        Command::SaveSshHost { ref host, .. } => {
+                            if let Ok(state) = serde_json::from_value::<SshState>(value) {
+                                let target_name = host.name.trim().to_owned();
+                                let target_addr = host.host.trim().to_owned();
+                                let matched_id = if !host.id.is_empty() {
+                                    Some(host.id.clone())
+                                } else {
+                                    state
+                                        .hosts
+                                        .iter()
+                                        .rev()
+                                        .find(|h| h.name == target_name && h.host == target_addr)
+                                        .map(|h| h.id.clone())
+                                };
+                                if let Some(ref hid) = matched_id {
+                                    self.ui.ssh_host_tests.remove(hid);
+                                }
+                                self.ui.ssh_state = state;
+                                self.ui.ssh_loaded = true;
+                                if self.ui.ssh_host_form.return_to_pf {
+                                    self.ui.ssh_host_form.return_to_pf = false;
+                                    if let Some(hid) = matched_id {
+                                        self.ui.pf_form.outbound_is_ssh = true;
+                                        self.ui.pf_form.ssh_host_id = hid;
+                                        self.ui.pf_form.network = "tcp".into();
+                                        self.ui.pf_form.parsed_ssh_hint = None;
+                                    }
+                                    self.ui.dialog = Some(ui::Dialog::PortForward);
+                                }
+                                self.clear_request_failure();
+                                self.message = "已保存 SSH 跳板机。".into();
+                                self.add_event("信息", "已保存 SSH 跳板机", response.request_id);
+                            }
+                        }
+                        Command::SaveSshForward { start_now, .. } => {
+                            if let Ok(state) = serde_json::from_value::<SshState>(value) {
+                                self.ui.ssh_state = state;
+                                self.ui.ssh_loaded = true;
+                                self.clear_request_failure();
+                                let msg = if start_now {
+                                    "SSH 隧道已保存并启动。"
+                                } else {
+                                    "已保存 SSH 端口转发。"
+                                };
+                                self.message = msg.into();
+                                self.add_event("信息", msg, response.request_id);
+                            }
+                        }
+                        Command::StartAllSshForwards => {
+                            if let Ok(state) = serde_json::from_value::<SshState>(value) {
+                                let running = state
+                                    .runtime
+                                    .iter()
+                                    .filter(|r| r.state == SshForwardState::Running)
+                                    .count();
+                                let err_count = state
+                                    .runtime
+                                    .iter()
+                                    .filter(|r| r.state == SshForwardState::Error)
+                                    .count();
+                                self.ui.ssh_state = state;
+                                self.ui.ssh_loaded = true;
+                                self.clear_request_failure();
+                                self.message = if err_count > 0 {
+                                    format!(
+                                        "批量启动完成：运行中 {running} 条，{err_count} 条启动失败"
+                                    )
+                                } else {
+                                    format!("已启动全部 SSH 隧道（运行中 {running} 条）")
+                                };
+                                self.add_event("信息", self.message.clone(), response.request_id);
+                            }
+                        }
+                        Command::StopAllSshForwards => {
+                            if let Ok(state) = serde_json::from_value::<SshState>(value) {
+                                self.ui.ssh_state = state;
+                                self.ui.ssh_loaded = true;
+                                self.clear_request_failure();
+                                self.message = "已停止全部 SSH 隧道。".into();
+                                self.add_event("信息", "已停止全部 SSH 隧道", response.request_id);
+                            }
+                        }
+                        Command::CheckProxyAvailability { .. } => {
+                            if let Ok(avail) = serde_json::from_value::<ProxyAvailability>(value) {
+                                let badge = avail.badge_text.clone();
+                                if let Some(status) = self.status.as_mut() {
+                                    status.proxy_availability = Some(avail);
+                                }
+                                self.message = if badge == "检测中…" {
+                                    "正在检测代理可用性…".into()
+                                } else {
+                                    format!("代理可用性：{badge}")
+                                };
+                            }
+                        }
+                        Command::SaveProxyProbeConfig { .. } => {
+                            if let Ok(avail) = serde_json::from_value::<ProxyAvailability>(value) {
+                                self.ui.probe_config_draft = avail.config.clone();
+                                self.ui.probe_adhoc_url = avail.config.target_url.clone();
+                                self.ui.probe_config_dirty = false;
+                                self.ui.probe_config_loaded = true;
+                                if let Some(status) = self.status.as_mut() {
+                                    status.proxy_availability = Some(avail);
+                                }
+                                self.clear_request_failure();
+                                self.message =
+                                    "已保存代理探测设置（热生效，无需重启 Core）。".into();
+                                self.add_event("信息", "已保存代理探测设置", response.request_id);
+                            }
+                        }
+                        Command::DeleteSshCredential { .. }
+                        | Command::DeleteSshHost { .. }
+                        | Command::DeleteSshForward { .. }
+                        | Command::StartSshForward { .. }
+                        | Command::StopSshForward { .. } => {
+                            if let Ok(state) = serde_json::from_value::<SshState>(value) {
+                                self.ui.ssh_state = state;
+                                self.ui.ssh_loaded = true;
+                                self.clear_request_failure();
+                                let label = ui::command_name(&command);
+                                self.message = format!("{label}已完成。");
+                                self.add_event(
+                                    "信息",
+                                    format!("{label}已完成"),
+                                    response.request_id,
+                                );
+                            }
+                        }
+                        Command::TestRunningRoute {
+                            generation_id,
+                            context,
+                        } => {
+                            if self
+                                .status
+                                .as_ref()
+                                .and_then(|s| s.generation.as_ref())
+                                .is_some_and(|g| g.id == generation_id)
+                            {
+                                self.ui.route_tested = Some((generation_id, context));
+                                self.route_result =
+                                    serde_json::to_string_pretty(&value).unwrap_or_default();
+                            }
+                        }
+                        Command::Shutdown => {
+                            self.shutdown_requested = false;
+                            self.request_exit(ui::ExitKind::Gui);
+                        }
+                        Command::CreateProfile { .. } => {
+                            if let Ok(profile) = serde_json::from_value(value) {
+                                self.imported_profile(profile);
+                            }
                             self.refresh_profiles();
                         }
-                    }
-                    Command::ApplyProfile {
-                        proxy_mode, pac, ..
-                    } => {
-                        self.applied_draft(
-                            &pending.context.profile,
-                            pending.submitted_json.as_deref(),
-                        );
-                        self.save_profile_proxy_mode(&pending.context.profile, proxy_mode);
-                        self.note_applied_proxy(proxy_mode, pac.as_ref());
-                        self.clear_request_failure();
-                        self.ui.onboarding = false;
-                        self.add_event("信息", "配置已应用", response.request_id.clone());
-                        self.message = "配置已应用，正在读取最新运行状态。".into();
-                        self.invalidate_candidate();
-                        self.send(Command::GetStatus);
-                        self.refresh_profiles();
-                        if self.selected_profile == pending.context.profile {
-                            self.send(Command::GetProfile {
-                                profile_id: self.profile_id.clone(),
-                            });
-                        }
-                    }
-                    Command::SaveSettings { settings } => {
-                        self.accept_saved_settings(settings, pending.asset_root);
-                        self.message = "设置已保存；运行中的 Core 保持原版本。".into();
-                        self.add_event("信息", "设置已保存", response.request_id);
-                        self.send(Command::GetStatus);
-                    }
-                    Command::ResolveProxyConflict => {
-                        self.clear_request_failure();
-                        self.message =
-                            "已保留当前系统代理设置并解除冲突，可重新检查或启动 Core。".into();
-                        self.add_event(
-                            "信息",
-                            "已保留外部系统代理并解除租约冲突",
-                            response.request_id,
-                        );
-                        self.send(Command::GetStatus);
-                    }
-                    Command::ResolveStartupConflict => {
-                        self.clear_request_failure();
-                        self.message = "已重新接管登录自启计划任务，可继续保存设置。".into();
-                        self.add_event("信息", "已重置登录自启任务冲突", response.request_id);
-                        self.send(Command::GetStatus);
-                        self.send(Command::GetSettings);
-                    }
-                    Command::StopCore | Command::RestartCore => {
-                        self.clear_request_failure();
-                        let label = ui::command_name(&command);
-                        self.message = format!("{label}已完成，正在刷新状态。");
-                        self.add_event("信息", format!("{label}已完成"), response.request_id);
-                        self.send(Command::GetStatus);
-                    }
-                    Command::SetProxyMode { mode, ref pac, .. } => {
-                        if let Some(running_profile) = self.committed_id().map(str::to_owned) {
-                            self.save_profile_proxy_mode(&running_profile, mode);
-                            if self.profile_id == running_profile {
-                                self.mode = mode;
+                        Command::UpdateProfile { .. } => {
+                            if let Ok(profile) = serde_json::from_value::<Profile>(value) {
+                                self.profile_updated(profile);
+                                self.clear_request_failure();
+                                self.refresh_profiles();
                             }
                         }
-                        self.note_applied_proxy(mode, pac.as_ref());
-                        self.clear_request_failure();
-                        let label = ui::command_name(&command);
-                        self.message = format!("{label}已完成，正在刷新状态。");
-                        self.add_event("信息", format!("{label}已完成"), response.request_id);
-                        self.send(Command::GetStatus);
+                        Command::ApplyProfile {
+                            proxy_mode, pac, ..
+                        } => {
+                            self.applied_draft(
+                                &pending.context.profile,
+                                pending.submitted_json.as_deref(),
+                            );
+                            self.save_profile_proxy_mode(&pending.context.profile, proxy_mode);
+                            self.note_applied_proxy(proxy_mode, pac.as_ref());
+                            self.clear_request_failure();
+                            self.ui.onboarding = false;
+                            self.add_event("信息", "配置已应用", response.request_id.clone());
+                            self.message = "配置已应用，正在读取最新运行状态。".into();
+                            self.invalidate_candidate();
+                            self.send(Command::GetStatus);
+                            self.refresh_profiles();
+                            if self.selected_profile == pending.context.profile {
+                                self.send(Command::GetProfile {
+                                    profile_id: self.profile_id.clone(),
+                                });
+                            }
+                        }
+                        Command::SaveSettings { settings } => {
+                            self.accept_saved_settings(settings, pending.asset_root);
+                            self.message = "设置已保存；运行中的 Core 保持原版本。".into();
+                            self.add_event("信息", "设置已保存", response.request_id);
+                            self.send(Command::GetStatus);
+                        }
+                        Command::ResolveProxyConflict => {
+                            self.clear_request_failure();
+                            self.message =
+                                "已保留当前系统代理设置并解除冲突，可重新检查或启动 Core。".into();
+                            self.add_event(
+                                "信息",
+                                "已保留外部系统代理并解除租约冲突",
+                                response.request_id,
+                            );
+                            self.send(Command::GetStatus);
+                        }
+                        Command::ResolveStartupConflict => {
+                            self.clear_request_failure();
+                            self.message = "已重新接管登录自启计划任务，可继续保存设置。".into();
+                            self.add_event("信息", "已重置登录自启任务冲突", response.request_id);
+                            self.send(Command::GetStatus);
+                            self.send(Command::GetSettings);
+                        }
+                        Command::StopCore | Command::RestartCore => {
+                            self.clear_request_failure();
+                            let label = ui::command_name(&command);
+                            self.message = format!("{label}已完成，正在刷新状态。");
+                            self.add_event("信息", format!("{label}已完成"), response.request_id);
+                            self.send(Command::GetStatus);
+                        }
+                        Command::SetProxyMode { mode, ref pac, .. } => {
+                            if let Some(running_profile) = self.committed_id().map(str::to_owned) {
+                                self.save_profile_proxy_mode(&running_profile, mode);
+                                if self.profile_id == running_profile {
+                                    self.mode = mode;
+                                }
+                            }
+                            self.note_applied_proxy(mode, pac.as_ref());
+                            self.clear_request_failure();
+                            let label = ui::command_name(&command);
+                            self.message = format!("{label}已完成，正在刷新状态。");
+                            self.add_event("信息", format!("{label}已完成"), response.request_id);
+                            self.send(Command::GetStatus);
+                        }
+                        _ => {
+                            self.message = "操作已完成，正在刷新状态".into();
+                            self.send(Command::GetStatus);
+                        }
                     }
-                    _ => {
-                        self.message = "操作已完成，正在刷新状态".into();
-                        self.send(Command::GetStatus);
+                    if was_write
+                        && !self.busy
+                        && let Some(next) = self.ui.pending_followups.pop_front()
+                    {
+                        self.send(next);
                     }
-                },
+                }
             }
         }
     }

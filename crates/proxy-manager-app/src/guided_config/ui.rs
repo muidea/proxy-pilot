@@ -17,6 +17,7 @@ pub struct Outcome {
     pub names_changed: bool,
     pub raw: bool,
     pub port_forward: bool,
+    pub share_node: Option<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -897,17 +898,22 @@ pub fn edit_nodes(
                                 });
                             },
                             |ui, rtl| {
+                                let can_share =
+                                    proxy_config::share_link::is_shareable_protocol(&protocol);
                                 let expand_label =
                                     if is_expanded { "收起参数" } else { "编辑参数" };
-                                for idx in if rtl { [2, 1, 0] } else { [0, 1, 2] } {
+                                for idx in if rtl { [3, 2, 1, 0] } else { [0, 1, 2, 3] } {
                                     match idx {
                                         0 if index != 0 && ui.button("设为默认").clicked() => {
                                             node_action = Some(0);
                                         }
-                                        1 if ui.button(expand_label).clicked() => {
+                                        1 if can_share && ui.button("分享").clicked() => {
+                                            node_action = Some(3);
+                                        }
+                                        2 if ui.button(expand_label).clicked() => {
                                             node_action = Some(1);
                                         }
-                                        2 if ui
+                                        3 if ui
                                             .add_enabled(
                                                 index != 0 && paused_pf == 0,
                                                 egui::Button::new("删除节点"),
@@ -931,6 +937,7 @@ pub fn edit_nodes(
                                 }
                             }
                             Some(2) => remove = Some(index),
+                            Some(3) => out.share_node = Some(index),
                             _ => {}
                         }
                         ui.add(

@@ -10,20 +10,7 @@ pub enum ExitDefault {
     Shutdown,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-pub struct PausedPortForward {
-    pub tag: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub name: String,
-    pub listen: String,
-    pub port: u16,
-    pub network: String,
-    pub target_host: String,
-    pub target_port: u16,
-    pub outbound_tag: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extra_inbound: Option<serde_json::Value>,
-}
+pub use proxy_model::PausedPortForward;
 
 #[derive(Clone, Default, Deserialize, Serialize)]
 pub struct Workspace {

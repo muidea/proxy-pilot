@@ -2,10 +2,76 @@
 //! Never performs network I/O and never fabricates missing remote credentials or addresses.
 
 use base64::Engine as _;
-use percent_encoding::percent_decode_str;
+use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use url::Url;
+
+const USERINFO_ENCODE_SET: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?')
+    .add(b'`')
+    .add(b'{')
+    .add(b'}')
+    .add(b'/')
+    .add(b':')
+    .add(b';')
+    .add(b'=')
+    .add(b'@')
+    .add(b'[')
+    .add(b'\\')
+    .add(b']')
+    .add(b'^')
+    .add(b'|')
+    .add(b'%')
+    .add(b'&')
+    .add(b'+');
+
+const QUERY_ENCODE_SET: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'&')
+    .add(b'+')
+    .add(b'<')
+    .add(b'=')
+    .add(b'>')
+    .add(b'?')
+    .add(b'`')
+    .add(b'{')
+    .add(b'|')
+    .add(b'}')
+    .add(b'%');
+
+const FRAGMENT_ENCODE_SET: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'<')
+    .add(b'>')
+    .add(b'`')
+    .add(b'%');
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EncodedShareNode {
+    pub index: usize,
+    pub tag: String,
+    pub name: String,
+    pub protocol: String,
+    pub uri: String,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EncodedShareBatch {
+    pub nodes: Vec<EncodedShareNode>,
+    pub skipped: Vec<(String, String)>,
+    pub errors: Vec<(String, String)>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParsedShareNode {
@@ -689,6 +755,843 @@ fn parse_upstream(raw: &str, protocol: &str) -> std::result::Result<ParsedShareN
     })
 }
 
+/// Returns true if an Xray outbound protocol can be represented as a standard share URI.
+pub fn is_shareable_protocol(protocol: &str) -> bool {
+    matches!(
+        protocol.trim().to_ascii_lowercase().as_str(),
+        "vless" | "trojan" | "shadowsocks" | "vmess" | "socks" | "http"
+    )
+}
+
+fn format_authority_host(host: &str) -> String {
+    let trimmed = host.trim();
+    if trimmed.contains(':') && !(trimmed.starts_with('[') && trimmed.ends_with(']')) {
+        format!("[{trimmed}]")
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+fn encode_userinfo(raw: &str) -> String {
+    utf8_percent_encode(raw, USERINFO_ENCODE_SET).to_string()
+}
+
+fn encode_query_pairs(pairs: &[(String, String)]) -> String {
+    pairs
+        .iter()
+        .filter(|(k, v)| !k.is_empty() && !v.is_empty())
+        .map(|(k, v)| {
+            format!(
+                "{}={}",
+                utf8_percent_encode(k, QUERY_ENCODE_SET),
+                utf8_percent_encode(v, QUERY_ENCODE_SET)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn encode_fragment(name: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        format!("#{}", utf8_percent_encode(trimmed, FRAGMENT_ENCODE_SET))
+    }
+}
+
+fn non_empty_str(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
+fn required_outbound_port(value: Option<&Value>) -> std::result::Result<u16, String> {
+    let port = match value {
+        Some(Value::Number(n)) => n.as_u64(),
+        Some(Value::String(s)) => s.trim().parse::<u64>().ok(),
+        _ => None,
+    };
+    port.and_then(|p| u16::try_from(p).ok())
+        .filter(|p| *p > 0)
+        .ok_or_else(|| "节点缺少有效端口（1–65535）".to_owned())
+}
+
+fn collect_lossy_outbound_warnings(outbound: &Value, warnings: &mut Vec<String>) {
+    if let Some(obj) = outbound.as_object() {
+        for key in obj.keys() {
+            if !matches!(
+                key.as_str(),
+                "tag" | "protocol" | "settings" | "streamSettings"
+            ) {
+                warnings.push(format!(
+                    "出站包含高级字段 `{key}`，标准分享链接无法表达，已省略。"
+                ));
+            }
+        }
+    }
+    if let Some(vnext) = outbound
+        .pointer("/settings/vnext")
+        .and_then(Value::as_array)
+    {
+        if vnext.len() > 1 {
+            warnings.push("存在多个服务器条目（vnext），分享链接仅导出第一项。".into());
+        }
+        if vnext
+            .first()
+            .and_then(|v| v.get("users"))
+            .and_then(Value::as_array)
+            .is_some_and(|u| u.len() > 1)
+        {
+            warnings.push("存在多个用户条目（users），分享链接仅导出第一项。".into());
+        }
+    }
+    if let Some(servers) = outbound
+        .pointer("/settings/servers")
+        .and_then(Value::as_array)
+    {
+        if servers.len() > 1 {
+            warnings.push("存在多个服务器条目（servers），分享链接仅导出第一项。".into());
+        }
+        if servers
+            .first()
+            .and_then(|s| s.get("users"))
+            .and_then(Value::as_array)
+            .is_some_and(|u| u.len() > 1)
+        {
+            warnings.push("存在多个用户条目（users），分享链接仅导出第一项。".into());
+        }
+    }
+    if let Some(stream) = outbound.get("streamSettings").and_then(Value::as_object) {
+        for key in stream.keys() {
+            if !matches!(
+                key.as_str(),
+                "network"
+                    | "security"
+                    | "tlsSettings"
+                    | "realitySettings"
+                    | "wsSettings"
+                    | "grpcSettings"
+                    | "httpupgradeSettings"
+                    | "splithttpSettings"
+                    | "xhttpSettings"
+                    | "kcpSettings"
+                    | "quicSettings"
+                    | "tcpSettings"
+                    | "rawSettings"
+            ) {
+                warnings.push(format!(
+                    "传输配置包含高级字段 `streamSettings.{key}`，标准分享链接无法表达，已省略。"
+                ));
+            }
+        }
+        if let Some(headers) = stream
+            .get("wsSettings")
+            .and_then(|w| w.get("headers"))
+            .and_then(Value::as_object)
+            && headers.keys().any(|k| !k.eq_ignore_ascii_case("Host"))
+        {
+            warnings.push("WebSocket 自定义请求头（除 Host 外）未包含在分享链接中。".into());
+        }
+    }
+}
+
+fn push_string_or_array(target: &mut Vec<(String, String)>, key: &str, value: Option<&Value>) {
+    match value {
+        Some(Value::String(s)) if !s.trim().is_empty() => {
+            target.push((key.into(), s.trim().to_owned()));
+        }
+        Some(Value::Array(items)) => {
+            let joined: Vec<&str> = items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect();
+            if !joined.is_empty() {
+                target.push((key.into(), joined.join(",")));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn append_stream_query_params(
+    stream: Option<&Value>,
+    default_security: &str,
+    params: &mut Vec<(String, String)>,
+    warnings: &mut Vec<String>,
+) {
+    let Some(stream) = stream else {
+        return;
+    };
+    let network = non_empty_str(stream.get("network"))
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_else(|| "tcp".into());
+    let security = non_empty_str(stream.get("security"))
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_else(|| default_security.into());
+
+    params.push(("type".into(), network.clone()));
+    params.push(("security".into(), security.clone()));
+
+    match security.as_str() {
+        "tls" => {
+            let tls = stream.get("tlsSettings");
+            if let Some(sni) = non_empty_str(tls.and_then(|t| t.get("serverName"))) {
+                params.push(("sni".into(), sni));
+            }
+            if let Some(fp) = non_empty_str(tls.and_then(|t| t.get("fingerprint"))) {
+                params.push(("fp".into(), fp));
+            }
+            push_string_or_array(params, "alpn", tls.and_then(|t| t.get("alpn")));
+            if tls
+                .and_then(|t| t.get("allowInsecure"))
+                .and_then(Value::as_bool)
+                == Some(true)
+            {
+                params.push(("allowInsecure".into(), "1".into()));
+            }
+        }
+        "reality" => {
+            let reality = stream.get("realitySettings");
+            if let Some(sni) = non_empty_str(reality.and_then(|r| r.get("serverName"))) {
+                params.push(("sni".into(), sni));
+            }
+            if let Some(fp) = non_empty_str(reality.and_then(|r| r.get("fingerprint"))) {
+                params.push(("fp".into(), fp));
+            }
+            if let Some(pbk) = non_empty_str(reality.and_then(|r| r.get("publicKey"))) {
+                params.push(("pbk".into(), pbk));
+            }
+            if let Some(sid) = non_empty_str(reality.and_then(|r| r.get("shortId"))) {
+                params.push(("sid".into(), sid));
+            }
+            if let Some(spx) = non_empty_str(reality.and_then(|r| r.get("spiderX"))) {
+                params.push(("spx".into(), spx));
+            }
+            if let Some(pqv) = non_empty_str(reality.and_then(|r| r.get("mldsa65Verify"))) {
+                params.push(("pqv".into(), pqv));
+            }
+        }
+        "none" => {}
+        other => {
+            warnings.push(format!(
+                "安全类型 security={other} 的专有参数可能无法完整表达。"
+            ));
+        }
+    }
+
+    match network.as_str() {
+        "ws" => {
+            let ws = stream.get("wsSettings");
+            if let Some(path) = ws
+                .and_then(|w| w.get("path"))
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                params.push(("path".into(), path.to_owned()));
+            }
+            if let Some(host) = non_empty_str(
+                ws.and_then(|w| w.pointer("/headers/Host"))
+                    .or_else(|| ws.and_then(|w| w.get("host"))),
+            ) {
+                params.push(("host".into(), host));
+            }
+        }
+        "grpc" => {
+            let grpc = stream.get("grpcSettings");
+            if let Some(service) = non_empty_str(grpc.and_then(|g| g.get("serviceName"))) {
+                params.push(("serviceName".into(), service));
+            }
+            if grpc
+                .and_then(|g| g.get("multiMode"))
+                .and_then(Value::as_bool)
+                == Some(true)
+            {
+                params.push(("mode".into(), "multi".into()));
+            }
+        }
+        "httpupgrade" => {
+            let hu = stream.get("httpupgradeSettings");
+            if let Some(path) = hu
+                .and_then(|h| h.get("path"))
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                params.push(("path".into(), path.to_owned()));
+            }
+            if let Some(host) = non_empty_str(hu.and_then(|h| h.get("host"))) {
+                params.push(("host".into(), host));
+            }
+        }
+        "splithttp" | "xhttp" => {
+            let xh = if network == "splithttp" {
+                stream
+                    .get("splithttpSettings")
+                    .or_else(|| stream.get("xhttpSettings"))
+            } else {
+                stream
+                    .get("xhttpSettings")
+                    .or_else(|| stream.get("splithttpSettings"))
+            };
+            if let Some(path) = xh
+                .and_then(|x| x.get("path"))
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                params.push(("path".into(), path.to_owned()));
+            }
+            if let Some(host) = non_empty_str(xh.and_then(|x| x.get("host"))) {
+                params.push(("host".into(), host));
+            }
+            if let Some(mode) = non_empty_str(xh.and_then(|x| x.get("mode"))) {
+                params.push(("mode".into(), mode));
+            }
+        }
+        "kcp" => {
+            let kcp = stream.get("kcpSettings");
+            if let Some(seed) = kcp
+                .and_then(|k| k.get("seed"))
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                params.push(("seed".into(), seed.to_owned()));
+            }
+            if let Some(ht) = non_empty_str(kcp.and_then(|k| k.pointer("/header/type"))) {
+                params.push(("headerType".into(), ht));
+            }
+        }
+        "quic" => {
+            let quic = stream.get("quicSettings");
+            if let Some(sec) = non_empty_str(quic.and_then(|q| q.get("security"))) {
+                params.push(("quicSecurity".into(), sec));
+            }
+            if let Some(key) = quic
+                .and_then(|q| q.get("key"))
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                params.push(("key".into(), key.to_owned()));
+            }
+            if let Some(ht) = non_empty_str(quic.and_then(|q| q.pointer("/header/type"))) {
+                params.push(("headerType".into(), ht));
+            }
+        }
+        "tcp" | "raw" => {
+            let tcp = if network == "raw" {
+                stream
+                    .get("rawSettings")
+                    .or_else(|| stream.get("tcpSettings"))
+            } else {
+                stream
+                    .get("tcpSettings")
+                    .or_else(|| stream.get("rawSettings"))
+            };
+            if non_empty_str(tcp.and_then(|t| t.pointer("/header/type")))
+                .is_some_and(|h| h.eq_ignore_ascii_case("http"))
+            {
+                params.push(("headerType".into(), "http".into()));
+                push_string_or_array(
+                    params,
+                    "path",
+                    tcp.and_then(|t| t.pointer("/header/request/path")),
+                );
+                push_string_or_array(
+                    params,
+                    "host",
+                    tcp.and_then(|t| t.pointer("/header/request/headers/Host")),
+                );
+            }
+        }
+        other => {
+            warnings.push(format!(
+                "传输方式 {other} 的专有参数未自动编码进分享链接，已按 type={other} 保留。"
+            ));
+        }
+    }
+}
+
+/// Encodes a single Xray outbound object into a standard proxy share URI.
+pub fn encode_share_link(
+    outbound: &Value,
+    display_name: Option<&str>,
+) -> std::result::Result<EncodedShareNode, String> {
+    let protocol = non_empty_str(outbound.get("protocol"))
+        .map(|s| s.to_ascii_lowercase())
+        .ok_or_else(|| "节点缺少协议字段（protocol）".to_owned())?;
+    let tag = non_empty_str(outbound.get("tag")).unwrap_or_default();
+    let name = display_name
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| tag.clone());
+
+    let mut warnings = Vec::new();
+    collect_lossy_outbound_warnings(outbound, &mut warnings);
+
+    let uri = match protocol.as_str() {
+        "vless" => encode_vless(outbound, &name, &mut warnings)?,
+        "trojan" => encode_trojan(outbound, &name, &mut warnings)?,
+        "shadowsocks" => encode_ss(outbound, &name, &mut warnings)?,
+        "vmess" => encode_vmess(outbound, &name, &mut warnings)?,
+        "socks" => encode_upstream(outbound, "socks", &name, &mut warnings)?,
+        "http" => encode_upstream(outbound, "http", &name, &mut warnings)?,
+        other => return Err(format!("暂不支持导出 {other} 协议的标准分享链接")),
+    };
+
+    Ok(EncodedShareNode {
+        index: 0,
+        tag,
+        name,
+        protocol,
+        uri,
+        warnings,
+    })
+}
+
+fn encode_vless(
+    outbound: &Value,
+    name: &str,
+    warnings: &mut Vec<String>,
+) -> std::result::Result<String, String> {
+    let server = outbound
+        .pointer("/settings/vnext/0")
+        .ok_or_else(|| "VLESS 节点缺少 vnext 服务器配置".to_owned())?;
+    let address = non_empty_str(server.get("address"))
+        .ok_or_else(|| "VLESS 节点缺少服务器地址".to_owned())?;
+    let port = required_outbound_port(server.get("port"))?;
+    let user = server
+        .pointer("/users/0")
+        .ok_or_else(|| "VLESS 节点缺少用户信息".to_owned())?;
+    let uuid =
+        non_empty_str(user.get("id")).ok_or_else(|| "VLESS 节点缺少用户 ID / UUID".to_owned())?;
+
+    let mut params = Vec::new();
+    let encryption = non_empty_str(user.get("encryption")).unwrap_or_else(|| "none".into());
+    params.push(("encryption".into(), encryption));
+    if let Some(flow) = non_empty_str(user.get("flow")) {
+        params.push(("flow".into(), flow));
+    }
+    append_stream_query_params(
+        outbound.get("streamSettings"),
+        "none",
+        &mut params,
+        warnings,
+    );
+    let query = encode_query_pairs(&params);
+    let authority = format_authority_host(&address);
+    let frag = encode_fragment(name);
+    if query.is_empty() {
+        Ok(format!(
+            "vless://{}@{authority}:{port}{frag}",
+            encode_userinfo(&uuid)
+        ))
+    } else {
+        Ok(format!(
+            "vless://{}@{authority}:{port}?{query}{frag}",
+            encode_userinfo(&uuid)
+        ))
+    }
+}
+
+fn encode_trojan(
+    outbound: &Value,
+    name: &str,
+    warnings: &mut Vec<String>,
+) -> std::result::Result<String, String> {
+    let server = outbound
+        .pointer("/settings/servers/0")
+        .ok_or_else(|| "Trojan 节点缺少 servers 服务器配置".to_owned())?;
+    let address = non_empty_str(server.get("address"))
+        .ok_or_else(|| "Trojan 节点缺少服务器地址".to_owned())?;
+    let port = required_outbound_port(server.get("port"))?;
+    let password = server
+        .get("password")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Trojan 节点缺少密码".to_owned())?;
+
+    let mut params = Vec::new();
+    append_stream_query_params(outbound.get("streamSettings"), "tls", &mut params, warnings);
+    let query = encode_query_pairs(&params);
+    let authority = format_authority_host(&address);
+    let frag = encode_fragment(name);
+    if query.is_empty() {
+        Ok(format!(
+            "trojan://{}@{authority}:{port}{frag}",
+            encode_userinfo(password)
+        ))
+    } else {
+        Ok(format!(
+            "trojan://{}@{authority}:{port}?{query}{frag}",
+            encode_userinfo(password)
+        ))
+    }
+}
+
+fn encode_ss(
+    outbound: &Value,
+    name: &str,
+    warnings: &mut Vec<String>,
+) -> std::result::Result<String, String> {
+    let server = outbound
+        .pointer("/settings/servers/0")
+        .ok_or_else(|| "Shadowsocks 节点缺少 servers 服务器配置".to_owned())?;
+    let address = non_empty_str(server.get("address"))
+        .ok_or_else(|| "Shadowsocks 节点缺少服务器地址".to_owned())?;
+    let port = required_outbound_port(server.get("port"))?;
+    let method = non_empty_str(server.get("method"))
+        .ok_or_else(|| "Shadowsocks 节点缺少加密方式 (method)".to_owned())?;
+    let password = server
+        .get("password")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Shadowsocks 节点缺少密码".to_owned())?;
+
+    if let Some(stream) = outbound.get("streamSettings") {
+        let net = non_empty_str(stream.get("network")).unwrap_or_else(|| "tcp".into());
+        let sec = non_empty_str(stream.get("security")).unwrap_or_else(|| "none".into());
+        if !net.eq_ignore_ascii_case("tcp") || !sec.eq_ignore_ascii_case("none") {
+            warnings.push("Shadowsocks 标准 SIP002 链接不包含流传输/TLS 扩展配置，已省略。".into());
+        }
+    }
+
+    let creds =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!("{method}:{password}"));
+    let authority = format_authority_host(&address);
+    let frag = encode_fragment(name);
+    Ok(format!("ss://{creds}@{authority}:{port}{frag}"))
+}
+
+fn encode_vmess(
+    outbound: &Value,
+    name: &str,
+    warnings: &mut Vec<String>,
+) -> std::result::Result<String, String> {
+    let server = outbound
+        .pointer("/settings/vnext/0")
+        .ok_or_else(|| "VMess 节点缺少 vnext 服务器配置".to_owned())?;
+    let address = non_empty_str(server.get("address"))
+        .ok_or_else(|| "VMess 节点缺少服务器地址".to_owned())?;
+    let port = required_outbound_port(server.get("port"))?;
+    let user = server
+        .pointer("/users/0")
+        .ok_or_else(|| "VMess 节点缺少用户信息".to_owned())?;
+    let id = non_empty_str(user.get("id")).ok_or_else(|| "VMess 节点缺少用户 ID".to_owned())?;
+    let scy = non_empty_str(user.get("security")).unwrap_or_else(|| "auto".into());
+    let aid = user
+        .get("alterId")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .to_string();
+
+    let stream = outbound.get("streamSettings");
+    let net = stream
+        .and_then(|s| non_empty_str(s.get("network")))
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_else(|| "tcp".into());
+    let security = stream
+        .and_then(|s| non_empty_str(s.get("security")))
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_else(|| "none".into());
+
+    let mut obj = serde_json::Map::new();
+    obj.insert("v".into(), json!("2"));
+    obj.insert("ps".into(), json!(name));
+    obj.insert("add".into(), json!(address));
+    obj.insert("port".into(), json!(port.to_string()));
+    obj.insert("id".into(), json!(id));
+    obj.insert("aid".into(), json!(aid));
+    obj.insert("scy".into(), json!(scy));
+    obj.insert("net".into(), json!(net));
+
+    match security.as_str() {
+        "tls" => {
+            obj.insert("tls".into(), json!("tls"));
+            let tls = stream.and_then(|s| s.get("tlsSettings"));
+            if let Some(sni) = non_empty_str(tls.and_then(|t| t.get("serverName"))) {
+                obj.insert("sni".into(), json!(sni));
+            }
+            if let Some(fp) = non_empty_str(tls.and_then(|t| t.get("fingerprint"))) {
+                obj.insert("fp".into(), json!(fp));
+            }
+            if let Some(alpn) = tls.and_then(|t| t.get("alpn")) {
+                match alpn {
+                    Value::String(s) if !s.trim().is_empty() => {
+                        obj.insert("alpn".into(), json!(s.trim()));
+                    }
+                    Value::Array(items) => {
+                        let joined: Vec<&str> = items
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                        if !joined.is_empty() {
+                            obj.insert("alpn".into(), json!(joined.join(",")));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if tls
+                .and_then(|t| t.get("allowInsecure"))
+                .and_then(Value::as_bool)
+                == Some(true)
+            {
+                obj.insert("allowInsecure".into(), json!(1));
+            }
+        }
+        "reality" => {
+            warnings.push(
+                "VMess 标准分享链接不支持 Reality 安全参数，已省略；如需完整保留请导出配置包。"
+                    .into(),
+            );
+        }
+        "none" => {}
+        other => {
+            warnings.push(format!("VMess 分享链接不支持安全类型 {other}，已省略。"));
+        }
+    }
+
+    if let Some(stream) = stream {
+        match net.as_str() {
+            "ws" => {
+                let ws = stream.get("wsSettings");
+                if let Some(path) = ws
+                    .and_then(|w| w.get("path"))
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                {
+                    obj.insert("path".into(), json!(path));
+                }
+                if let Some(host) = non_empty_str(
+                    ws.and_then(|w| w.pointer("/headers/Host"))
+                        .or_else(|| ws.and_then(|w| w.get("host"))),
+                ) {
+                    obj.insert("host".into(), json!(host));
+                }
+            }
+            "grpc" => {
+                let grpc = stream.get("grpcSettings");
+                if let Some(service) = non_empty_str(grpc.and_then(|g| g.get("serviceName"))) {
+                    obj.insert("path".into(), json!(service));
+                }
+                if grpc
+                    .and_then(|g| g.get("multiMode"))
+                    .and_then(Value::as_bool)
+                    == Some(true)
+                {
+                    obj.insert("type".into(), json!("multi"));
+                }
+            }
+            "httpupgrade" => {
+                let hu = stream.get("httpupgradeSettings");
+                if let Some(path) = hu
+                    .and_then(|h| h.get("path"))
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                {
+                    obj.insert("path".into(), json!(path));
+                }
+                if let Some(host) = non_empty_str(hu.and_then(|h| h.get("host"))) {
+                    obj.insert("host".into(), json!(host));
+                }
+            }
+            "kcp" => {
+                let kcp = stream.get("kcpSettings");
+                if let Some(seed) = kcp
+                    .and_then(|k| k.get("seed"))
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                {
+                    obj.insert("path".into(), json!(seed));
+                }
+                if let Some(ht) = non_empty_str(kcp.and_then(|k| k.pointer("/header/type"))) {
+                    obj.insert("type".into(), json!(ht));
+                }
+            }
+            "quic" => {
+                let quic = stream.get("quicSettings");
+                if let Some(sec) = non_empty_str(quic.and_then(|q| q.get("security"))) {
+                    obj.insert("host".into(), json!(sec));
+                }
+                if let Some(key) = quic
+                    .and_then(|q| q.get("key"))
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                {
+                    obj.insert("path".into(), json!(key));
+                }
+                if let Some(ht) = non_empty_str(quic.and_then(|q| q.pointer("/header/type"))) {
+                    obj.insert("type".into(), json!(ht));
+                }
+            }
+            "tcp" | "raw" => {
+                let tcp = if net == "raw" {
+                    stream
+                        .get("rawSettings")
+                        .or_else(|| stream.get("tcpSettings"))
+                } else {
+                    stream
+                        .get("tcpSettings")
+                        .or_else(|| stream.get("rawSettings"))
+                };
+                if non_empty_str(tcp.and_then(|t| t.pointer("/header/type")))
+                    .is_some_and(|h| h.eq_ignore_ascii_case("http"))
+                {
+                    obj.insert("type".into(), json!("http"));
+                    let mut tmp = Vec::new();
+                    push_string_or_array(
+                        &mut tmp,
+                        "path",
+                        tcp.and_then(|t| t.pointer("/header/request/path")),
+                    );
+                    push_string_or_array(
+                        &mut tmp,
+                        "host",
+                        tcp.and_then(|t| t.pointer("/header/request/headers/Host")),
+                    );
+                    for (k, v) in tmp {
+                        obj.insert(k, json!(v));
+                    }
+                }
+            }
+            other => {
+                warnings.push(format!(
+                    "VMess 标准链接对传输方式 {other} 的专有参数支持有限，已省略高级字段。"
+                ));
+            }
+        }
+    }
+
+    let encoded = base64::engine::general_purpose::STANDARD.encode(Value::Object(obj).to_string());
+    Ok(format!("vmess://{encoded}"))
+}
+
+fn encode_upstream(
+    outbound: &Value,
+    protocol: &str,
+    name: &str,
+    warnings: &mut Vec<String>,
+) -> std::result::Result<String, String> {
+    let server = outbound
+        .pointer("/settings/servers/0")
+        .ok_or_else(|| format!("{protocol} 节点缺少 servers 服务器配置"))?;
+    let address = non_empty_str(server.get("address"))
+        .ok_or_else(|| format!("{protocol} 节点缺少服务器地址"))?;
+    let port = required_outbound_port(server.get("port"))?;
+
+    let user_entry = server.pointer("/users/0");
+    let user = non_empty_str(user_entry.and_then(|u| u.get("user")));
+    let pass = user_entry
+        .and_then(|u| u.get("pass"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let auth_prefix = match user {
+        Some(u) if !pass.is_empty() => {
+            format!("{}:{}@", encode_userinfo(&u), encode_userinfo(pass))
+        }
+        Some(u) => format!("{}@", encode_userinfo(&u)),
+        None => String::new(),
+    };
+
+    let stream = outbound.get("streamSettings");
+    let security = stream
+        .and_then(|s| non_empty_str(s.get("security")))
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_else(|| "none".into());
+    let scheme = if protocol == "http" && security == "tls" {
+        "https"
+    } else {
+        protocol
+    };
+
+    let mut params = Vec::new();
+    append_stream_query_params(
+        stream,
+        if scheme == "https" { "tls" } else { "none" },
+        &mut params,
+        warnings,
+    );
+    let query = encode_query_pairs(&params);
+    let authority = format_authority_host(&address);
+    let frag = encode_fragment(name);
+    if query.is_empty() {
+        Ok(format!("{scheme}://{auth_prefix}{authority}:{port}{frag}"))
+    } else {
+        Ok(format!(
+            "{scheme}://{auth_prefix}{authority}:{port}?{query}{frag}"
+        ))
+    }
+}
+
+/// Encodes all shareable outbounds in an Xray configuration document.
+pub fn encode_share_links(
+    config: &Value,
+    node_names: &BTreeMap<String, String>,
+) -> EncodedShareBatch {
+    let mut batch = EncodedShareBatch::default();
+    let Some(outbounds) = config.get("outbounds").and_then(Value::as_array) else {
+        return batch;
+    };
+    for (index, outbound) in outbounds.iter().enumerate() {
+        let tag = non_empty_str(outbound.get("tag")).unwrap_or_default();
+        let protocol = non_empty_str(outbound.get("protocol"))
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+        if matches!(protocol.as_str(), "freedom" | "blackhole" | "dns") {
+            batch.skipped.push((
+                if tag.is_empty() {
+                    format!("#{index}")
+                } else {
+                    tag
+                },
+                format!("内置系统出站（{protocol}）"),
+            ));
+            continue;
+        }
+        let display_name = node_names
+            .get(&tag)
+            .map(String::as_str)
+            .filter(|s| !s.trim().is_empty());
+        match encode_share_link(outbound, display_name) {
+            Ok(mut node) => {
+                node.index = index;
+                batch.nodes.push(node);
+            }
+            Err(err) => {
+                batch.errors.push((
+                    if tag.is_empty() {
+                        format!("出站 #{index}")
+                    } else {
+                        tag
+                    },
+                    err,
+                ));
+            }
+        }
+    }
+    batch
+}
+
+/// Formats encoded share nodes as newline-separated URIs or a Base64-encoded subscription block.
+pub fn format_share_links_text(nodes: &[EncodedShareNode], as_base64: bool) -> String {
+    let joined = nodes
+        .iter()
+        .map(|n| n.uri.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if as_base64 && !joined.is_empty() {
+        base64::engine::general_purpose::STANDARD.encode(joined.as_bytes())
+    } else {
+        joined
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -822,5 +1725,216 @@ mod tests {
         assert!(parse_share_link("vless://@example.com:443").is_err());
         assert!(parse_share_link("vless://uuid@example.com").is_err());
         assert!(parse_share_link("hysteria2://pass@example.com:443").is_err());
+    }
+
+    #[test]
+    fn encodes_and_roundtrips_all_supported_protocols() {
+        let cases = [
+            (
+                "Tokyo Reality",
+                json!({
+                    "tag": "node-vless",
+                    "protocol": "vless",
+                    "settings": {
+                        "vnext": [{
+                            "address": "example.com",
+                            "port": 443,
+                            "users": [{"id": "11111111-2222-3333-4444-555555555555", "encryption": "none", "flow": "xtls-rprx-vision"}]
+                        }]
+                    },
+                    "streamSettings": {
+                        "network": "tcp",
+                        "security": "reality",
+                        "realitySettings": {
+                            "serverName": "www.microsoft.com",
+                            "fingerprint": "chrome",
+                            "publicKey": "TEST_PBK",
+                            "shortId": "abcd",
+                            "spiderX": "/v1"
+                        }
+                    }
+                }),
+            ),
+            (
+                "VLESS WS TLS",
+                json!({
+                    "tag": "node-ws",
+                    "protocol": "vless",
+                    "settings": {
+                        "vnext": [{
+                            "address": "ws.example.com",
+                            "port": 443,
+                            "users": [{"id": "22222222-2222-3333-4444-555555555555", "encryption": "none"}]
+                        }]
+                    },
+                    "streamSettings": {
+                        "network": "ws",
+                        "security": "tls",
+                        "tlsSettings": {"serverName": "ws.example.com", "alpn": ["h2", "http/1.1"]},
+                        "wsSettings": {"path": "/ws?ed=2048", "headers": {"Host": "cdn.example.com"}}
+                    }
+                }),
+            ),
+            (
+                "VLESS xhttp",
+                json!({
+                    "tag": "node-xhttp",
+                    "protocol": "vless",
+                    "settings": {
+                        "vnext": [{
+                            "address": "xhttp.example.com",
+                            "port": 443,
+                            "users": [{"id": "33333333-2222-3333-4444-555555555555", "encryption": "none"}]
+                        }]
+                    },
+                    "streamSettings": {
+                        "network": "xhttp",
+                        "security": "tls",
+                        "tlsSettings": {"serverName": "xhttp.example.com"},
+                        "xhttpSettings": {"path": "/xh", "host": "xhttp.example.com", "mode": "auto"}
+                    }
+                }),
+            ),
+            (
+                "HK Trojan",
+                json!({
+                    "tag": "node-trojan",
+                    "protocol": "trojan",
+                    "settings": {
+                        "servers": [{"address": "2001:db8::1", "port": 8443, "password": "secret/pass?1"}]
+                    },
+                    "streamSettings": {
+                        "network": "grpc",
+                        "security": "tls",
+                        "tlsSettings": {"serverName": "cdn.example.com", "fingerprint": "safari"},
+                        "grpcSettings": {"serviceName": "trojan-grpc", "multiMode": true}
+                    }
+                }),
+            ),
+            (
+                "SS Node",
+                json!({
+                    "tag": "node-ss",
+                    "protocol": "shadowsocks",
+                    "settings": {
+                        "servers": [{"address": "ss.example.com", "port": 8388, "method": "aes-256-gcm", "password": "pass:with#chars"}]
+                    }
+                }),
+            ),
+            (
+                "VMess Node",
+                json!({
+                    "tag": "node-vmess",
+                    "protocol": "vmess",
+                    "settings": {
+                        "vnext": [{
+                            "address": "vmess.example.com",
+                            "port": 443,
+                            "users": [{"id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "security": "auto", "alterId": 2}]
+                        }]
+                    },
+                    "streamSettings": {
+                        "network": "ws",
+                        "security": "tls",
+                        "tlsSettings": {"serverName": "vmess.example.com", "allowInsecure": true},
+                        "wsSettings": {"path": "/vm", "headers": {"Host": "vmess.example.com"}}
+                    }
+                }),
+            ),
+            (
+                "Local Socks",
+                json!({
+                    "tag": "node-socks",
+                    "protocol": "socks",
+                    "settings": {
+                        "servers": [{"address": "127.0.0.1", "port": 1080, "users": [{"user": "alice", "pass": "bob@1"}]}]
+                    }
+                }),
+            ),
+            (
+                "HTTPS Upstream",
+                json!({
+                    "tag": "node-https",
+                    "protocol": "http",
+                    "settings": {
+                        "servers": [{"address": "proxy.example.com", "port": 443, "users": [{"user": "u1", "pass": "p1"}]}]
+                    },
+                    "streamSettings": {
+                        "network": "tcp",
+                        "security": "tls",
+                        "tlsSettings": {"serverName": "proxy.example.com"}
+                    }
+                }),
+            ),
+        ];
+
+        for (display, outbound) in cases {
+            let encoded = encode_share_link(&outbound, Some(display)).unwrap();
+            let parsed = parse_share_link(&encoded.uri).unwrap();
+            assert_eq!(parsed.name.as_deref(), Some(display), "URI={}", encoded.uri);
+            assert_eq!(parsed.protocol, outbound["protocol"].as_str().unwrap());
+            assert_eq!(
+                parsed.outbound["settings"], outbound["settings"],
+                "URI={}",
+                encoded.uri
+            );
+            if outbound.get("streamSettings").is_some() {
+                assert_eq!(
+                    parsed.outbound["streamSettings"], outbound["streamSettings"],
+                    "URI={}",
+                    encoded.uri
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn encode_share_links_skips_builtins_and_reports_lossy_fields() {
+        let config = json!({
+            "outbounds": [
+                {
+                    "tag": "node-1",
+                    "protocol": "vless",
+                    "mux": {"enabled": true},
+                    "settings": {
+                        "vnext": [{
+                            "address": "example.com",
+                            "port": 443,
+                            "users": [
+                                {"id": "uuid-1", "encryption": "none"},
+                                {"id": "uuid-2", "encryption": "none"}
+                            ]
+                        }]
+                    },
+                    "streamSettings": {
+                        "network": "tcp",
+                        "security": "none",
+                        "sockopt": {"mark": 255}
+                    }
+                },
+                {"tag": "direct", "protocol": "freedom", "settings": {}},
+                {"tag": "block", "protocol": "blackhole", "settings": {}}
+            ]
+        });
+        let names = BTreeMap::from([("node-1".into(), "主节点".into())]);
+        let batch = encode_share_links(&config, &names);
+        assert_eq!(batch.nodes.len(), 1);
+        assert_eq!(batch.nodes[0].name, "主节点");
+        assert_eq!(batch.nodes[0].index, 0);
+        assert_eq!(batch.skipped.len(), 2);
+        assert!(batch.errors.is_empty());
+        assert!(batch.nodes[0].warnings.iter().any(|w| w.contains("mux")));
+        assert!(
+            batch.nodes[0]
+                .warnings
+                .iter()
+                .any(|w| w.contains("sockopt"))
+        );
+        assert!(batch.nodes[0].warnings.iter().any(|w| w.contains("users")));
+
+        let plain = format_share_links_text(&batch.nodes, false);
+        let b64 = format_share_links_text(&batch.nodes, true);
+        assert_eq!(parse_share_links(&plain).nodes.len(), 1);
+        assert_eq!(parse_share_links(&b64).nodes.len(), 1);
     }
 }

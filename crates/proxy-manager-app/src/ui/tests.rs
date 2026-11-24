@@ -4445,9 +4445,17 @@ fn modal_dialogs_use_balanced_widths_padding_and_harmonized_title_size() {
             "批量导入 / 编辑 PAC 域名",
             (1100.0, 760.0),
         );
+        let share = measure_modal(
+            appearance,
+            Dialog::Share,
+            "分享 / 导出「工作网络」",
+            (1100.0, 760.0),
+        );
         assert!(confirm.width() < port_forward.width());
         assert!(exit_choice.width() < port_forward.width());
         assert!(port_forward.width() < create.width());
+        assert!(port_forward.width() < share.width());
+        assert!(share.width() < create.width());
         assert!((ssh_cred.width() - ssh_host.width()).abs() < 1.0);
         assert!((create.width() - pac_batch.width()).abs() < 1.0);
         assert!(create.width() < 840.0);
@@ -4458,6 +4466,7 @@ fn modal_dialogs_use_balanced_widths_padding_and_harmonized_title_size() {
             (Dialog::SshCredential, "新建 SSH 凭证"),
             (Dialog::SshHost, "新建 SSH 跳板机"),
             (Dialog::HistoryDiff, "比较历史版本与当前草稿"),
+            (Dialog::Share, "分享 / 导出「工作网络」"),
             (Dialog::PacBatch, "批量导入 / 编辑 PAC 域名"),
         ] {
             let small = measure_modal(appearance, dialog, title, (760.0, 500.0));
@@ -5124,15 +5133,18 @@ fn profile_editor_header_keeps_status_beside_title_and_groups_actions() {
         let (status_rect, status_rows) = find_row_shape(&out, row_y, "运行中");
         let copy_btn = enclosing_rect_below(&out, "复制", rename_btn.top() - 8.0, 24.0);
         let delete_btn = enclosing_rect_below(&out, "删除", rename_btn.top() - 8.0, 24.0);
+        let share_btn = enclosing_rect_below(&out, "分享 / 导出", rename_btn.top() - 8.0, 24.0);
         assert_eq!(title_rows, 1);
         assert_eq!(status_rows, 1);
         assert!(title_rect.right() < status_rect.left());
         assert!(status_rect.right() < rename_btn.left());
         assert!(rename_btn.right() < copy_btn.left());
         assert!(copy_btn.right() < delete_btn.left());
+        assert!(delete_btn.right() < share_btn.left());
         assert!((status_rect.center().y - row_y).abs() < 2.0);
         assert!((copy_btn.center().y - row_y).abs() < 2.0);
         assert!((delete_btn.center().y - row_y).abs() < 2.0);
+        assert!((share_btn.center().y - row_y).abs() < 2.0);
     }
 
     // 2. Very long profile name + longest status badge ("已保存 · 待应用"): title truncates cleanly, badge stays single-line beside it.
@@ -5928,4 +5940,485 @@ fn port_forward_tab_and_broken_json_remain_visible_without_system_cjk_font() {
             Command::StartSshForward { ref id } if id == "fwd-ssh-1"
         ));
     }
+}
+
+fn modal_only_overlaps(output: &egui::FullOutput, modal_title: &str) -> Vec<(String, String)> {
+    let modal_start = output
+        .shapes
+        .iter()
+        .rposition(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text() == modal_title))
+        .unwrap_or_else(|| panic!("missing modal title shape `{modal_title}`"));
+    let modal_out = egui::FullOutput {
+        shapes: output.shapes[modal_start..].to_vec(),
+        ..Default::default()
+    };
+    overlapping_visible_text(&modal_out)
+}
+
+fn has_dark_qr_module(shape: &egui::Shape) -> bool {
+    match shape {
+        egui::Shape::Rect(rect) => {
+            rect.fill.r() == 0
+                && rect.fill.g() == 0
+                && rect.fill.b() == 0
+                && rect.fill.a() > 0
+                && (rect.rect.width() - rect.rect.height()).abs() < 0.5
+                && rect.rect.width() <= 12.0
+        }
+        egui::Shape::Vec(shapes) => shapes.iter().any(has_dark_qr_module),
+        _ => false,
+    }
+}
+
+#[test]
+fn share_dialog_renders_qr_links_bundle_and_raw_json_without_overlap() {
+    let mut app = app();
+    let config = serde_json::json!({
+        "inbounds": [{"tag": "http-in", "protocol": "http", "listen": "127.0.0.1", "port": 10809}],
+        "outbounds": [
+            {
+                "tag": "node-1",
+                "protocol": "vless",
+                "mux": {"enabled": true},
+                "settings": {
+                    "vnext": [{
+                        "address": "example.com",
+                        "port": 443,
+                        "users": [{"id": "11111111-2222-3333-4444-555555555555", "encryption": "none", "flow": "xtls-rprx-vision"}]
+                    }]
+                },
+                "streamSettings": {
+                    "network": "tcp",
+                    "security": "reality",
+                    "realitySettings": {"serverName": "www.microsoft.com", "fingerprint": "chrome", "publicKey": "PK123", "shortId": "ab12"}
+                }
+            },
+            {
+                "tag": "node-2",
+                "protocol": "trojan",
+                "settings": {
+                    "servers": [{"address": "hk.example.com", "port": 443, "password": "secret"}]
+                },
+                "streamSettings": {"network": "tcp", "security": "tls", "tlsSettings": {"serverName": "hk.example.com"}}
+            },
+            {"tag": "direct", "protocol": "freedom", "settings": {}}
+        ],
+        "routing": {"rules": []}
+    });
+    let json_text = serde_json::to_string_pretty(&config).unwrap();
+    let rev = hash(json_text.as_bytes());
+    app.load(Profile {
+        id: "work".into(),
+        json: json_text,
+        revision: rev,
+    });
+    app.ui.workspace.node_names.insert(
+        "work".into(),
+        std::collections::BTreeMap::from([
+            ("node-1".into(), "东京 Reality".into()),
+            ("node-2".into(), "香港 Trojan".into()),
+        ]),
+    );
+    app.ui.ssh_loaded = true;
+    app.ui.ssh_state = SshState {
+        credentials: vec![SshCredentialSummary {
+            id: "cred-1".into(),
+            name: "ops · 密码".into(),
+            username: "ops".into(),
+            auth_kind: SshAuthKind::Password,
+            has_password: true,
+            private_key_path: PathBuf::new(),
+            has_passphrase: false,
+        }],
+        hosts: vec![SshHost {
+            id: "host-1".into(),
+            name: "跳板机".into(),
+            host: "bastion.corp".into(),
+            port: 22,
+            credential_id: "cred-1".into(),
+            host_key_fingerprint: "SHA256:abc".into(),
+        }],
+        forwards: vec![SshForward {
+            id: "fwd-1".into(),
+            name: "PG".into(),
+            listen: "127.0.0.1".into(),
+            port: 15432,
+            target_host: "10.0.1.8".into(),
+            target_port: 5432,
+            ssh_host_id: "host-1".into(),
+        }],
+        runtime: vec![],
+    };
+
+    let ctx = egui::Context::default();
+    configure_without_system_cjk(&ctx);
+    app.ui.page = Page::Profiles;
+    app.ui.profile_tab = ProfileTab::Outbounds;
+
+    // Open via node card "分享" button
+    let _ = guided_frame(&mut app, &ctx, vec![], 1100.0, 760.0);
+    guided_click(&mut app, &ctx, "分享", 1100.0, 760.0);
+    assert!(matches!(app.ui.dialog, Some(Dialog::Share)));
+    assert_eq!(app.ui.share.tab, share::ShareTab::NodeLinks);
+
+    for (w, h) in [(1100.0, 760.0), (760.0, 500.0)] {
+        let mut out = guided_frame(&mut app, &ctx, vec![], w, h);
+        for _ in 0..4 {
+            out = guided_frame(&mut app, &ctx, vec![], w, h);
+        }
+        let overlaps = modal_only_overlaps(&out, "分享 / 导出「工作网络」");
+        assert!(
+            overlaps.is_empty(),
+            "overlap in share node links at {w}x{h}: {overlaps:?}"
+        );
+        assert!(
+            matches!(
+                &app.ui.share.qr_cache,
+                Some((_, Ok((size, modules)))) if *size >= 21 && modules.iter().any(|&m| m)
+            ),
+            "QR cache missing valid matrix at {w}x{h}"
+        );
+        let has_black_qr = out.shapes.iter().any(|s| has_dark_qr_module(&s.shape));
+        assert!(has_black_qr, "QR dark modules missing at {w}x{h}");
+    }
+
+    // Switch to Bundle tab, enable SSH topology + passphrase encryption, and generate share code
+    guided_click(&mut app, &ctx, "完整配置包", 1100.0, 760.0);
+    assert_eq!(app.ui.share.tab, share::ShareTab::Bundle);
+    app.ui.share.include_ssh_topology = true;
+    app.ui.share.use_passphrase = true;
+    app.ui.share.passphrase = "share-secret-1".into();
+    app.ui.share.passphrase_confirm = "share-secret-1".into();
+    let out = guided_frame(&mut app, &ctx, vec![], 1100.0, 760.0);
+    let overlaps = modal_only_overlaps(&out, "分享 / 导出「工作网络」");
+    assert!(overlaps.is_empty(), "overlap in share bundle: {overlaps:?}");
+    guided_click(&mut app, &ctx, "复制分享码", 1100.0, 760.0);
+    assert!(
+        app.ui
+            .share
+            .generated_code
+            .as_deref()
+            .is_some_and(|code| code.starts_with(proxy_config::bundle::SHARE_CODE_PREFIX))
+    );
+
+    // Switch to RawJson tab and close dialog; secrets must be cleared on close
+    guided_click(&mut app, &ctx, "原生 JSON", 1100.0, 760.0);
+    assert_eq!(app.ui.share.tab, share::ShareTab::RawJson);
+    let out = guided_frame(&mut app, &ctx, vec![], 1100.0, 760.0);
+    let overlaps = modal_only_overlaps(&out, "分享 / 导出「工作网络」");
+    assert!(
+        overlaps.is_empty(),
+        "overlap in share raw json: {overlaps:?}"
+    );
+
+    guided_click(&mut app, &ctx, "关闭", 1100.0, 760.0);
+    assert!(app.ui.dialog.is_none());
+    assert!(app.ui.share.passphrase.is_empty());
+    assert!(app.ui.share.passphrase_confirm.is_empty());
+    assert!(app.ui.share.generated_code.is_none());
+}
+
+#[test]
+fn bundle_import_roundtrip_encrypted_with_pac_and_ssh_topology() {
+    use proxy_config::bundle::{
+        BundlePayload, BundleProfile, BundleProxyPolicy, BundleSshCredentialHint, BundleSshForward,
+        BundleSshHost, BundleSshTopology, BundleUiMetadata, encode_bundle_code,
+    };
+
+    let payload = BundlePayload {
+        profile: BundleProfile {
+            suggested_name: "研发测试环境".into(),
+            config_json: serde_json::json!({
+                "inbounds": [{"tag": "http-in", "protocol": "http", "listen": "127.0.0.1", "port": 10809}],
+                "outbounds": [
+                    {
+                        "tag": "node-1",
+                        "protocol": "vless",
+                        "settings": {"vnext": [{"address": "sg.example.com", "port": 443, "users": [{"id": "11111111-2222-3333-4444-555555555555", "encryption": "none"}]}]}
+                    },
+                    {"tag": "direct", "protocol": "freedom", "settings": {}}
+                ],
+                "routing": {"rules": []}
+            }),
+        },
+        ui_metadata: Some(BundleUiMetadata {
+            node_names: std::collections::BTreeMap::from([("node-1".into(), "新加坡节点".into())]),
+            port_forward_names: Default::default(),
+            paused_port_forwards: vec![],
+        }),
+        proxy_policy: Some(BundleProxyPolicy {
+            proxy_mode: ProxyMode::Pac,
+            pac: Some(PacDraft {
+                mode: PacMode::ProxyList,
+                geosites: vec!["gfw".into()],
+                domains: vec!["openai.com".into()],
+                script: String::new(),
+                port: DEFAULT_PAC_PORT,
+            }),
+        }),
+        ssh_topology: Some(BundleSshTopology {
+            hosts: vec![
+                BundleSshHost {
+                    ref_id: "h1".into(),
+                    name: "已有跳板机".into(),
+                    host: "bastion1.corp".into(),
+                    port: 22,
+                    host_key_fingerprint: "SHA256:host1".into(),
+                    credential_hint: Some(BundleSshCredentialHint {
+                        username: "ops".into(),
+                        auth_kind: SshAuthKind::Password,
+                    }),
+                },
+                BundleSshHost {
+                    ref_id: "h2".into(),
+                    name: "新建跳板机".into(),
+                    host: "bastion2.corp".into(),
+                    port: 2222,
+                    host_key_fingerprint: "SHA256:host2".into(),
+                    credential_hint: Some(BundleSshCredentialHint {
+                        username: "ops".into(),
+                        auth_kind: SshAuthKind::Password,
+                    }),
+                },
+            ],
+            forwards: vec![
+                BundleSshForward {
+                    name: "Redis".into(),
+                    listen: "127.0.0.1".into(),
+                    port: 16379,
+                    target_host: "10.0.1.9".into(),
+                    target_port: 6379,
+                    host_ref: "h1".into(),
+                },
+                BundleSshForward {
+                    name: "PG".into(),
+                    listen: "127.0.0.1".into(),
+                    port: 15432,
+                    target_host: "10.0.1.8".into(),
+                    target_port: 5432,
+                    host_ref: "h2".into(),
+                },
+            ],
+        }),
+    };
+    let code = encode_bundle_code(
+        &payload,
+        Some("bundle-pass-123"),
+        "0.1.1-rc.52",
+        "2026-11-24T12:00:00Z",
+    )
+    .unwrap();
+
+    let mut app = app();
+    let (tx, requests) = mpsc::sync_channel(MAX_PENDING);
+    let (responses_tx, rx) = mpsc::channel();
+    app.tx = tx;
+    app.rx = rx;
+    app.pending.clear();
+    app.ui.ssh_loaded = true;
+    app.ui.ssh_state = SshState {
+        credentials: vec![SshCredentialSummary {
+            id: "cred-1".into(),
+            name: "ops · 密码".into(),
+            username: "ops".into(),
+            auth_kind: SshAuthKind::Password,
+            has_password: true,
+            private_key_path: PathBuf::new(),
+            has_passphrase: false,
+        }],
+        hosts: vec![SshHost {
+            id: "host-existing".into(),
+            name: "公司跳板机 1".into(),
+            host: "bastion1.corp".into(),
+            port: 22,
+            credential_id: "cred-1".into(),
+            host_key_fingerprint: "SHA256:host1".into(),
+        }],
+        forwards: vec![],
+        runtime: vec![],
+    };
+
+    let ctx = egui::Context::default();
+    configure_without_system_cjk(&ctx);
+    app.begin_create(true, false);
+    app.ui.bundle_import.raw_input = code;
+
+    let _ = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    guided_click(&mut app, &ctx, "解析配置包", 1100.0, 900.0);
+    assert!(app.ui.bundle_import.encrypted_envelope.is_some());
+    assert!(app.ui.bundle_import.payload.is_none());
+
+    // Wrong passphrase must stay in encrypted state with error message
+    app.ui.bundle_import.decrypt_passphrase = "wrong-password".into();
+    let _ = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    guided_click(&mut app, &ctx, "解密并预览", 1100.0, 900.0);
+    assert!(app.ui.bundle_import.payload.is_none());
+    assert!(app.ui.bundle_import.error.is_some());
+
+    // Right passphrase unlocks preview and auto-resolves matching host + existing credential
+    app.ui.bundle_import.decrypt_passphrase = "bundle-pass-123".into();
+    let _ = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    guided_click(&mut app, &ctx, "解密并预览", 1100.0, 900.0);
+    assert!(app.ui.bundle_import.payload.is_some());
+    assert_eq!(app.ui.new_name, "研发测试环境");
+    assert_eq!(
+        app.ui.bundle_import.ssh_resolutions.get("h1"),
+        Some(&share::BundleSshHostResolution::ReuseHost(
+            "host-existing".into()
+        ))
+    );
+    assert_eq!(
+        app.ui.bundle_import.ssh_resolutions.get("h2"),
+        Some(&share::BundleSshHostResolution::BindCredential(
+            "cred-1".into()
+        ))
+    );
+    let out = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
+    let overlaps = modal_only_overlaps(&out, "添加 / 导入配置");
+    assert!(
+        overlaps.is_empty(),
+        "overlap in bundle import: {overlaps:?}"
+    );
+
+    // Confirm import and drive sequential write handshake (CreateProfile -> SaveSshHost -> 2x SaveSshForward)
+    guided_click(&mut app, &ctx, "导入配置包", 1100.0, 900.0);
+    assert!(app.ui.dialog.is_none());
+    assert!(app.ui.bundle_import.decrypt_passphrase.is_empty());
+    assert!(app.ui.bundle_import.payload.is_none());
+
+    let next_write_request = || -> Request {
+        while let Ok(req) = requests.try_recv() {
+            if req.command.is_write() {
+                return req;
+            }
+        }
+        panic!("expected queued write request");
+    };
+
+    let req1 = next_write_request();
+    let created_profile_id = match &req1.command {
+        Command::CreateProfile { profile_id, .. } => profile_id.clone(),
+        other => panic!("expected CreateProfile, got {other:?}"),
+    };
+    let created_json = match &req1.command {
+        Command::CreateProfile { json, .. } => json.clone(),
+        _ => unreachable!(),
+    };
+    responses_tx
+        .send((
+            req1.command,
+            Response {
+                request_id: req1.request_id,
+                result: Ok(serde_json::to_value(Profile {
+                    id: created_profile_id.clone(),
+                    revision: hash(created_json.as_bytes()),
+                    json: created_json,
+                })
+                .unwrap()),
+            },
+        ))
+        .unwrap();
+    app.receive();
+
+    let req2 = next_write_request();
+    let (new_host_id, saved_host_addr, saved_cred_id, has_inline) = match &req2.command {
+        Command::SaveSshHost {
+            host,
+            inline_credential,
+        } => (
+            host.id.clone(),
+            host.host.clone(),
+            host.credential_id.clone(),
+            inline_credential.is_some(),
+        ),
+        other => panic!("expected SaveSshHost, got {other:?}"),
+    };
+    assert_eq!(saved_host_addr, "bastion2.corp");
+    assert_eq!(saved_cred_id, "cred-1");
+    assert!(!has_inline);
+    responses_tx
+        .send((
+            req2.command,
+            Response {
+                request_id: req2.request_id,
+                result: Ok(serde_json::to_value(app.ui.ssh_state.clone()).unwrap()),
+            },
+        ))
+        .unwrap();
+    app.receive();
+
+    let mut saved_forwards = Vec::new();
+    for _ in 0..2 {
+        let req = next_write_request();
+        match &req.command {
+            Command::SaveSshForward { forward, start_now } => {
+                saved_forwards.push((forward.clone(), *start_now));
+            }
+            other => panic!("expected SaveSshForward, got {other:?}"),
+        }
+        responses_tx
+            .send((
+                req.command,
+                Response {
+                    request_id: req.request_id,
+                    result: Ok(serde_json::to_value(app.ui.ssh_state.clone()).unwrap()),
+                },
+            ))
+            .unwrap();
+        app.receive();
+    }
+    assert!(app.ui.pending_followups.is_empty());
+    while let Ok(extra) = requests.try_recv() {
+        assert!(
+            !extra.command.is_write(),
+            "unexpected extra write command: {:?}",
+            extra.command
+        );
+    }
+
+    assert_eq!(
+        app.ui
+            .workspace
+            .names
+            .get(&created_profile_id)
+            .map(String::as_str),
+        Some("研发测试环境")
+    );
+    assert_eq!(
+        app.ui
+            .workspace
+            .node_names
+            .get(&created_profile_id)
+            .and_then(|m| m.get("node-1"))
+            .map(String::as_str),
+        Some("新加坡节点")
+    );
+    assert_eq!(
+        app.ui
+            .workspace
+            .proxy_modes
+            .get(&created_profile_id)
+            .copied(),
+        Some(ProxyMode::Pac)
+    );
+    assert_eq!(
+        app.ui
+            .workspace
+            .pac
+            .get(&created_profile_id)
+            .map(|p| p.domains.clone()),
+        Some(vec!["openai.com".to_owned()])
+    );
+    assert_eq!(saved_forwards.len(), 2);
+    assert!(saved_forwards.iter().all(|(_, start_now)| !*start_now));
+    assert!(
+        saved_forwards
+            .iter()
+            .any(|(f, _)| f.name == "Redis" && f.ssh_host_id == "host-existing")
+    );
+    assert!(
+        saved_forwards
+            .iter()
+            .any(|(f, _)| f.name == "PG" && f.ssh_host_id == new_host_id)
+    );
 }

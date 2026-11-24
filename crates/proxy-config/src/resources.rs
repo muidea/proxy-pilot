@@ -207,6 +207,51 @@ pub fn collect_referenced_geo_files(value: &Value) -> BTreeSet<String> {
     names
 }
 
+fn is_any_absolute_path(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if Path::new(trimmed).is_absolute() || trimmed.starts_with('/') || trimmed.starts_with("\\\\") {
+        return true;
+    }
+    let bytes = trimmed.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'/' || bytes[2] == b'\\')
+}
+
+/// Collect referenced geo or TLS certificate paths that are absolute on Unix or Windows.
+pub fn absolute_resource_paths(value: &Value) -> Vec<String> {
+    let mut names = collect_referenced_geo_files(value);
+    for direction in ["inbounds", "outbounds"] {
+        for endpoint in value
+            .get(direction)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            for cert in endpoint
+                .pointer("/streamSettings/tlsSettings/certificates")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                for field in ["certificateFile", "keyFile"] {
+                    if let Some(name) = cert.get(field).and_then(Value::as_str) {
+                        names.insert(name.into());
+                    }
+                }
+            }
+        }
+    }
+    names
+        .into_iter()
+        .filter(|item| is_any_absolute_path(item))
+        .collect()
+}
+
 fn strip_prefix_ignore_case<'a>(input: &'a str, prefix: &str) -> Option<&'a str> {
     input
         .get(..prefix.len())

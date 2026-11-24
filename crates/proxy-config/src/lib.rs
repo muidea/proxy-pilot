@@ -1,3 +1,4 @@
+pub mod bundle;
 pub mod conflicts;
 mod coverage;
 pub mod geodata;

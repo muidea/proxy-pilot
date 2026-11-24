@@ -232,14 +232,12 @@ impl App {
             let mut cancel_rename = false;
             let mut duplicate_clicked = false;
             let mut delete_clicked = false;
-            #[cfg(windows)]
-            let mut export_clicked = false;
+            let mut share_clicked = false;
             let can_copy = enabled && self.ui.number_inputs.is_empty();
             let can_delete = enabled
                 && self.selected_profile == self.profile_id
                 && self.committed_id() != Some(self.profile_id.as_str());
-            #[cfg(windows)]
-            let can_export = self.ui.number_inputs.is_empty();
+            let can_share = self.ui.number_inputs.is_empty();
 
             crate::widgets::responsive_header(
                 ui,
@@ -301,15 +299,14 @@ impl App {
                                 {
                                     delete_clicked = true;
                                 }
-                                #[cfg(windows)]
                                 3 if ui
-                                    .add_enabled(can_export, egui::Button::new("导出 JSON"))
+                                    .add_enabled(can_share, egui::Button::new("分享 / 导出"))
                                     .on_disabled_hover_text(
-                                        "请先补全未完成的数值输入，再导出 JSON；输入已随草稿保留",
+                                        "请先补全未完成的数值输入，再分享或导出配置；输入已随草稿保留",
                                     )
                                     .clicked() =>
                                 {
-                                    export_clicked = true;
+                                    share_clicked = true;
                                 }
                                 _ => {}
                             }
@@ -347,9 +344,8 @@ impl App {
                     revision: self.revision.clone(),
                 }));
             }
-            #[cfg(windows)]
-            if export_clicked {
-                self.ui.dialog = Some(Dialog::Confirm(Action::ExportJson));
+            if share_clicked {
+                self.open_share_dialog(super::share::ShareTab::NodeLinks, None);
             }
             if self.ui.draft_conflict {
                 ui.colored_label(
@@ -1062,6 +1058,7 @@ impl App {
             let pending_focus = self.ui.guided.focus.clone();
             let mut changed = false;
             let mut names_changed = false;
+            let mut share_node = None;
             ui.push_id((&self.profile_id, self.view_epoch, section), |ui| {
                 ui.add_enabled_ui(enabled, |ui| {
                     ui.horizontal_wrapped(|ui| {
@@ -1107,6 +1104,7 @@ impl App {
                         };
                         changed |= result.changed;
                         names_changed = result.names_changed;
+                        share_node = result.share_node;
                         if result.port_forward {
                             self.ui.profile_tab = ProfileTab::PortForward;
                         }
@@ -1128,6 +1126,9 @@ impl App {
                 self.ui.guided.notice = None;
                 self.editor = serde_json::to_string_pretty(&value).unwrap();
                 self.draft_edited();
+            }
+            if let Some(idx) = share_node {
+                self.open_share_dialog(super::share::ShareTab::NodeLinks, Some(idx));
             }
         } else {
             ui.label("请先在「更多与源码 → 原始 JSON」中修正语法。");

@@ -22,6 +22,8 @@ mod pac;
 mod profiles;
 #[path = "ui/settings.rs"]
 mod settings;
+#[path = "ui/share.rs"]
+mod share;
 #[cfg(test)]
 #[path = "ui/tests.rs"]
 mod tests;
@@ -81,14 +83,9 @@ pub(super) enum PacDomainFilter {
 pub(super) enum Action {
     Switch(String),
     Discard(String),
-    Delete {
-        profile: String,
-        revision: String,
-    },
+    Delete { profile: String, revision: String },
     Stop,
     Restart,
-    #[cfg_attr(not(windows), allow(dead_code))]
-    ExportJson,
     Proxy(ProxyMode),
     AdoptDraft(String),
     ClearPacDomains(String),
@@ -230,6 +227,7 @@ pub(super) enum Dialog {
     PortForward,
     SshCredential,
     SshHost,
+    Share,
 }
 #[derive(Clone)]
 pub(super) struct HistoryPreview {
@@ -372,6 +370,9 @@ pub(super) struct UiState {
     last_seen_editor: String,
     restoring_undo: bool,
     pub(super) allow_dynamic: bool,
+    pub(super) share: share::ShareDialogState,
+    pub(super) bundle_import: share::BundleImportState,
+    pub(super) pending_followups: std::collections::VecDeque<Command>,
 }
 impl Default for UiState {
     fn default() -> Self {
@@ -487,6 +488,9 @@ impl Default for UiState {
             last_seen_editor: String::new(),
             restoring_undo: false,
             allow_dynamic: false,
+            share: Default::default(),
+            bundle_import: Default::default(),
+            pending_followups: Default::default(),
         }
     }
 }
@@ -1492,6 +1496,7 @@ impl App {
         self.ui.import_error = None;
         self.ui.import_source = None;
         self.ui.import_use_source_assets = false;
+        self.ui.bundle_import = Default::default();
         self.ui.dialog = Some(Dialog::Create);
     }
     pub(super) fn imported_profile(&mut self, profile: Profile) {

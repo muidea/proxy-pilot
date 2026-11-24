@@ -3474,6 +3474,7 @@ version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aab41826031698d6ffcd9cff78ef56ef998e39dc7e5067cdfebe373842d4723b"
 dependencies = [
+ "getrandom 0.4.3",
  "phc",
 ]
 
@@ -3516,6 +3517,7 @@ checksum = "44dc769b75f93afdddd8c7fa12d685292ddeff1e66f7f0f3a234cf1818afe892"
 dependencies = [
  "base64ct",
  "ctutils",
+ "getrandom 0.4.3",
 ]
 
 [[package]]
@@ -3853,12 +3855,16 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "proxy-config"
-version = "0.1.1-rc.51"
+version = "0.1.1-rc.52"
 dependencies = [
+ "aes-gcm",
+ "argon2",
  "base64",
+ "flate2",
  "fs2",
  "percent-encoding",
  "proxy-model",
+ "rand 0.9.5",
  "serde",
  "serde_json",
  "tempfile",
@@ -3868,7 +3874,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-manager-app"
-version = "0.1.1-rc.51"
+version = "0.1.1-rc.52"
 dependencies = [
  "eframe",
  "proxy-config",
@@ -3876,6 +3882,7 @@ dependencies = [
  "proxy-pac",
  "proxy-runtime",
  "proxy-supervisor",
+ "qrcodegen",
  "raw-window-handle",
  "rfd",
  "serde",
@@ -3889,7 +3896,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-model"
-version = "0.1.1-rc.51"
+version = "0.1.1-rc.52"
 dependencies = [
  "serde",
  "serde_json",
@@ -3899,7 +3906,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-pac"
-version = "0.1.1-rc.51"
+version = "0.1.1-rc.52"
 dependencies = [
  "boa_engine",
  "proxy-config",
@@ -3912,7 +3919,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-runtime"
-version = "0.1.1-rc.51"
+version = "0.1.1-rc.52"
 dependencies = [
  "base64",
  "proxy-model",
@@ -3925,7 +3932,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-supervisor"
-version = "0.1.1-rc.51"
+version = "0.1.1-rc.52"
 dependencies = [
  "base64",
  "flate2",
@@ -3951,6 +3958,12 @@ name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
+
+[[package]]
+name = "qrcodegen"
+version = "1.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4339fc7a1021c9c1621d87f5e3505f2805c8c105420ba2f2a4df86814590c142"
 
 [[package]]
 name = "quick-error"
@@ -5783,7 +5796,7 @@ dependencies = [
 
 [[package]]
 name = "windows-integration"
-version = "0.1.1-rc.51"
+version = "0.1.1-rc.52"
 dependencies = [
  "proxy-config",
  "proxy-model",
