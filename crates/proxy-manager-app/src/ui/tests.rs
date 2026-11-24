@@ -792,6 +792,26 @@ fn json_viewport_rects(output: &egui::FullOutput) -> Vec<egui::Rect> {
         .collect()
 }
 
+fn visible_json_viewport_rects(output: &egui::FullOutput) -> Vec<egui::Rect> {
+    output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect)
+                if [
+                    Color32::from_rgb(13, 18, 25),
+                    Color32::from_rgb(245, 247, 250),
+                ]
+                .contains(&rect.fill) =>
+            {
+                let visible = rect.rect.intersect(shape.clip_rect);
+                (visible.width() > 0.0 && visible.height() > 0.0).then_some(visible)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
 fn profile_editors_follow_parent_size_for_short_and_long_documents_and_resizing() {
     for appearance in [Appearance::Light, Appearance::Dark] {
@@ -993,6 +1013,18 @@ fn import_and_preview_json_viewports_grow_with_their_dialogs() {
             }
             let editors = json_viewport_rects(&output);
             assert_eq!(editors.len(), 1);
+            let visible_editors = visible_json_viewport_rects(&output);
+            assert_eq!(visible_editors.len(), 1);
+            assert!(
+                visible_editors[0].height() >= 50.0,
+                "import editor clipped below the fold at {width}x{height}: {:?}",
+                visible_editors[0]
+            );
+            let overlaps = modal_only_overlaps(&output, "添加 / 导入配置");
+            assert!(
+                overlaps.is_empty(),
+                "overlap in import dialog at {width}x{height}: {overlaps:?}"
+            );
             assert!(editors[0].height() > previous_import, "import did not grow");
             previous_import = editors[0].height();
             assert!(text_bounds(&output, "取消").bottom() < height);
@@ -6242,6 +6274,16 @@ fn bundle_import_roundtrip_encrypted_with_pac_and_ssh_topology() {
     configure_without_system_cjk(&ctx);
     app.begin_create(true, false);
     app.ui.bundle_import.raw_input = code;
+
+    let mut small_out = guided_frame(&mut app, &ctx, vec![], 760.0, 500.0);
+    for _ in 0..4 {
+        small_out = guided_frame(&mut app, &ctx, vec![], 760.0, 500.0);
+    }
+    let small_overlaps = modal_only_overlaps(&small_out, "添加 / 导入配置");
+    assert!(
+        small_overlaps.is_empty(),
+        "overlap in bundle raw input bar at 760x500: {small_overlaps:?}"
+    );
 
     let _ = guided_frame(&mut app, &ctx, vec![], 1100.0, 900.0);
     guided_click(&mut app, &ctx, "解析配置包", 1100.0, 900.0);

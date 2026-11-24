@@ -380,66 +380,100 @@ impl App {
                         can_import = self.ui.bundle_import.payload.is_some() && ssh_valid;
                         needs_work = bundle_needs_work;
                     } else {
-                        #[cfg(windows)]
-                        if ui.button("从 JSON / 配置包文件读取…").clicked()
-                            && let Some(path) = rfd::FileDialog::new()
-                                .add_filter("Xray JSON / Proxy Pilot 配置包", &["json"])
-                                .pick_file()
-                        {
-                            match std::fs::read_to_string(&path) {
-                                Ok(text) => {
-                                    self.ui.import_error = None;
-                                    if proxy_config::bundle::is_bundle_text(&text) {
-                                        self.ui.import_source = None;
-                                        self.try_parse_bundle_into_state(&text);
-                                    } else {
-                                        self.ui.new_json = text;
-                                        if self.ui.new_name.trim().is_empty() {
-                                            self.ui.new_name = path
-                                                .file_stem()
-                                                .unwrap_or_default()
-                                                .to_string_lossy()
-                                                .into_owned();
-                                        }
-                                        self.ui.import_source = Some(path);
-                                    }
+                        let mut parse_bundle = false;
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), crate::widgets::CONTROL_HEIGHT),
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if !self.ui.bundle_import.raw_input.is_empty()
+                                    && ui.button("清空分享码").clicked()
+                                {
+                                    self.ui.bundle_import.raw_input.clear();
+                                    self.ui.bundle_import.error = None;
                                 }
-                                Err(error) => self.ui.import_error = Some(error.to_string()),
-                            }
-                        }
-                        ui.add_space(4.0);
-                        ui.label("或粘贴 Proxy Pilot 配置包分享码（支持 ppbundle1:... 或配置包 JSON）");
-                        ui.add(
-                            egui::TextEdit::multiline(&mut self.ui.bundle_import.raw_input)
-                                .desired_rows(2)
-                                .desired_width(f32::INFINITY)
-                                .hint_text("粘贴 ppbundle1:... 分享码或配置包 JSON 内容"),
+                                let can_parse =
+                                    !self.ui.bundle_import.raw_input.trim().is_empty();
+                                if ui
+                                    .add_enabled(can_parse, egui::Button::new("解析配置包"))
+                                    .clicked()
+                                {
+                                    parse_bundle = true;
+                                }
+                                ui.with_layout(
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| {
+                                        let resp = ui.add(
+                                            singleline(
+                                                &mut self.ui.bundle_import.raw_input,
+                                                ui.available_width(),
+                                            )
+                                            .hint_text("粘贴 ppbundle1:... 分享码或配置包 JSON"),
+                                        );
+                                        if can_parse
+                                            && resp.lost_focus()
+                                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                        {
+                                            parse_bundle = true;
+                                        }
+                                    },
+                                );
+                            },
                         );
-                        ui.horizontal_wrapped(|ui| {
-                            if ui
-                                .add_enabled(
-                                    !self.ui.bundle_import.raw_input.trim().is_empty(),
-                                    egui::Button::new("解析配置包"),
-                                )
-                                .clicked()
-                            {
-                                let raw = self.ui.bundle_import.raw_input.clone();
-                                self.try_parse_bundle_into_state(&raw);
-                            }
-                            if !self.ui.bundle_import.raw_input.is_empty()
-                                && ui.button("清空分享码").clicked()
-                            {
-                                self.ui.bundle_import.raw_input.clear();
-                                self.ui.bundle_import.error = None;
-                            }
-                        });
+                        if parse_bundle {
+                            let raw = self.ui.bundle_import.raw_input.clone();
+                            self.try_parse_bundle_into_state(&raw);
+                        }
                         if let Some(err) = &self.ui.bundle_import.error {
                             ui.colored_label(ui.visuals().error_fg_color, err);
                         }
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("原生 JSON 内容");
+                            if ui.button("格式化 JSON").clicked()
+                                && let Ok(value) =
+                                    proxy_config::parse_document(self.ui.new_json.as_bytes())
+                            {
+                                self.ui.new_json = serde_json::to_string_pretty(&value).unwrap();
+                            }
+                            #[cfg(windows)]
+                            if ui.button("从 JSON / 配置包文件读取…").clicked()
+                                && let Some(path) = rfd::FileDialog::new()
+                                    .add_filter("Xray JSON / Proxy Pilot 配置包", &["json"])
+                                    .pick_file()
+                            {
+                                match std::fs::read_to_string(&path) {
+                                    Ok(text) => {
+                                        self.ui.import_error = None;
+                                        if proxy_config::bundle::is_bundle_text(&text) {
+                                            self.ui.import_source = None;
+                                            self.try_parse_bundle_into_state(&text);
+                                        } else {
+                                            self.ui.new_json = text;
+                                            if self.ui.new_name.trim().is_empty() {
+                                                self.ui.new_name = path
+                                                    .file_stem()
+                                                    .unwrap_or_default()
+                                                    .to_string_lossy()
+                                                    .into_owned();
+                                            }
+                                            self.ui.import_source = Some(path);
+                                        }
+                                    }
+                                    Err(error) => self.ui.import_error = Some(error.to_string()),
+                                }
+                            }
+                        });
                         if let Some(path) = &self.ui.import_source {
-                            ui.add(egui::Label::new(RichText::new(display_path(path)).small().weak()).wrap());
-                            ui.checkbox(&mut self.ui.import_use_source_assets, "使用配置文件所在目录查找资源")
-                                .on_hover_text("默认沿用设置中的资源目录。仅在 geo 文件或相对证书路径基于配置所在目录时勾选。");
+                            ui.add(
+                                egui::Label::new(RichText::new(display_path(path)).small().weak())
+                                    .wrap(),
+                            );
+                            ui.checkbox(
+                                &mut self.ui.import_use_source_assets,
+                                "使用配置文件所在目录查找资源",
+                            )
+                            .on_hover_text(
+                                "默认沿用设置中的资源目录。仅在 geo 文件或相对证书路径基于配置所在目录时勾选。",
+                            );
                         }
                         if let Some(error) = &self.ui.import_error {
                             ui.colored_label(ui.visuals().error_fg_color, error);
@@ -456,14 +490,6 @@ impl App {
                                 self.try_parse_bundle_into_state(&raw);
                             }
                         }
-                        ui.horizontal(|ui| {
-                            ui.label("原生 JSON 内容");
-                            if ui.button("格式化 JSON").clicked()
-                                && let Ok(value) = proxy_config::parse_document(self.ui.new_json.as_bytes())
-                            {
-                                self.ui.new_json = serde_json::to_string_pretty(&value).unwrap();
-                            }
-                        });
                         let used_height = ui.cursor().top() - body_top;
                         let height = (body_height - used_height - 100.0).max(100.0);
                         json_editor(ui, &mut self.ui.new_json, "import-json", height);
